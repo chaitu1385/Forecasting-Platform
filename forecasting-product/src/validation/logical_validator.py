@@ -335,7 +335,7 @@ def validate_group_balance(
     """
     counts = (
         df.group_by(group_col)
-        .agg(pl.count().alias("n"))
+        .agg(pl.col(group_col).len().alias("n"))
         .sort("n")
     )
 

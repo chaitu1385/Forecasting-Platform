@@ -280,3 +280,13 @@ A catalog of the failure modes that break forecasting platforms — what goes wr
 **How the product handles it:** The Forecast Viewer page downsamples data for chart rendering when the point count exceeds a threshold. The API's `/forecast/compare` endpoint supports a `max_points` parameter that returns pre-aggregated data. Individual series charts are paginated — only the selected series renders at full resolution.
 
 **What to watch for:** Comparison views overlaying multiple series are the worst case for rendering performance. If the browser becomes unresponsive, reduce the number of series shown simultaneously. For very large datasets, the Plotly-based charts (fan chart, sunburst) handle large point counts more efficiently than SVG-based Recharts components.
+
+---
+
+## 27. Post-Validation Failure During Forecast Publication
+
+**What happens:** An enabled post-validation check reports a blocker, or a checker raises an unexpected exception.
+
+**How the product handles it:** `ForecastPipeline` validates before any forecast or manifest write, for both standard and multi-horizon runs. A blocker halts publication when `post_validation.halt_on_blocker` is true; unexpected checker exceptions always propagate when that layer is enabled. Failed validation leaves existing files unchanged, even on a repeat attempt for the same forecast origin. Each run clears its previous validation result and forecast-path state so a failed attempt cannot appear to have succeeded using stale state.
+
+**What to watch for:** `halt_on_blocker` defaults to false, and `min_grade` is warning-only. Set `halt_on_blocker: true` for blocking quality checks; `post_validation.enabled: false` is an explicit opt-out. Forecast keys use both the configured series ID and period, not just the series ID. This guarantee concerns validation failures before publication, not transactional recovery from later filesystem failures or the separate Spark/Fabric pipelines.

@@ -8,7 +8,7 @@ Steps:
   4. Fit champion on all available data.
   5. Forecast the full horizon (39 weeks).
   6. Emit leaf-level forecasts (bottom-up coherent by construction).
-  7. Write frozen forecasts to output store.
+  7. Validate before writing frozen forecasts to the output store.
 """
 
 import logging
@@ -94,6 +94,8 @@ class ForecastPipeline:
         ``forecast_p{q}`` quantile columns if ``config.forecast.quantiles``
         is configured.
         """
+        self._last_forecast_path = None
+        self._last_validation_result = None
         fc = self.config.forecast
         horizon = fc.horizon_weeks
         run_id = self.context.run_id
@@ -210,23 +212,7 @@ class ForecastPipeline:
             )
             logger.info("Applied conformal prediction correction to intervals")
 
-        # Step 4d: Post-pipeline validation on forecast
-        self._last_validation_result = None
-        if self.config.post_validation.enabled:
-            try:
-                with self._emitter.timer("post_validation"):
-                    self._last_validation_result = run_post_validation(
-                        results_df=forecast,
-                        config=self.config.post_validation,
-                        lob=self.config.lob,
-                        forecast_df=forecast,
-                    )
-            except Exception:
-                logger.warning(
-                    "Post-validation failed (non-fatal)", exc_info=True
-                )
-
-        # Step 5: Write to output
+        # Step 5: Validate and write to output
         forecast = self._write_forecast(forecast, forecast_origin)
 
         # Step 6: Write provenance manifest
@@ -342,6 +328,7 @@ class ForecastPipeline:
                 forecast=forecast,
                 forecast_file=Path(self._last_forecast_path).name,
                 backtest_wmape=backtest_wmape,
+                post_validation_result=self._last_validation_result,
             )
             write_manifest(manifest, self._last_forecast_path)
         except Exception:
@@ -350,7 +337,19 @@ class ForecastPipeline:
     def _write_forecast(
         self, forecast: pl.DataFrame, forecast_origin: Optional[date]
     ) -> pl.DataFrame:
-        """Write forecast to output path."""
+        """Validate every forecast path before any publication side effects."""
+        if self.config.post_validation.enabled:
+            fc = self.config.forecast
+            with self._emitter.timer("post_validation"):
+                self._last_validation_result = run_post_validation(
+                    results_df=forecast,
+                    config=self.config.post_validation,
+                    lob=self.config.lob,
+                    forecast_df=forecast,
+                    id_col=fc.series_id_column,
+                    time_col=fc.time_column,
+                )
+
         output_path = Path(self.config.output.forecast_path) / self.config.lob
         output_path.mkdir(parents=True, exist_ok=True)
 
