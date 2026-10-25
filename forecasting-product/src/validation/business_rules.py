@@ -257,7 +257,7 @@ def validate_segment_coverage(
             "severity": "BLOCKER",
         }
 
-    actual = df.group_by(segment_col).agg(pl.count().alias("n"))
+    actual = df.group_by(segment_col).agg(pl.col(segment_col).len().alias("n"))
     actual_set = set(actual[segment_col].to_list())
 
     missing = []

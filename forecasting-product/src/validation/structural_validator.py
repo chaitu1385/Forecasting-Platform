@@ -151,7 +151,7 @@ def validate_primary_key(
     if dup_count > 0:
         dupes = (
             df.group_by(key_cols)
-            .agg(pl.count().alias("_cnt"))
+            .agg(pl.col(key_cols[0]).len().alias("_cnt"))
             .filter(pl.col("_cnt") > 1)
             .head(5)
         )

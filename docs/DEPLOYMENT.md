@@ -197,6 +197,37 @@ parallelism:
 
 See [DATA_FORMAT.md](DATA_FORMAT.md) for complete config schema details.
 
+### Post-Validation and Forecast Publication
+
+The Python `ForecastPipeline` validates both standard and stitched multi-horizon
+forecasts before creating or writing a forecast file or its manifest. To block
+publication when a check reports a `BLOCKER`, configure:
+
+```yaml
+post_validation:
+  enabled: true
+  halt_on_blocker: true
+  min_grade: D
+```
+
+With `halt_on_blocker: true`, a blocker raises `ValidationError`. An unexpected
+exception in any enabled validation layer also fails the forecast attempt,
+regardless of `halt_on_blocker`. Neither failure publishes new forecast/manifest
+files or overwrites files from an earlier successful attempt, including a rerun
+for the same forecast origin.
+
+The default `halt_on_blocker: false` keeps reported blockers diagnostic; it does
+not suppress unexpected checker errors. `min_grade` only controls a warning and
+is not a publication threshold. Explicitly setting `enabled: false` skips
+post-validation. Successful validated runs include `post_validation_grade` and
+`post_validation_score` in the manifest; disabled runs leave these fields null.
+
+Forecast primary keys include the configured `forecast.series_id_column` and
+`forecast.time_column`, so multiple periods for one series are valid. Backtest
+results retain their canonical `series_id`, `model_id`, `fold`, and `target_week`
+keys. These publication safeguards apply to `ForecastPipeline`, not the separate
+distributed Spark/Fabric execution paths.
+
 ---
 
 ## Authentication Setup

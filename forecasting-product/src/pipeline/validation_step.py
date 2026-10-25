@@ -36,6 +36,9 @@ def run_post_validation(
     config: PostValidationConfig,
     lob: str,
     forecast_df: Optional[pl.DataFrame] = None,
+    *,
+    id_col: str = "series_id",
+    time_col: Optional[str] = None,
 ) -> dict:
     """Run 4-layer validation on pipeline output.
 
@@ -51,10 +54,22 @@ def run_post_validation(
     forecast_df
         Optional separate forecast DataFrame to validate (e.g., from
         ForecastPipeline). If None, results_df is used.
+    id_col
+        Series identifier in the output. Backtest results use the canonical
+        ``series_id`` even when input columns are customized.
+    time_col
+        Output time column. If None, detect ``target_week``, ``week``, or
+        ``date``. ForecastPipeline supplies its configured time column.
 
     Returns
     -------
     dict with ``grade``, ``score``, ``badge``, ``layers``, ``confidence``.
+
+    Raises
+    ------
+    ValidationError
+        A BLOCKER is found and ``halt_on_blocker`` is enabled. Unexpected
+        checker exceptions propagate regardless of that policy.
     """
     if not config.enabled:
         logger.info("[%s] Post-validation disabled, skipping.", lob)
@@ -75,7 +90,7 @@ def run_post_validation(
     # --- Layer 1: Structural checks ---
     structural_result = None
     if config.structural_checks:
-        structural_config = _build_structural_config(df)
+        structural_config = _build_structural_config(df, id_col, time_col)
         structural_result = run_structural_checks(df, config=structural_config)
         logger.info(
             "[%s] Structural: %d/%d checks passed",
@@ -87,7 +102,7 @@ def run_post_validation(
     # --- Layer 2: Logical checks ---
     logical_result = None
     if config.logical_checks:
-        logical_config = _build_logical_config(df)
+        logical_config = _build_logical_config(df, time_col)
         logical_result = run_logical_checks(df, config=logical_config)
         logger.info(
             "[%s] Logical: %d/%d checks passed",
@@ -99,7 +114,7 @@ def run_post_validation(
     # --- Layer 3: Business rules ---
     business_result = None
     if config.business_rules_checks:
-        business_config = _build_business_config(target_df, config)
+        business_config = _build_business_config(target_df, config, time_col)
         business_result = validate_business_rules(target_df, config=business_config)
         logger.info(
             "[%s] Business rules: %d/%d checks passed",
@@ -111,7 +126,7 @@ def run_post_validation(
     # --- Layer 4: Simpson's Paradox ---
     paradox_result = None
     if config.simpsons_paradox_checks:
-        paradox_result = _run_simpsons_check(df, config)
+        paradox_result = _run_simpsons_check(df, config, id_col)
         if paradox_result:
             any_paradox = paradox_result.get("any_paradox", False)
             logger.info(
@@ -174,14 +189,23 @@ def run_post_validation(
 # Config builders — adapt PostValidationConfig to per-layer config dicts
 # ---------------------------------------------------------------------------
 
-def _build_structural_config(df: pl.DataFrame) -> dict:
+def _find_time_column(df: pl.DataFrame, time_col: Optional[str]) -> Optional[str]:
+    candidates = [time_col] if time_col is not None else ["target_week", "week", "date"]
+    return next((col for col in candidates if col in df.columns), None)
+
+
+def _build_structural_config(
+    df: pl.DataFrame,
+    id_col: str = "series_id",
+    time_col: Optional[str] = None,
+) -> dict:
     """Build structural check config from available columns."""
     config: Dict[str, Any] = {"min_rows": 1}
 
     # Detect primary key columns
     pk_candidates = []
-    for col in ["series_id", "model_id", "fold", "target_week"]:
-        if col in df.columns:
+    for col in [id_col, "model_id", "fold", _find_time_column(df, time_col)]:
+        if col is not None and col in df.columns and col not in pk_candidates:
             pk_candidates.append(col)
     if pk_candidates:
         config["primary_key"] = pk_candidates
@@ -189,15 +213,14 @@ def _build_structural_config(df: pl.DataFrame) -> dict:
     return config
 
 
-def _build_logical_config(df: pl.DataFrame) -> dict:
+def _build_logical_config(df: pl.DataFrame, time_col: Optional[str] = None) -> dict:
     """Build logical check config from available columns."""
     config: Dict[str, Any] = {}
 
     # Date column detection
-    for col in ["target_week", "week", "date"]:
-        if col in df.columns:
-            config["date_column"] = col
-            break
+    date_col = _find_time_column(df, time_col)
+    if date_col is not None:
+        config["date_column"] = date_col
 
     # Value column detection
     for col in ["forecast", "quantity", "actual"]:
@@ -215,6 +238,7 @@ def _build_logical_config(df: pl.DataFrame) -> dict:
 def _build_business_config(
     df: pl.DataFrame,
     pv_config: PostValidationConfig,
+    time_col: Optional[str] = None,
 ) -> dict:
     """Build business rules config from PostValidationConfig."""
     config: Dict[str, Any] = {}
@@ -225,11 +249,7 @@ def _build_business_config(
         config["non_negative_columns"] = non_neg
 
     # Temporal consistency
-    date_col = None
-    for col in ["target_week", "week", "date"]:
-        if col in df.columns:
-            date_col = col
-            break
+    date_col = _find_time_column(df, time_col)
     value_cols = [c for c in ["forecast", "quantity"] if c in df.columns]
     if date_col and value_cols:
         config["temporal"] = {
@@ -248,6 +268,7 @@ def _build_business_config(
 def _run_simpsons_check(
     df: pl.DataFrame,
     config: PostValidationConfig,
+    id_col: str = "series_id",
 ) -> Optional[dict]:
     """Run Simpson's Paradox detection."""
     # Determine value column for paradox checking
@@ -265,7 +286,7 @@ def _run_simpsons_check(
     if not segment_cols:
         # Auto-detect categorical/low-cardinality columns
         candidates = []
-        for col in ["model_id", "series_id", "channel", "grain_level"]:
+        for col in ["model_id", id_col, "channel", "grain_level"]:
             if col in df.columns:
                 n_unique = df[col].n_unique()
                 if 2 <= n_unique <= 50:
@@ -276,12 +297,8 @@ def _run_simpsons_check(
         logger.debug("No segment columns available for Simpson's Paradox check.")
         return None
 
-    try:
-        return check_simpsons_multi_segment(
-            df,
-            segment_columns=segment_cols,
-            value_col=value_col,
-        )
-    except Exception as e:
-        logger.warning("Simpson's Paradox check failed: %s", e)
-        return None
+    return check_simpsons_multi_segment(
+        df,
+        segment_columns=segment_cols,
+        value_col=value_col,
+    )
