@@ -143,6 +143,15 @@ YAML-driven config system with dataclass schema validation:
 
 Key config dataclasses: `ForecastConfig`, `BacktestConfig`, `DataQualityConfig` (contains `ValidationConfig`, `CleansingConfig`), `ConstraintConfig`, `ExternalRegressorConfig` (contains `RegressorScreenConfig`), `ParallelismConfig`, `ObservabilityConfig` (contains `AlertConfig`), `AIConfig`
 
+`src/config/loader.py::parse_config_yaml` validates known field types without
+coercing strings/booleans into numeric settings. Pipeline uploads reject invalid
+config with HTTP 400 before pipeline construction. Execution precedence is explicit
+request override > valid YAML > platform defaults; the required
+`PipelineRunResponse.execution` contract in `src/api/schemas.py` is an explicit
+allowlist, not `asdict(PlatformConfig)`. Keep server paths and credentials out of it.
+The UI forwards only the current backtest champion/horizon and invalidates dependent
+results when data, LOB, or configuration changes.
+
 ### Multi-frequency support
 
 The platform supports daily (`"D"`), weekly (`"W"`), monthly (`"M"`), and quarterly (`"Q"`) data frequencies. The `FREQUENCY_PROFILES` dict in `src/config/schema.py` is the single source of truth, mapping each frequency to: `season_length`, `default_lags`, `min_series_length`, `default_val_periods`, `default_horizon`, `statsforecast_freq`, and `timedelta_kwargs`.
@@ -165,6 +174,9 @@ Helper functions: `get_frequency_profile(freq)` returns the profile dict; `freq_
 - Helper fixtures use `_make_*` factory functions (e.g., `_make_weekly_actuals`)
 - 1281 tests across 53 test files
 - Key test modules: `test_platform.py` (85 tests), `test_sku_mapping.py` (81), `test_ai_*.py` (73), `test_forecast_explainability.py` (59), `test_intermittent_demand.py` (55), `test_observability.py` (41), `test_file_classifier.py` (26), `test_file_merger.py` (20)
+- Focused forecast-intent coverage: `test_forecast_intent.py` (107 real ASGI cases),
+  plus frontend `e2e/pipeline-execution.test.tsx` and `e2e/data-onboarding-state.test.tsx`
+  (21 handoff/state cases). These require only core/API and existing frontend test dependencies.
 
 ## Key Dependencies
 

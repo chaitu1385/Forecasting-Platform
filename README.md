@@ -619,10 +619,18 @@ YAML-driven config system with dataclass schema validation. `FREQUENCY_PROFILES`
 | `ForecastConfig` | Forecast settings (horizon, models, quantiles, external regressors) |
 | `BacktestConfig` | Walk-forward validation settings (folds, step size) |
 | `DataQualityConfig` | Validation + cleansing settings |
+| `parse_config_yaml(content)` | Parse uploaded YAML with strict known-field types and existing period aliases; invalid documents fail rather than falling back |
 | `load_config(path)` | Load and parse YAML config into `PlatformConfig` |
 | `load_config_with_overrides(path, overrides)` | Load config with LOB-level overrides merged |
 | `get_frequency_profile(freq)` | Get temporal properties for `"D"` / `"W"` / `"M"` / `"Q"` |
 | `freq_timedelta(freq, periods)` | Convert frequency + periods to `timedelta` |
+
+Pipeline upload precedence is explicit model/horizon override, then valid YAML,
+then platform defaults. The UI carries the current backtest winner into forecasting
+and displays the API's typed, allowlisted `execution` settings. Invalid uploads
+return HTTP 400 before computation/publication; invalid query horizons return 422.
+See [the selected-plan workflow](docs/USER_GUIDE.md#running-the-selected-forecast-plan)
+and [execution response contract](docs/DATA_FORMAT.md#output-pipeline-execution-response).
 
 ### `src/evaluation/` — Metric Computation
 
@@ -964,6 +972,7 @@ python -m pytest forecasting-product/tests/ \
 | Test file | Tests | Covers |
 |-----------|------:|--------|
 | `test_platform.py` | 85 | Config, hierarchy, reconciliation, metrics, transitions, registry, backtest, REST API, deployment, drift |
+| `test_forecast_intent.py` | 107 | Real ASGI champion/horizon/config handoff, aliases, safe execution settings, invalid-input no-publication guarantees |
 | `test_forecast_explainability.py` | 59 | Comparator, ExceptionEngine, Explainer (STL+SHAP+narrative), ModelCard, Registry, DriftDetector, Lineage |
 | `test_intermittent_demand.py` | 55 | SparseDetector, Croston, CrostonSBA, TSB, backtest routing |
 | `test_mint_reconciliation.py` | 46 | S-matrix math, OLS/WLS/MinT correctness, coherence, edge cases |

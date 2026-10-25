@@ -401,8 +401,8 @@ export const api = {
     formData.append("file", file);
     if (params?.configFile) formData.append("config_file", params.configFile);
     const sp = new URLSearchParams({ lob });
-    if (params?.model_id) sp.set("model_id", params.model_id);
-    if (params?.horizon) sp.set("horizon", String(params.horizon));
+    if (params?.model_id !== undefined) sp.set("model_id", params.model_id);
+    if (params?.horizon !== undefined) sp.set("horizon", String(params.horizon));
     return request<PipelineRunResponse>(
       `/pipeline/forecast?${sp.toString()}`,
       { method: "POST", body: formData },

@@ -6,8 +6,10 @@ Nested dicts are deep-merged; lists are replaced entirely.
 """
 
 import copy
+import math
+from dataclasses import MISSING, fields, is_dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union, get_args, get_origin
 
 import yaml
 
@@ -37,6 +39,73 @@ from .schema import (
     ValidationConfig,
 )
 
+_PERIOD_ALIASES = {
+    ForecastConfig: {"horizon_periods": "horizon_weeks"},
+    BacktestConfig: {"val_periods": "val_weeks", "gap_periods": "gap_weeks"},
+    DataQualityConfig: {"min_series_length_periods": "min_series_length_weeks"},
+    TransitionConfig: {"transition_window_periods": "transition_window_weeks"},
+}
+
+
+def _validate_types(value: Any, expected: Any, path: str = "config") -> None:
+    """Check known schema fields without coercion or a new unknown-key policy."""
+    if expected is Any:
+        return
+    origin = get_origin(expected)
+    args = get_args(expected)
+    if origin is Union and type(None) in args:
+        if value is None:
+            return
+        _validate_types(value, next(t for t in args if t is not type(None)), path)
+    elif is_dataclass(expected):
+        if not isinstance(value, dict):
+            raise ValueError(f"{path} must be a mapping")
+        schema_fields = {f.name: f for f in fields(expected)}
+        aliases = _PERIOD_ALIASES.get(expected, {})
+        for f in schema_fields.values():
+            if f.default is MISSING and f.default_factory is MISSING and f.name not in value:
+                raise ValueError(f"{path}.{f.name} is required")
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{path} keys must be strings")
+            schema_field = schema_fields.get(aliases.get(key, key))
+            if schema_field is not None:
+                _validate_types(item, schema_field.type, f"{path}.{key}")
+    elif origin is list:
+        if not isinstance(value, list):
+            raise ValueError(f"{path} must be a list")
+        for index, item in enumerate(value):
+            _validate_types(item, args[0], f"{path}[{index}]")
+    elif origin is dict:
+        if not isinstance(value, dict):
+            raise ValueError(f"{path} must be a mapping")
+        for key, item in value.items():
+            _validate_types(key, args[0], f"{path} key")
+            _validate_types(item, args[1], f"{path}.{key}")
+    elif expected is float:
+        if type(value) not in (int, float) or not math.isfinite(value):
+            raise ValueError(f"{path} must be a finite number")
+    elif type(value) is not expected:
+        raise ValueError(f"{path} must be {expected.__name__}")
+
+
+def _parse_yaml_mapping(content: str) -> Dict[str, Any]:
+    try:
+        raw = yaml.safe_load(content)
+    except yaml.YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None)
+        location = f" at line {mark.line + 1}, column {mark.column + 1}" if mark else ""
+        # Do not echo source snippets, which can contain paths or credentials.
+        raise ValueError(f"Invalid config YAML syntax{location}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("Config must be a YAML mapping; use {} for platform defaults")
+    return raw
+
+
+def parse_config_yaml(content: str) -> PlatformConfig:
+    """Parse YAML and validate known configuration fields, preserving period aliases."""
+    return _dict_to_config(_parse_yaml_mapping(content))
+
 
 def _deep_merge(base: Dict, override: Dict) -> Dict:
     """Recursively merge *override* into *base*. Lists are replaced, not appended."""
@@ -65,6 +134,7 @@ def _parse_hierarchy(raw: Dict[str, Any]) -> HierarchyConfig:
 
 def _dict_to_config(d: Dict[str, Any]) -> PlatformConfig:
     """Convert a raw dict (from YAML) to a typed PlatformConfig."""
+    _validate_types(d, PlatformConfig)
     hierarchies = [
         _parse_hierarchy(h) for h in d.get("hierarchies", [])
     ]
@@ -231,9 +301,8 @@ def _dict_to_config(d: Dict[str, Any]) -> PlatformConfig:
 
 def load_config(path: str) -> PlatformConfig:
     """Load a single YAML config file."""
-    with open(path) as f:
-        raw = yaml.safe_load(f) or {}
-    return _dict_to_config(raw)
+    with open(path, encoding="utf-8") as f:
+        return parse_config_yaml(f.read())
 
 
 def load_config_with_overrides(
@@ -254,12 +323,12 @@ def load_config_with_overrides(
             "configs/lob/surface.yaml",
         )
     """
-    with open(base_path) as f:
-        base = yaml.safe_load(f) or {}
+    with open(base_path, encoding="utf-8") as f:
+        base = _parse_yaml_mapping(f.read())
 
     if override_path and Path(override_path).exists():
-        with open(override_path) as f:
-            override = yaml.safe_load(f) or {}
+        with open(override_path, encoding="utf-8") as f:
+            override = _parse_yaml_mapping(f.read())
         merged = _deep_merge(base, override)
     else:
         merged = base

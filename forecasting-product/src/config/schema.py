@@ -266,6 +266,10 @@ class HorizonBucket:
     end_step: int                # inclusive
 
 
+VALID_SELECTION_STRATEGIES = frozenset({"champion", "weighted_ensemble"})
+VALID_CHAMPION_GRANULARITIES = frozenset({"lob", "product_group", "series"})
+
+
 @dataclass
 class BacktestConfig:
     """Walk-forward cross-validation settings.
@@ -295,6 +299,18 @@ class BacktestConfig:
         return self.gap_weeks
 
     def __post_init__(self):
+        if self.selection_strategy == "best_metric":
+            self.selection_strategy = "champion"
+        if self.selection_strategy not in VALID_SELECTION_STRATEGIES:
+            raise ValueError(
+                f"Unknown selection_strategy {self.selection_strategy!r}. "
+                f"Supported: {sorted(VALID_SELECTION_STRATEGIES)} (best_metric aliases champion)"
+            )
+        if self.champion_granularity not in VALID_CHAMPION_GRANULARITIES:
+            raise ValueError(
+                f"Unknown champion_granularity {self.champion_granularity!r}. "
+                f"Supported: {sorted(VALID_CHAMPION_GRANULARITIES)}"
+            )
         if self.n_folds < 1:
             raise ValueError(f"n_folds must be >= 1, got {self.n_folds}")
         if self.val_weeks < 1:
