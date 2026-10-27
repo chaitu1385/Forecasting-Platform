@@ -14,7 +14,7 @@ Next.js 15 frontend for the Forecasting Product, providing a workflow-driven UI 
 | Charts | Recharts + Plotly.js | 2.15 / 2.35 |
 | Server State | TanStack React Query | 5.62 |
 | Tables | TanStack React Table | 8.20 |
-| Auth | NextAuth | 4.24 |
+| Auth | Server-verified operator JWT / explicit demo | Per-tab memory only |
 | Icons | Lucide React | 0.468 |
 | Unit Tests | Vitest + Testing Library | 4.1 / 16.3 |
 | E2E Tests | Playwright | 1.58 |
@@ -27,9 +27,10 @@ The root layout (`src/app/layout.tsx`) wraps the entire app in three providers:
 QueryProvider          -- TanStack React Query (staleTime: 5min, retry: 1)
   AuthProvider         -- JWT auth state, login/logout, permission checks
     LobProvider        -- Selected LOB (persisted to localStorage)
-      <Sidebar />
-      <Header />
-      <main>{children}</main>
+      AuthBoundary     -- No protected page mount before sign-in
+        <Sidebar />
+        <Header />
+        <main>{children}</main>
 ```
 
 ## Pages (10 routes)
@@ -37,7 +38,7 @@ QueryProvider          -- TanStack React Query (staleTime: 5min, retry: 1)
 | Route | Page | Description |
 |-------|------|-------------|
 | `/` | Dashboard | Home page |
-| `/login` | Login | Username + role selection, JWT token acquisition |
+| `/login` | Login | Production operator-token entry; role simulation only in explicit demo |
 | `/data-onboarding` | Data Onboarding | File upload, auto-analysis, config generation, backtest-to-forecast execution |
 | `/series-explorer` | Series Explorer | SBC classification, break detection, cleansing audit, regressor screening |
 | `/hierarchy` | Hierarchy | Tree building, sunburst visualization, aggregation, reconciliation |
@@ -83,7 +84,8 @@ src/components/
     model-cards-panel  # Model card registry viewer
     lineage-panel      # Forecast lineage history
     bi-export-panel    # BI report export (CSV/Parquet)
-  layout/              # 2 components — App shell
+  layout/              # 3 components — App shell and auth boundary
+    auth-boundary      # Wait for verified identity before protected content
     sidebar            # Navigation sidebar with workflow steps
     header             # Top bar with LOB selector, user menu
   pipeline/            # 2 components — Pipeline operations
@@ -106,8 +108,8 @@ src/components/
 The centralized API client (`src/lib/api-client.ts`) provides typed methods for all 41 backend endpoints.
 
 **Features:**
-- Automatic JWT token injection from `localStorage`
-- Token expiry detection (clears session on expired JWT)
+- Verified JWT injection from per-tab memory, never persistent browser storage
+- Server-verified expiry, logout/401 cache clearing, and stale-session response rejection
 - Retry logic: 3 retries with exponential backoff (1s, 2s, 4s)
 - Retryable status codes: 502, 503, 504, 429
 - FormData handling for file uploads (auto Content-Type boundary)
@@ -132,7 +134,7 @@ const answer = await api.aiExplain({ series_id: "SKU_001", question: "Why is thi
 | Concern | Mechanism | Details |
 |---------|-----------|---------|
 | Server state | React Query | `staleTime: 5min`, `retry: 1`, `refetchOnWindowFocus: false` |
-| Auth state | `AuthProvider` context | JWT + user object in `localStorage`, `useAuth()` hook |
+| Auth state | `AuthProvider` context | Verified identity and in-memory credential; no restore/persistence |
 | LOB selection | `LobProvider` context | Persisted to `localStorage`, `useLob()` hook |
 | Async operations | `useAsyncOperation` hook | Loading/error/result state; only the latest operation may update state, and reset/unmount invalidates pending completions |
 
@@ -197,25 +199,42 @@ Screenshots, traces and request/response evidence are written to Playwright resu
 
 ## Auth Flow
 
-1. User enters username and selects role on `/login`
-2. `AuthProvider.login()` calls `POST /auth/token?username=...&role=...`
-3. JWT access token stored in `localStorage` under `access_token`
-4. User object (username, role, permissions) stored under `user`
-5. On mount, `AuthProvider` restores session and checks JWT expiry
-6. `api-client.ts` injects `Authorization: Bearer <token>` on every request
-7. Expired tokens are detected client-side (JWT `exp` claim) and session is cleared
+Production sign-in is an operational MVP for trusted-operator-issued JWTs, not
+NextAuth, password authentication, SSO or a user directory. See
+[operator provisioning](DEPLOYMENT.md#authentication-setup) for private output,
+expiry, rotation and the absence of immediate per-user revocation.
 
-**Roles and Permissions:**
+1. Public `/auth/status` declares production or explicit demo mode. Invalid or unavailable discovery disables sign-in.
+2. Production accepts a token in a password-style field; only explicit demo shows a username/role selector.
+3. `/auth/me` verifies the candidate before `AuthProvider` commits server-provided identity, permissions and expiry. The UI never chooses production claims.
+4. Credentials live only in per-tab module memory. The input is cleared on submission; no credential is persisted, sent in a URL, or placed in React Query.
+5. Replacement login, logout, expiry, pagehide and current-session 401 clear identity and protected caches. Legacy localStorage auth is deleted without restoration.
+6. API requests capture their session owner. Stale responses cannot populate a newer identity's cache or log that identity out. Neither API nor query retry treats 401/403 as transient.
+7. `AuthBoundary` prevents protected page mounting before sign-in. SPA navigation preserves memory; full reload intentionally requires a new sign-in.
+
+Server RBAC remains authoritative. Permissions are lowercase enum values:
 
 | Role | Permissions |
 |------|-------------|
 | `admin` | All 11 permissions |
-| `data_scientist` | VIEW_FORECASTS, VIEW_METRICS, VIEW_AUDIT_LOG, RUN_BACKTEST, RUN_PIPELINE, PROMOTE_MODEL, MODIFY_CONFIG |
-| `planner` | VIEW_FORECASTS, VIEW_METRICS, CREATE_OVERRIDE, DELETE_OVERRIDE |
-| `manager` | VIEW_FORECASTS, VIEW_METRICS, VIEW_AUDIT_LOG, APPROVE_OVERRIDE |
-| `viewer` | VIEW_FORECASTS, VIEW_METRICS |
+| `data_scientist` | `view_forecasts`, `view_metrics`, `view_audit_log`, `create_override`, `delete_override`, `run_backtest`, `run_pipeline`, `promote_model`, `modify_config` |
+| `planner` | `view_forecasts`, `view_metrics`, `create_override` |
+| `manager` | `view_forecasts`, `view_metrics`, `view_audit_log`, `approve_override` |
+| `viewer` | `view_forecasts`, `view_metrics` |
 
-Use `useAuth().hasPermission("RUN_PIPELINE")` to check permissions in components.
+Use `useAuth().hasPermission("run_pipeline")` for UI hints, never as the API
+authorization boundary. Explicit demo uses `X-Demo-User` / `X-Demo-Role`, which
+production ignores; demo refuses bearer credentials.
+
+`e2e/authentication.test.tsx` covers 20 identity/cache/race/expiry cases. The
+separate `npm run test:auth-browser` check requires `AUTH_E2E_ROOT` to be a fresh
+absolute temporary directory outside the repository. It starts only isolated
+loopback servers, creates private synthetic credentials, and verifies real
+production API/browser behavior. Use `AUTH_E2E_PYTHON` and
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE` for explicit local executables if needed. Its
+dedicated configuration disables traces, screenshots, video, debug logging and
+retries; never include its credential directory in artifacts. Normal Playwright
+tests exclude this directory and use explicit demo login, not storage injection.
 
 ## Type System
 

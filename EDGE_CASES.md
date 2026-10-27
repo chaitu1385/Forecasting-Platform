@@ -321,3 +321,28 @@ chooses the first configured model, not a remembered or guessed winner.
 Invalidation prevents stale UI selection, not cancellation of server work or
 transactional/immutable output storage. Multi-model backtest results are not
 silently reduced to their first row for this single-model handoff.
+
+---
+
+## 29. Missing Authentication Configuration and Stale Browser Identity
+
+**What happens:** A production launcher lacks a signing key, an environment value
+such as `"false"` is interpreted as truthy, a caller chooses their own admin
+role, or an old request completes after logout or a different login.
+
+**How the product handles it:** One shared `AuthSettings` contract defaults to
+authenticated production and rejects missing/weak keys, invalid booleans and
+conflicting demo settings before startup. The HTTP token issuer is removed;
+only a trusted local operator with the key can issue a short-lived token into a
+new restricted file. `/auth/me` verifies signed identity, role, activity and
+expiry. The browser holds credentials only in memory, clears protected caches on
+replacement/logout/expiry/401, and rejects stale session-owned responses.
+Unavailable mode discovery never opens a demo fallback.
+
+**What to watch for:** Explicit demo is intentionally unauthenticated and must
+not receive production data or keys. Browser reload requires sign-in again.
+Windows private output uses a verified protected DACL, not `chmod`; failed secure
+output may leave an empty or private partial file. Stateless tokens have no live
+per-user revocation: a copied token remains valid until expiry or coordinated
+key rotation/restart. Production containers never seed demo data; the separate
+demo Compose override uses its own volume and retains cold/restart safeguards.

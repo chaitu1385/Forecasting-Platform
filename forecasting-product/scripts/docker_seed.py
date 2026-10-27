@@ -1,12 +1,13 @@
-"""Docker first-boot seeder — pre-runs backtest + forecast so the UI has data.
+"""Production API supervisor; seed backtest + forecast only in explicit demo mode.
 
-On first boot, this script:
+Production validates signing configuration and never seeds demo data.
+On the first explicit-demo boot, this script:
   1. Generates the weekly M5 sample (daily → weekly aggregation)
   2. Starts the API server in the background
   3. Calls POST /pipeline/backtest with the weekly data + config
   4. Calls POST /pipeline/forecast with the champion model
   5. Writes a sentinel file so subsequent boots skip seeding
-  6. Supervises the API server; subsequent boots exec the same server command
+  6. Supervises the same API server command on cold and subsequent boots
 
 Usage (inside Docker):
     python forecasting-product/scripts/docker_seed.py
@@ -30,11 +31,13 @@ logger = logging.getLogger("docker_seed")
 
 _HERE = Path(__file__).resolve().parent
 _ROOT = _HERE.parent  # forecasting-product/
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 DATA_DIR = Path(os.environ.get("API_DATA_DIR", str(_ROOT / "data"))).resolve()
 METRICS_DIR = Path(os.environ.get("API_METRICS_DIR", str(DATA_DIR / "metrics"))).resolve()
 SENTINEL = DATA_DIR / ".seeded"
 DEMO_LOB = os.environ.get("DEMO_LOB", "walmart_m5_weekly")
-API_HOST = "0.0.0.0"
+API_HOST = os.environ.get("API_HOST", "0.0.0.0")
 API_PORT = int(os.environ.get("API_PORT", "8000"))
 
 
@@ -172,11 +175,40 @@ def _exit_on_signal(signum, _frame) -> None:
     raise SystemExit(128 + signum)
 
 
+def _run_server(seed_paths: tuple[Path, Path] | None = None) -> None:
+    """Keep process ownership and cleanup consistent, including on Windows."""
+    logger.info("Starting API server on %s:%d …", API_HOST, API_PORT)
+    api_proc = subprocess.Popen(_server_command(), cwd=str(_ROOT))
+    previous_sigterm = signal.signal(signal.SIGTERM, _exit_on_signal)
+    try:
+        if seed_paths is not None:
+            if not wait_for_api(timeout=120, process=api_proc):
+                raise RuntimeError("API server did not become healthy within 120s")
+            demo_csv, config_path = seed_paths
+            champion = seed_via_api(demo_csv, config_path, DEMO_LOB)
+            SENTINEL.parent.mkdir(parents=True, exist_ok=True)
+            SENTINEL.write_text(f"seeded:{DEMO_LOB}:champion={champion}\n", encoding="utf-8")
+            logger.info("Seed complete — sentinel written to %s", SENTINEL)
+        returncode = api_proc.wait()
+        if returncode:
+            raise SystemExit(returncode)
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        _stop_server(api_proc)
+
+
 def main() -> None:
+    from src.auth.settings import AuthSettings
+
+    settings = AuthSettings.from_env()
+    if not settings.dev_mode:
+        logger.info("Production authentication enabled; demo seeding is disabled.")
+        _run_server()
+        return
     if SENTINEL.exists():
         logger.info("Sentinel found (%s) — skipping seed, starting API directly.", SENTINEL)
-        os.execvp(sys.executable, _server_command())
-        return  # unreachable after execvp
+        _run_server()
+        return
 
     # Step 1: Generate weekly M5 sample
     demo_csv = DATA_DIR / "demo" / "m5_weekly.csv"
@@ -186,36 +218,13 @@ def main() -> None:
 
     if not demo_csv.exists():
         logger.info("Generating weekly M5 sample …")
-        sys.path.insert(0, str(_ROOT))
         from scripts.prepare_m5_weekly import prepare_weekly
         daily_csv = _ROOT / "tests" / "integration" / "fixtures" / "m5_daily_sample.csv"
         if not daily_csv.exists():
             raise FileNotFoundError(f"Daily fixture not found: {daily_csv}")
         prepare_weekly(daily_csv, demo_csv, n_series=10)
 
-    # Step 2: Start API server in background
-    logger.info("Starting API server on %s:%d …", API_HOST, API_PORT)
-    api_proc = subprocess.Popen(
-        _server_command(),
-        cwd=str(_ROOT),
-    )
-    previous_sigterm = signal.signal(signal.SIGTERM, _exit_on_signal)
-    try:
-        if not wait_for_api(timeout=120, process=api_proc):
-            raise RuntimeError("API server did not become healthy within 120s")
-        logger.info("API server is healthy.")
-
-        champion = seed_via_api(demo_csv, config_path, DEMO_LOB)
-        SENTINEL.parent.mkdir(parents=True, exist_ok=True)
-        SENTINEL.write_text(f"seeded:{DEMO_LOB}:champion={champion}\n", encoding="utf-8")
-        logger.info("Seed complete — sentinel written to %s", SENTINEL)
-
-        returncode = api_proc.wait()
-        if returncode:
-            raise SystemExit(returncode)
-    finally:
-        signal.signal(signal.SIGTERM, previous_sigterm)
-        _stop_server(api_proc)
+    _run_server((demo_csv, config_path))
 
 
 if __name__ == "__main__":

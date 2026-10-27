@@ -37,6 +37,7 @@ volume_owned=true
 start_container() {
   container_owned=true
   docker run -d --name "$container" --cpus=2 --memory=2g \
+    -e AUTH_ENABLED=false -e API_DEV_MODE=true \
     -p 127.0.0.1::8000 \
     --mount "type=volume,source=$volume,target=/app/forecasting-product/data" \
     "$image" >/dev/null

@@ -141,7 +141,10 @@ def client():
         data_dir = Path(tmpdir)
         _make_data(data_dir, "retail")
         (data_dir / "metrics").mkdir()
-        app = create_app(data_dir=str(data_dir), metrics_dir=str(data_dir / "metrics"))
+        app = create_app(
+            data_dir=str(data_dir), metrics_dir=str(data_dir / "metrics"),
+            auth_enabled=False, dev_mode=True, jwt_secret="",
+        )
         yield TestClient(app)
 
 

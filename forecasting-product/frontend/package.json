@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test:e2e": "vitest run --reporter=verbose",
     "test:pw": "npx playwright test --project=chromium",
+    "test:auth-browser": "playwright test --config=playwright.auth.config.ts",
     "test:pw:headed": "npx playwright test --project=chromium --headed",
     "test:pw:all": "npx playwright test",
     "test:pw:integration": "npx playwright test --project=chromium --grep @integration",

@@ -39,6 +39,8 @@ def main() -> None:
         audit_log_path=str(root / "audit"),
         title="Forecast intent test fixture",
         auth_enabled=False,
+        dev_mode=True,
+        jwt_secret="",
         cors_origins=[args.frontend_origin],
     )
     uvicorn.run(app, host="127.0.0.1", port=args.port)

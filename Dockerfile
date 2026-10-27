@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY forecasting-product/ forecasting-product/
 
 # ---------------------------------------------------------------------------
-#  FastAPI target (with first-boot demo seeding)
+#  FastAPI target (production by default; seeding requires explicit demo mode)
 # ---------------------------------------------------------------------------
 FROM base AS api
 EXPOSE 8000
@@ -23,6 +23,8 @@ COPY forecasting-product/tests/integration/fixtures/m5_daily_sample.csv \
      forecasting-product/tests/integration/fixtures/m5_daily_sample.csv
 
 ENV API_DATA_DIR=forecasting-product/data/ \
+    AUTH_ENABLED=true \
+    API_DEV_MODE=false \
     DEMO_LOB=walmart_m5_weekly \
     POLARS_MAX_THREADS=2 \
     OMP_NUM_THREADS=1 \

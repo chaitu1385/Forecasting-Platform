@@ -17,6 +17,9 @@ def seeder(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("API_DATA_DIR", "state")
     monkeypatch.setenv("API_METRICS_DIR", "state/metrics")
+    monkeypatch.setenv("AUTH_ENABLED", "false")
+    monkeypatch.setenv("API_DEV_MODE", "true")
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
     spec = importlib.util.spec_from_file_location("seed_under_test", source)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -38,18 +41,18 @@ def _mock_server(seeder, monkeypatch):
 
 def test_cold_and_restart_use_identical_absolute_storage(seeder, tmp_path, monkeypatch):
     _, popen = _mock_server(seeder, monkeypatch)
-    monkeypatch.setattr(seeder, "seed_via_api", lambda *args: "naive_seasonal")
+    seed = MagicMock(return_value="naive_seasonal")
+    monkeypatch.setattr(seeder, "seed_via_api", seed)
     seeder.main()
     cold_command = popen.call_args.args[0]
     assert cold_command[cold_command.index("--data-dir") + 1] == str(tmp_path / "state")
     assert cold_command[cold_command.index("--metrics-dir") + 1] == str(tmp_path / "state" / "metrics")
     assert (tmp_path / "state" / ".seeded").read_text().endswith("champion=naive_seasonal\n")
 
-    execvp = MagicMock()
-    monkeypatch.setattr(seeder.os, "execvp", execvp)
     seeder.main()
-    assert execvp.call_args.args[1] == cold_command
-    assert popen.call_count == 1
+    assert popen.call_args.args[0] == cold_command
+    assert popen.call_count == 2
+    seed.assert_called_once()
 
 
 def test_failed_seed_stops_and_reaps_server_without_sentinel(seeder, tmp_path, monkeypatch):

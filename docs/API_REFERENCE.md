@@ -25,23 +25,19 @@ Readiness probe — returns dependency health checks.
 }
 ```
 
-### `POST /auth/token` *(dev mode only)*
+### `GET /auth/status`
 
-Issue a JWT token for development/testing. Only available when `API_DEV_MODE=1`.
+Public, nonsensitive mode discovery. Returns `{"mode":"production","auth_required":true}`
+or `{"mode":"demo","auth_required":false}` only after valid startup configuration.
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `username` | query, required | Username |
-| `role` | query, default `"viewer"` | Role: `admin`, `manager`, `planner`, `data_scientist`, `viewer` |
+### `GET /auth/me`
 
-**Response:**
+Authenticated identity verification. Returns `mode`, `username`, `email`, `role`,
+server-mapped `permissions`, and integer Unix `expires_at` (`null` in explicit
+demo). It never returns a token or key. Caller-supplied production role/identity
+fields are not accepted.
 
-```json
-{
-  "access_token": "eyJ...",
-  "token_type": "bearer"
-}
-```
+The former `POST /auth/token` route is absent, including in demo mode.
 
 ### `GET /audit`
 
@@ -528,15 +524,24 @@ Generate executive forecast commentary for S&OP meetings. **Requires** `VIEW_MET
 
 ## Authentication & RBAC
 
-All endpoints require authentication when `auth_enabled=True`. Pass a JWT token via the `Authorization: Bearer <token>` header.
+The factory and shipped launchers require authentication by default. All business
+endpoints use verified bearer JWTs; `/health`, `/auth/status` and API documentation
+are public and expose no signing configuration. `/auth/token` does not exist.
+`/auth/me` returns the server-verified identity and role, never a token.
+
+Use [trusted operator provisioning](DEPLOYMENT.md#authentication-setup), not
+caller-selected production roles. Missing/invalid/expired/tampered tokens return
+401. Inactive signed identities and insufficient permissions return 403.
+`AUTH_ENABLED=false` is allowed only with explicit `API_DEV_MODE=true` and no
+signing key; demo headers simulate roles but provide no identity assurance.
 
 ### Roles and Permissions
 
 | Role | Permissions |
 |------|-------------|
 | `admin` | All permissions |
-| `manager` | VIEW_FORECASTS, VIEW_METRICS, RUN_BACKTEST, RUN_PIPELINE, CREATE_OVERRIDE, APPROVE_OVERRIDE, VIEW_AUDIT_LOG |
-| `data_scientist` | VIEW_FORECASTS, VIEW_METRICS, RUN_BACKTEST, RUN_PIPELINE |
+| `manager` | VIEW_FORECASTS, VIEW_METRICS, APPROVE_OVERRIDE, VIEW_AUDIT_LOG |
+| `data_scientist` | VIEW_FORECASTS, VIEW_METRICS, VIEW_AUDIT_LOG, CREATE_OVERRIDE, DELETE_OVERRIDE, RUN_BACKTEST, RUN_PIPELINE, PROMOTE_MODEL, MODIFY_CONFIG |
 | `planner` | VIEW_FORECASTS, VIEW_METRICS, CREATE_OVERRIDE |
 | `viewer` | VIEW_FORECASTS, VIEW_METRICS |
 
@@ -554,5 +559,7 @@ All endpoints require authentication when `auth_enabled=True`. Pass a JWT token 
 | `API_METRICS_DIR` | Metrics store directory | `data/metrics/` |
 | `API_VERSION` | Version in `/health` | `1.0.0` |
 | `API_RATE_LIMIT` | Requests per minute per IP | `100` |
-| `API_DEV_MODE` | Enable dev token endpoint | `1` (if auth disabled) |
+| `AUTH_ENABLED` | Strict boolean; false requires explicit demo | `true` |
+| `API_DEV_MODE` | Strict boolean; explicit unauthenticated simulation | `false` |
+| `JWT_SECRET_KEY` | Dedicated random production key; missing/weak values fail startup | unset |
 | `ANTHROPIC_API_KEY` | Claude API key for AI features | *(optional)* |

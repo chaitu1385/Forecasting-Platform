@@ -2,7 +2,7 @@
 
 const required = [
   "lint", "validation", "forecast-intent", "process-safety",
-  "test", "build", "frontend", "automation",
+  "test", "build", "frontend", "automation", "authentication",
 ];
 
 function assertSuccessfulJobs(needs) {

@@ -1,11 +1,11 @@
 import { test, expect } from "@playwright/test";
 import { mockApiRoutes, MOCK } from "../helpers/mock-routes";
-import { seedAuth } from "../helpers/auth";
+import { loginDemo, navigateWithinApp } from "../helpers/auth";
 
 test.describe("Reconciliation & Validation Flow", () => {
   test.beforeEach(async ({ page }) => {
     await mockApiRoutes(page);
-    await seedAuth(page);
+    await loginDemo(page);
   });
 
   test("hierarchy reconciliation returns coherence = 1.0", async ({ page }) => {
@@ -41,13 +41,13 @@ test.describe("Reconciliation & Validation Flow", () => {
   });
 
   test("hierarchy page loads and shows file upload", async ({ page }) => {
-    await page.goto("/hierarchy");
+    await navigateWithinApp(page, "/hierarchy");
     await expect(page.locator("main h1")).toContainText("Hierarchy");
     await expect(page.locator('input[type="file"]')).toBeVisible();
   });
 
   test("full reconciliation flow on hierarchy page", async ({ page }) => {
-    await page.goto("/hierarchy");
+    await navigateWithinApp(page, "/hierarchy");
 
     // Upload CSV file
     const fileInput = page.locator('input[type="file"]');

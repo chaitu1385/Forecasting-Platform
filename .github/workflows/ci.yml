@@ -112,7 +112,7 @@ jobs:
             "fastapi>=0.100.0,<0.116.0" \
             "httpx>=0.24.0" \
             "python-multipart>=0.0.7" \
-            "pyjwt>=2.0.0"
+            "pyjwt>=2.0.0,<3.0"
 
       - name: Run forecast intent regressions
         working-directory: forecasting-product
@@ -171,6 +171,69 @@ jobs:
         with:
           name: process-results-python-${{ matrix.python-version }}
           path: forecasting-product/process-results.xml
+
+  authentication:
+    name: Authentication (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      POLARS_MAX_THREADS: "2"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMBA_NUM_THREADS: "1"
+      PYTHONUTF8: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: forecasting-product/requirements.txt
+      - name: Install authentication test dependencies
+        run: python -m pip install -r forecasting-product/requirements.txt pytest-timeout
+      - name: Verify real launcher, JWT/RBAC and private operator output
+        working-directory: forecasting-product
+        run: >
+          python -m pytest tests/test_authentication.py tests/test_auth_startup.py
+          tests/test_docker_seed.py -q -o addopts="" -o faulthandler_timeout=60
+          --timeout=120 --timeout-method=thread --junitxml=authentication-results.xml
+      - uses: actions/setup-node@v4
+        if: runner.os == 'Linux'
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: forecasting-product/frontend/package-lock.json
+      - name: Install frontend test dependencies
+        if: runner.os == 'Linux'
+        working-directory: forecasting-product/frontend
+        run: npm ci
+      - name: Verify production token login with a real isolated API and browser
+        if: runner.os == 'Linux'
+        working-directory: forecasting-product/frontend
+        env:
+          AUTH_E2E_ROOT: ${{ runner.temp }}/forecast-auth-browser
+          PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
+        run: npm run test:auth-browser
+      - name: Verify explicit-demo browser login
+        if: runner.os == 'Linux'
+        working-directory: forecasting-product/frontend
+        env:
+          PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
+        run: npx playwright test login-flow.spec.ts --project=chromium --workers=1 --retries=0 --reporter=line
+      - name: Upload authentication results (never credentials or browser traces)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: authentication-results-${{ matrix.os }}
+          path: forecasting-product/authentication-results.xml
 
   test:
     name: Test (Python ${{ matrix.python-version }})
@@ -251,6 +314,30 @@ jobs:
       - name: Verify cold start and persistent restart
         run: bash .github/scripts/docker-smoke.sh "forecasting-product:${{ github.sha }}"
 
+      - name: Verify Compose mode and volume isolation
+        run: |
+          docker compose config --format json | python3 -c '
+          import json, sys
+          config = json.load(sys.stdin)
+          api = config["services"]["api"]
+          assert api["environment"]["AUTH_ENABLED"] == "true"
+          assert api["environment"]["API_DEV_MODE"] == "false"
+          assert api["volumes"][0]["source"] == "api-data"
+          assert all(port["host_ip"] == "127.0.0.1" for service in config["services"].values() for port in service.get("ports", []))
+          print("Production Compose defaults and loopback bindings verified")
+          '
+          docker compose -f docker-compose.yml -f docker-compose.demo.yml config --format json | python3 -c '
+          import json, sys
+          api = json.load(sys.stdin)["services"]["api"]
+          assert api["environment"]["AUTH_ENABLED"] == "false"
+          assert api["environment"]["API_DEV_MODE"] == "true"
+          assert api["volumes"][0]["source"] == "api-demo-data"
+          print("Explicit demo uses a separate data volume")
+          '
+
+      - name: Verify production authentication and secure container startup
+        run: python3 .github/scripts/docker-auth-smoke.py "forecasting-product:${{ github.sha }}"
+
       - name: Upload Docker smoke evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -297,7 +384,7 @@ jobs:
   ci-gate:
     name: CI gate
     if: always()
-    needs: [lint, validation, forecast-intent, process-safety, test, build, frontend, automation]
+    needs: [lint, validation, forecast-intent, process-safety, test, build, frontend, automation, authentication]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

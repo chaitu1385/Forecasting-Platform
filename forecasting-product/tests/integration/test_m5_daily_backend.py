@@ -74,6 +74,8 @@ def _make_app(data_dir: str, metrics_dir: str):
         data_dir=data_dir,
         metrics_dir=metrics_dir,
         auth_enabled=False,
+        dev_mode=True,
+        jwt_secret="",
         audit_log_path=str(Path(data_dir) / "audit_log"),
     )
 

@@ -67,6 +67,8 @@ def main() -> None:
             data_dir=str(output / "data"),
             metrics_dir=str(output / "metrics"),
             auth_enabled=False,
+            dev_mode=True,
+            jwt_secret="",
         )
         config = (
             "forecast:\n"

@@ -78,17 +78,20 @@ python forecasting-product/scripts/run_forecast.py \
 
 ### "Authentication required" / "Invalid or expired token"
 
-```
-HTTPException 401: "Authentication required. Provide a Bearer token."
-HTTPException 401: "Invalid or expired token."
-```
+**Cause:** The production API has no valid, active operator-signed token. Missing,
+invalid or expired tokens return 401; inactive identity and wrong-role requests
+return 403. There is no HTTP token issuer.
 
-**Cause:** Auth is enabled but no valid token was provided.
+**Fix:** Ask your trusted operator to issue a fresh token with the required role
+using `scripts/issue_token.py`, then paste it into the production login field.
+The CLI defaults to one hour (1-24 hours supported). Do not put the token in
+command arguments, URLs, logs or browser storage. Reload deliberately signs out;
+it does not restore an old localStorage session. See
+[Authentication Setup](DEPLOYMENT.md#authentication-setup).
 
-**Fix:**
-1. Get a token: `curl -X POST "http://localhost:8000/auth/token?username=user&role=data_scientist"`
-2. Use it: `curl -H "Authorization: Bearer <token>" http://localhost:8000/forecast/retail`
-3. Tokens expire after 24 hours — request a new one.
+For startup rejection, check the exact production/demo settings and a dedicated
+random `JWT_SECRET_KEY`. Missing keys never enable anonymous access. Use an
+explicit demo only for isolated synthetic data, not to bypass a production error.
 
 ---
 
@@ -501,9 +504,9 @@ npm install
 **Issue:** Login form submits but redirects back or shows error.
 
 **Fix:**
-1. Ensure the API is running and `POST /auth/token` returns a response
-2. Check that `NEXTAUTH_SECRET` is set in `.env.local` for production
-3. In development, NextAuth uses a default secret — verify the API returns valid JWT tokens
+1. Check public `/auth/status`. Unavailable or inconsistent mode discovery deliberately disables sign-in.
+2. Production requires a fresh trusted-operator-issued token verified by `/auth/me`; there is no `/auth/token`, password login or SSO provider.
+3. Explicit demo requires `AUTH_ENABLED=false`, `API_DEV_MODE=true` and no signing key. A missing key never enables anonymous production access. `NEXTAUTH_*` settings do nothing.
 
 ### `npm run build` fails
 
@@ -520,6 +523,6 @@ npm install
 **Issue:** Pages load but show "Unauthorized" errors when fetching data.
 
 **Fix:**
-1. JWT tokens expire after the configured TTL (default 24 hours). Log out and log back in
-2. Check that the API server's `JWT_SECRET` matches what was used to issue the token
-3. If the API was restarted with a new secret, all existing tokens are invalidated — users must re-authenticate
+1. The operator CLI defaults to one-hour tokens (1-24 hours supported). Ask for a fresh token; reloading the browser intentionally loses in-memory credentials.
+2. Check that the API and trusted operator use the same protected `JWT_SECRET_KEY`; do not print it while diagnosing.
+3. After key rotation, restart every API worker/replica and reissue tokens. Client logout alone does not revoke a copied stateless token.

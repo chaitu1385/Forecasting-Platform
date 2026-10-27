@@ -5,13 +5,17 @@ Usage
 -----
 python scripts/serve.py
 python scripts/serve.py --port 8080 --data-dir data/ --metrics-dir data/metrics/
-python scripts/serve.py --host 0.0.0.0 --port 8000 --reload   # dev mode
+python scripts/serve.py --host 0.0.0.0 --port 8000 --reload   # authenticated hot reload
+python scripts/serve.py --demo --host 127.0.0.1             # explicit unauthenticated demo
 
 Environment variable overrides
 -------------------------------
 API_DATA_DIR      Path to data directory.
 API_METRICS_DIR   Path to metrics store.
 API_VERSION       Version string embedded in /health.
+AUTH_ENABLED      Strict boolean; defaults to true.
+JWT_SECRET_KEY    Required production signing key; never passed as a CLI argument.
+API_DEV_MODE      Strict boolean; defaults to false.
 """
 
 import argparse
@@ -33,12 +37,13 @@ logger = logging.getLogger("serve")
 
 def parse_args():
     p = argparse.ArgumentParser(description="Forecasting Product REST API server")
-    p.add_argument("--host",        default="0.0.0.0",  help="Bind host")
+    p.add_argument("--host",        default=os.environ.get("API_HOST"), help="Bind host (demo defaults to loopback)")
     p.add_argument("--port",        type=int, default=8000, help="Bind port")
     p.add_argument("--data-dir",    default=os.environ.get("API_DATA_DIR", "data/"),
                    help="Root data directory for forecasts")
-    p.add_argument("--metrics-dir", default=os.environ.get("API_METRICS_DIR", "data/metrics/"),
+    p.add_argument("--metrics-dir", default=os.environ.get("API_METRICS_DIR"),
                    help="Metrics store directory")
+    p.add_argument("--demo", action="store_true", help="Explicit unauthenticated local demo; do not use in production")
     p.add_argument("--reload",      action="store_true", help="Enable hot-reload (dev mode)")
     p.add_argument("--workers",     type=int, default=1,
                    help="Number of Uvicorn worker processes (production)")
@@ -48,23 +53,43 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # Patch environment so create_app picks up the right directories
-    os.environ["API_DATA_DIR"]    = args.data_dir
-    os.environ["API_METRICS_DIR"] = args.metrics_dir
+    os.environ["API_DATA_DIR"] = str(Path(args.data_dir).resolve())
+    os.environ["API_METRICS_DIR"] = str(
+        Path(args.metrics_dir).resolve() if args.metrics_dir else Path(os.environ["API_DATA_DIR"]) / "metrics"
+    )
+    from src.auth.settings import AuthSettings
 
-    from src.api.app import create_app
+    try:
+        environment = None
+        if args.demo:
+            environment = {
+                "AUTH_ENABLED": os.environ.get("AUTH_ENABLED", "false"),
+                "API_DEV_MODE": os.environ.get("API_DEV_MODE", "true"),
+                "JWT_SECRET_KEY": os.environ.get("JWT_SECRET_KEY", ""),
+            }
+        settings = AuthSettings.from_env(environment=environment)
+        if args.demo and not settings.dev_mode:
+            raise ValueError("--demo conflicts with production authentication settings")
+    except (ValueError, RuntimeError) as exc:
+        logger.error("Authentication configuration rejected: %s", exc)
+        raise SystemExit(2) from None
+    if args.demo:
+        os.environ["AUTH_ENABLED"] = "false"
+        os.environ["API_DEV_MODE"] = "true"
+
     import uvicorn
 
-    app = create_app(data_dir=args.data_dir, metrics_dir=args.metrics_dir)
-
-    logger.info("Starting Forecasting Product API on %s:%d", args.host, args.port)
-    logger.info("  data_dir    = %s", args.data_dir)
-    logger.info("  metrics_dir = %s", args.metrics_dir)
-    logger.info("  Swagger UI  = http://%s:%d/docs", args.host, args.port)
+    host = args.host or ("127.0.0.1" if settings.dev_mode else "0.0.0.0")
+    logger.info("Starting Forecasting Product API on %s:%d", host, args.port)
+    logger.info("  mode        = %s", settings.mode)
+    logger.info("  data_dir    = %s", os.environ["API_DATA_DIR"])
+    logger.info("  metrics_dir = %s", os.environ["API_METRICS_DIR"])
+    logger.info("  Swagger UI  = http://%s:%d/docs", host, args.port)
 
     uvicorn.run(
-        app,
-        host=args.host,
+        "src.api.app:create_app",
+        factory=True,
+        host=host,
         port=args.port,
         reload=args.reload,
         workers=args.workers if not args.reload else 1,

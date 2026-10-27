@@ -22,13 +22,13 @@ python -m pytest forecasting-product/tests/ -v
 python -m pytest forecasting-product/tests/test_platform.py -v
 
 # Start the REST API server
-python forecasting-product/scripts/serve.py --port 8000 --data-dir data/
+python forecasting-product/scripts/serve.py --demo --port 8000 --data-dir data/
 
 # Start Next.js frontend
 cd forecasting-product/frontend && npm install && npm run dev
 
 # Docker quick-start (API + Next.js)
-docker compose up
+docker compose -f docker-compose.yml -f docker-compose.demo.yml up --build
 
 # Run forecast pipeline
 python forecasting-product/scripts/run_forecast.py --config forecasting-product/configs/platform_config.yaml --lob retail
@@ -64,7 +64,7 @@ forecasting-product/
 │   │       ├── analytics.py    # GET /metrics/{lob}/fva, calibration; POST shap, decompose, compare, constrain
 │   │       └── governance.py   # GET /governance/model-cards, lineage; POST export
 │   ├── audit/              # Append-only Parquet audit logging
-│   ├── auth/               # RBAC (5 roles, 11 permissions), JWT tokens
+│   ├── auth/               # AuthSettings, strict JWT/RBAC, owner-only operator token output
 │   ├── backtesting/        # Walk-forward validation, champion selection
 │   ├── config/             # YAML schema + loader (dataclass-driven)
 │   ├── data/               # Data loading, preprocessing, validation, demand cleansing, regressor screening, external regressors
@@ -114,7 +114,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 1611 tests (pytest)
+├── tests/                  # 1689 tests (pytest)
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 └── notebooks/              # Jupyter notebooks for exploration
@@ -167,12 +167,33 @@ backtest:
 
 Helper functions: `get_frequency_profile(freq)` returns the profile dict; `freq_timedelta(freq, periods)` returns a `timedelta` for date arithmetic. All models, backtesting, validation, and data processing use these instead of hardcoded weekly values.
 
+## Authentication contract
+
+The factory, `serve.py` and container use `AUTH_ENABLED=true`, `API_DEV_MODE=false`
+by default and require a dedicated random `JWT_SECRET_KEY`. Invalid booleans,
+contradictory modes and missing/weak keys fail startup. Explicit demo requires
+auth false/dev true/no key; `--demo` does not discard contradictory environment
+settings. Test clients must declare `auth_enabled=False, dev_mode=True, jwt_secret=""`.
+Never replace RBAC globally with an admin stub.
+
+There is no HTTP token issuer. `scripts/issue_token.py` is a trusted local
+operator tool, writing one new private file (POSIX 0600; atomic verified Windows
+DACL), never a credential argument or stdout token. It is an MVP JWT trust model,
+not SSO/password auth or a user directory. Signed inactive claims are denied;
+per-user revocation is not live. Use short expiry or coordinated key rotation.
+
+`/auth/status` is nonsensitive and public; `/auth/me` verifies identity and role.
+Frontend credentials stay in tab memory only. Logout, expiry, 401 and replacement
+login clear protected caches; stale requests cannot affect a newer session.
+Production never trusts a role picker or restores legacy localStorage auth.
+Only explicit demo renders role simulation; production seeding is disabled.
+
 ## Testing
 
 - Framework: pytest
 - Test files mirror source structure with `test_` prefix
 - Helper fixtures use `_make_*` factory functions (e.g., `_make_weekly_actuals`)
-- 1611 cases across 62 test modules; run the full suite without module exclusions
+- 1689 cases across 64 test modules; run the full suite without module exclusions
 - Key test modules: `test_platform.py` (85 tests), `test_sku_mapping.py` (81), `test_ai_*.py` (73), `test_forecast_explainability.py` (59), `test_intermittent_demand.py` (55), `test_observability.py` (41), `test_file_classifier.py` (26), `test_file_merger.py` (20)
 - Focused forecast-intent coverage: `test_forecast_intent.py` (107 real ASGI cases),
   plus frontend `e2e/pipeline-execution.test.tsx` and `e2e/data-onboarding-state.test.tsx`
@@ -192,15 +213,20 @@ Helper functions: `get_frequency_profile(freq)` returns the profile dict; `freq_
   class gets private files, client and response state. Only these classes receive
   a 1200-second test timeout; process regressions retain their 90-second deadline.
 - `test_docker_seed.py` covers cold/restart path consistency and seed/process
-  failure handling. `.github/scripts/*.test.cjs` contains 57 automation tests.
+  failure handling. `.github/scripts/*.test.cjs` contains 61 automation tests.
   Keep the `CI gate` required-job list aligned with its `needs` and evaluator;
   no failed/cancelled/skipped constituent may pass it.
+- Authentication: 60 JWT/RBAC/private-output cases, 18 real startup cases and
+  11 seeder cases run in a required Linux/Windows job. Frontend coverage includes
+  20 memory/session cases, eight explicit-demo browser cases and an isolated
+  production browser/API flow with private synthetic credentials and capture
+  disabled. Never upload that fixture's credentials or enable tracing.
 
 ## Key Dependencies
 
-Core: polars, statsforecast, mlforecast, lightgbm, xgboost, scikit-learn, fastapi, pyyaml, duckdb
+Core: polars, statsforecast, mlforecast, lightgbm, xgboost, scikit-learn, fastapi, pyyaml, duckdb, pyjwt
 Frontend: next, react, typescript, tailwindcss, recharts, @tanstack/react-query, next-auth, plotly
-Optional: neuralforecast, pyspark, shap, pyjwt, bcrypt, holidays, delta-spark, azure-identity
+Optional: neuralforecast, pyspark, shap, bcrypt, holidays, delta-spark, azure-identity
 
 ## Documentation Convention
 

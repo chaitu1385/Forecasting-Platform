@@ -1440,7 +1440,10 @@ class TestRestApi:
     def _make_app(self, tmpdir: str):
         """Create a test app pointing at a temp directory."""
         from src.api.app import create_app
-        return create_app(data_dir=tmpdir, metrics_dir=os.path.join(tmpdir, "metrics"))
+        return create_app(
+            data_dir=tmpdir, metrics_dir=os.path.join(tmpdir, "metrics"),
+            auth_enabled=False, dev_mode=True, jwt_secret="",
+        )
 
     def _write_forecast_parquet(self, tmpdir: str, lob: str):
         """Write a minimal forecast Parquet to the expected location."""

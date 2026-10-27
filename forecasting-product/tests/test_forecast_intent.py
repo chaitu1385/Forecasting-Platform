@@ -46,6 +46,8 @@ def client(tmp_path, monkeypatch):
         metrics_dir=str(tmp_path / "data" / "metrics"),
         audit_log_path=str(tmp_path / "audit"),
         auth_enabled=False,
+        dev_mode=True,
+        jwt_secret="",
     )
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client

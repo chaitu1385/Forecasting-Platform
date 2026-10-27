@@ -6,7 +6,7 @@ import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
 export function Header() {
-  const { user, isAuthenticated, logout } = useAuth();
+  const { user, isAuthenticated, mode, logout } = useAuth();
   const router = useRouter();
   const [dark, setDark] = useState(false);
 
@@ -27,7 +27,7 @@ export function Header() {
 
   const handleLogout = () => {
     logout();
-    router.push("/login");
+    router.replace("/login");
   };
 
   return (
@@ -37,6 +37,11 @@ export function Header() {
         <h1 className="text-sm font-semibold text-foreground">
           Sales Forecasting Product
         </h1>
+        {mode === "demo" && (
+          <span className="rounded border border-amber-500 px-2 py-1 text-xs font-medium">
+            Demo — authentication disabled
+          </span>
+        )}
       </div>
 
       {/* Right: user info + controls */}

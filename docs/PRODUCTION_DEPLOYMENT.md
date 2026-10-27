@@ -8,16 +8,25 @@ This guide covers deploying the Forecasting Platform to production environments 
 
 ### Docker Compose (included)
 
-The repo ships with `docker-compose.yml` at the project root:
+The repo ships with production-default `docker-compose.yml` at the project root.
+First inject `JWT_SECRET_KEY` from protected secret storage and provision a
+private operator token as described in [Authentication Setup](DEPLOYMENT.md#authentication-setup).
+The image refuses to start without valid signing configuration and does not seed
+demo data. Password authentication, SSO and an account directory are not provided.
 
 ```bash
-docker compose up -d
+docker compose up --build -d
 ```
 
 | Service | Port | Resources | Healthcheck |
 |---------|------|-----------|-------------|
 | `api` | 8000 | 2 CPU / 2 GB | `GET /health` |
 | `frontend` | 3000 | 0.5 CPU / 512 MB | — |
+
+Host ports bind to loopback. Use an HTTPS same-origin reverse proxy for remote
+access; compile its public API URL into the frontend build. The separate
+`docker-compose.demo.yml` is only for local synthetic demonstrations and uses a
+different volume. Do not mix demo data or credentials into production.
 
 The API image is built with `python:3.10-slim` and includes `libgomp1` for LightGBM. The frontend uses a multi-stage Node.js 20 Alpine build with a non-root `nextjs` user.
 
@@ -31,15 +40,21 @@ The API image is built with `python:3.10-slim` and includes `libgomp1` for Light
 | `API_RATE_LIMIT` | No | Requests/min/IP (default: `100`) |
 | `ANTHROPIC_API_KEY` | For AI features | Claude API key |
 | `NIXTLA_API_KEY` | For TimeGPT | Nixtla API key |
-| `JWT_SECRET_KEY` | Production | Secret for JWT signing |
-| `AUTH_ENABLED` | Production | Set `1` to require auth |
-| `NEXT_PUBLIC_API_URL` | Frontend | Backend URL (default: `http://localhost:8000`) |
+| `JWT_SECRET_KEY` | Production | Dedicated key from at least 32 cryptographically random bytes |
+| `AUTH_ENABLED` | Defaults true | Only `true`/`false`/`1`/`0`; false requires explicit demo |
+| `API_DEV_MODE` | Defaults false | Must remain false in production |
+| `NEXT_PUBLIC_API_URL` | Frontend build | Public API URL; rebuild to change (default: `http://localhost:8000`) |
 
 ### Secrets Management
 
 - **Never** bake API keys into images. Pass via environment variables or a secrets manager.
 - For Kubernetes, use `Secret` objects mounted as env vars.
-- For Docker Compose, use a `.env` file (git-ignored) or Docker secrets.
+- For Docker Compose, inject a protected environment variable. A file-mounted
+  Docker secret is not automatically read by the application; use your trusted
+  deployment bootstrap to inject it without logging it.
+- Never copy the key into frontend settings. Protect Docker daemon access, which
+  can inspect container environments. Coordinate key rotation across every
+  replica and reissue short-lived tokens; there is no immediate per-user revocation.
 
 ---
 
@@ -79,6 +94,15 @@ spec:
         env:
         - name: API_DATA_DIR
           value: "/data"
+        - name: AUTH_ENABLED
+          value: "true"
+        - name: API_DEV_MODE
+          value: "false"
+        - name: JWT_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: forecast-secrets
+              key: jwt-signing-key
         - name: ANTHROPIC_API_KEY
           valueFrom:
             secretKeyRef:

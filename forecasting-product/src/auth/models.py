@@ -76,6 +76,7 @@ class User:
     is_active: bool = True
     created_at: Optional[datetime] = None
     last_login: Optional[datetime] = None
+    expires_at: Optional[int] = None
 
     def has_permission(self, permission: Permission) -> bool:
         """Check if user's role grants the given permission."""

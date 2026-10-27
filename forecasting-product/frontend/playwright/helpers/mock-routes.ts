@@ -1,4 +1,6 @@
 import type { Page } from "@playwright/test";
+import { ROLE_PERMISSIONS } from "../../src/lib/constants";
+import type { Role } from "../../src/lib/types";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Mock API responses for Playwright tests.
@@ -312,7 +314,16 @@ export async function mockApiRoutes(page: Page) {
     if (path === "/health") return json(MOCK.health);
 
     // Auth
-    if (path.startsWith("/auth/token")) return json(MOCK.token);
+    if (path === "/auth/status") return json({ mode: "demo", auth_required: false });
+    if (path === "/auth/me") {
+      const headers = route.request().headers();
+      const role = headers["x-demo-role"] as Role;
+      if (!Object.prototype.hasOwnProperty.call(ROLE_PERMISSIONS, role)) return json({ detail: "Invalid demo role" }, 401);
+      return json({
+        mode: "demo", username: decodeURIComponent(headers["x-demo-user"] ?? ""),
+        email: "", role, permissions: ROLE_PERMISSIONS[role], expires_at: null,
+      });
+    }
 
     // Metrics — leaderboard, drift, FVA, calibration, SHAP
     if (path.includes("/metrics/leaderboard/")) return json(MOCK.leaderboard);

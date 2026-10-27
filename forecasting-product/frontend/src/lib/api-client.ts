@@ -4,7 +4,9 @@
 
 import type {
   HealthResponse,
-  TokenResponse,
+  AuthIdentity,
+  AuthStatus,
+  Role,
   ForecastResponse,
   LeaderboardResponse,
   DriftResponse,
@@ -61,18 +63,25 @@ class ApiError extends Error {
   }
 }
 
-function getToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return localStorage.getItem("access_token");
+type BearerCredentials = { kind: "bearer"; token: string; expiresAt?: number };
+type DemoCredentials = { kind: "demo"; username: string; role: Role };
+type RequestCredentials = BearerCredentials | DemoCredentials;
+export type ApiSession = (BearerCredentials & { expiresAt: number }) | DemoCredentials;
+export const AUTH_INVALIDATED_EVENT = "forecasting:authentication-invalidated";
+let currentSession: ApiSession | null = null;
+
+export function setApiSession(session: ApiSession | null): void {
+  if (session && typeof window === "undefined") {
+    throw new Error("Authentication sessions are browser-only");
+  }
+  currentSession = session ? { ...session } : null;
 }
 
-function isTokenExpired(token: string): boolean {
-  try {
-    const payload = JSON.parse(atob(token.split(".")[1]));
-    if (!payload.exp) return false;
-    return Date.now() >= payload.exp * 1000;
-  } catch {
-    return false;
+function invalidateSession(owner: ApiSession | null): void {
+  if (!owner || owner !== currentSession) return;
+  currentSession = null;
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(AUTH_INVALIDATED_EVENT));
   }
 }
 
@@ -83,16 +92,28 @@ function sleep(ms: number): Promise<void> {
 async function request<T>(
   path: string,
   options: RequestInit = {},
+  authentication?: RequestCredentials | null,
 ): Promise<T> {
-  const token = getToken();
-  const headers: Record<string, string> = {
-    ...(options.headers as Record<string, string>),
+  const owner = currentSession;
+  const credentials = authentication === undefined ? owner : authentication;
+  const token = credentials?.kind === "bearer" ? credentials.token : null;
+  const headers: Record<string, string> = {};
+  new Headers(options.headers).forEach((value, key) => { headers[key] = value; });
+  for (const key of ["authorization", "x-demo-user", "x-demo-role"]) delete headers[key];
+  if (credentials?.kind === "demo") {
+    headers["X-Demo-User"] = encodeURIComponent(credentials.username);
+    headers["X-Demo-Role"] = credentials.role;
+  }
+  const assertCurrentSession = () => {
+    if (authentication === undefined && owner !== currentSession) {
+      throw new ApiError(401, "Session changed. Sign in again.");
+    }
   };
 
   if (token) {
-    if (isTokenExpired(token)) {
-      localStorage.removeItem("access_token");
-      localStorage.removeItem("user");
+    if (credentials?.kind === "bearer" && credentials.expiresAt !== undefined
+        && Date.now() >= credentials.expiresAt * 1000) {
+      if (authentication === undefined) invalidateSession(owner);
       throw new ApiError(401, "Session expired. Please log in again.");
     }
     headers["Authorization"] = `Bearer ${token}`;
@@ -106,6 +127,7 @@ async function request<T>(
   let lastError: ApiError | null = null;
 
   for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    assertCurrentSession();
     let res: Response;
     try {
       res = await fetch(`${BASE_URL}${path}`, {
@@ -113,6 +135,7 @@ async function request<T>(
         headers,
       });
     } catch (err) {
+      if (options.signal?.aborted || (err instanceof Error && err.name === "AbortError")) throw err;
       lastError = new ApiError(
         0,
         `Unable to reach the API server at ${BASE_URL}. ` +
@@ -126,7 +149,12 @@ async function request<T>(
       throw lastError;
     }
 
+    assertCurrentSession();
     if (!res.ok) {
+      if (res.status === 401) {
+        if (authentication === undefined) invalidateSession(owner);
+        throw new ApiError(401, "Invalid or expired authentication. Sign in again.");
+      }
       const text = await res.text().catch(() => "Unknown error");
       lastError = new ApiError(res.status, text);
 
@@ -137,7 +165,9 @@ async function request<T>(
       throw lastError;
     }
 
-    return res.json() as Promise<T>;
+    const result: T = await res.json();
+    assertCurrentSession();
+    return result;
   }
 
   throw lastError ?? new ApiError(0, "Request failed after retries");
@@ -147,14 +177,15 @@ async function request<T>(
 
 export const api = {
   // Health
-  health: () => request<HealthResponse>("/health"),
+  health: () => request<HealthResponse>("/health", {}, null),
 
   // Auth
-  getToken: (username: string, role: string = "viewer") =>
-    request<TokenResponse>(
-      `/auth/token?username=${encodeURIComponent(username)}&role=${encodeURIComponent(role)}`,
-      { method: "POST" },
-    ),
+  authStatus: (signal?: AbortSignal) =>
+    request<AuthStatus>("/auth/status", { signal }, null),
+  getCurrentUser: (token: string, signal?: AbortSignal) =>
+    request<AuthIdentity>("/auth/me", { signal }, { kind: "bearer", token }),
+  getDemoUser: (username: string, role: Role, signal?: AbortSignal) =>
+    request<AuthIdentity>("/auth/me", { signal }, { kind: "demo", username, role }),
 
   // Forecasts
   getForecasts: (lob: string, params?: { series_id?: string; horizon?: number }) => {
