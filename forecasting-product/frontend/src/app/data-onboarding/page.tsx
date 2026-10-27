@@ -20,7 +20,10 @@ export default function DataOnboardingPage() {
   const [llmEnabled, setLlmEnabled] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const analyzeMutation = useAnalyze();
-  const result: AnalysisResponse | undefined = analyzeMutation.data;
+  const analyzedInput = analyzeMutation.variables;
+  const result: AnalysisResponse | undefined =
+    analyzedInput?.file === uploadedFile && analyzedInput?.lobName === lobName
+      && analyzedInput?.llmEnabled === llmEnabled ? analyzeMutation.data : undefined;
 
   const handleFileSelect = (file: File) => {
     setUploadedFile(file);
@@ -42,11 +45,15 @@ export default function DataOnboardingPage() {
 
         <div className="flex flex-wrap items-end gap-4">
           <div className="space-y-1">
-            <label className="text-xs font-medium">LOB Name</label>
+            <label htmlFor="onboarding-lob" className="text-xs font-medium">LOB Name</label>
             <input
+              id="onboarding-lob"
               type="text"
               value={lobName}
-              onChange={(e) => setLobName(e.target.value)}
+              onChange={(e) => {
+                setLobName(e.target.value);
+                analyzeMutation.reset();
+              }}
               className="rounded-md border bg-background px-3 py-1.5 text-sm w-40"
             />
           </div>
@@ -54,7 +61,10 @@ export default function DataOnboardingPage() {
             <input
               type="checkbox"
               checked={llmEnabled}
-              onChange={(e) => setLlmEnabled(e.target.checked)}
+              onChange={(e) => {
+                setLlmEnabled(e.target.checked);
+                analyzeMutation.reset();
+              }}
               className="rounded"
             />
             Enable AI Interpretation

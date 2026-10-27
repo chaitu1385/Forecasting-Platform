@@ -38,7 +38,7 @@ QueryProvider          -- TanStack React Query (staleTime: 5min, retry: 1)
 |-------|------|-------------|
 | `/` | Dashboard | Home page |
 | `/login` | Login | Username + role selection, JWT token acquisition |
-| `/data-onboarding` | Data Onboarding | File upload, auto-analysis, config generation |
+| `/data-onboarding` | Data Onboarding | File upload, auto-analysis, config generation, backtest-to-forecast execution |
 | `/series-explorer` | Series Explorer | SBC classification, break detection, cleansing audit, regressor screening |
 | `/hierarchy` | Hierarchy | Tree building, sunburst visualization, aggregation, reconciliation |
 | `/backtest` | Backtest Results | Pipeline execution, leaderboard, FVA, calibration, SHAP, AI config tuner |
@@ -134,7 +134,55 @@ const answer = await api.aiExplain({ series_id: "SKU_001", question: "Why is thi
 | Server state | React Query | `staleTime: 5min`, `retry: 1`, `refetchOnWindowFocus: false` |
 | Auth state | `AuthProvider` context | JWT + user object in `localStorage`, `useAuth()` hook |
 | LOB selection | `LobProvider` context | Persisted to `localStorage`, `useLob()` hook |
-| Async operations | `useAsyncOperation` hook | Generic loading/error/result state for ad-hoc API calls |
+| Async operations | `useAsyncOperation` hook | Loading/error/result state; only the latest operation may update state, and reset/unmount invalidates pending completions |
+
+### Pipeline Intent
+
+`PipelineExecutionPanel` sends the current backtest's `champion_model` and
+`execution.horizon_periods` with the same YAML to `api.runForecast`. Without a
+backtest it omits these overrides, allowing the API to resolve the first configured
+model and configured horizon. The optional YAML upload replaces the generated
+config without parsing or merging it in JavaScript. Empty uploaded YAML is still
+sent and rejected by the API rather than treated as absent.
+
+Changes to the actuals file, LOB, generated YAML, or uploaded config invalidate both
+operations. Starting another backtest invalidates the old winner and forecast.
+`useAsyncOperation` uses generation ownership to ignore out-of-order successes,
+errors, and loading updates after reset. This does not cancel already-running
+server computation. Data Onboarding associates analysis results with the
+submitted file/LOB/AI settings, so stale analysis cannot supply a new plan.
+
+`PipelineRunResponse.execution` is a required typed contract matching the API's
+`PipelineExecutionSettings` and `EffectivePipelineConfig`. Forecast results show
+the effective model, horizon and frequency; both results expose an expandable,
+allowlisted settings summary. Configured paths, webhook addresses, AI credentials,
+and arbitrary metadata are not included. Contract and state regressions live in
+`e2e/pipeline-execution.test.tsx` and `e2e/data-onboarding-state.test.tsx`.
+
+### Isolated Real-API Regression
+
+`playwright/integration/forecast-intent.spec.ts` exercises real analysis, a
+Croston-winning backtest, a five-period forecast, visible effective settings, and
+invalid-config no-write behavior. It skips unless `FORECAST_INTENT_API_URL` and
+`FORECAST_INTENT_DATA_DIR` explicitly identify the dedicated loopback fixture.
+It never calls provider models or uses real datasets.
+
+Start the fixture with core/API dependencies (plus `uvicorn`) using a **new**
+temporary output directory:
+
+```text
+python playwright/fixtures/forecast_intent_server.py --data-dir <new-temp-directory> --frontend-origin http://localhost:3000
+```
+
+In a separate frontend terminal, set `NEXT_PUBLIC_API_URL` and
+`FORECAST_INTENT_API_URL` to `http://127.0.0.1:18118`, and
+`FORECAST_INTENT_DATA_DIR` to that same absolute temporary directory. Run
+`npm run test:pw -- playwright/integration/forecast-intent.spec.ts`. The existing
+Playwright config starts the frontend on port 3000; ensure any reused dev server
+has that API URL. A Playwright Chromium installation is required. The test permits
+only the UI and fixture API origins and verifies the fixture marker and API title.
+Stop the fixture afterward and delete only its dedicated temporary output directory.
+Screenshots, traces and request/response evidence are written to Playwright results.
 
 ## Custom Hooks
 

@@ -326,15 +326,57 @@ export interface CreateOverrideRequest {
 
 // ── Pipeline ─────────────────────────────────────────────────────────────────
 
+export interface EffectivePipelineConfig {
+  frequency: "D" | "W" | "M" | "Q";
+  season_length: number;
+  series_id_column: string;
+  time_column: string;
+  target_column: string;
+  forecasters: string[];
+  intermittent_forecasters: string[];
+  quantiles: number[];
+  fill_gaps: boolean;
+  fill_value: number;
+  min_series_length_periods: number;
+  drop_zero_series: boolean;
+  input_validation_enabled: boolean;
+  cleansing_enabled: boolean;
+  constraints_enabled: boolean;
+  post_validation_enabled: boolean;
+  halt_on_blocker: boolean;
+  min_grade: string;
+  backtest_n_folds: number;
+  backtest_val_periods: number;
+  backtest_gap_periods: number;
+  selection_strategy: string;
+  champion_granularity: string;
+  primary_metric: string;
+  secondary_metric: string;
+}
+
+export interface PipelineExecutionSettings {
+  model_id: string | null;
+  model_source: "request" | "config" | "default" | "backtest";
+  horizon_periods: number;
+  horizon_source: "request" | "config" | "default";
+  config_source: "upload" | "default";
+  config: EffectivePipelineConfig;
+}
+
 export interface PipelineRunResponse {
   lob: string;
   status: string;
+  execution: PipelineExecutionSettings;
   champion_model?: string;
-  best_wmape?: number;
+  best_wmape?: number | null;
   leaderboard?: Record<string, unknown>[];
+  model_id?: string;
+  horizon?: number;
   forecast_rows?: number;
   series_count?: number;
   forecast_preview?: Record<string, unknown>[];
+  validation_grade?: string;
+  validation_score?: number;
 }
 
 export interface ManifestItem {

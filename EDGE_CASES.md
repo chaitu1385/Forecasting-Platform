@@ -290,3 +290,26 @@ A catalog of the failure modes that break forecasting platforms — what goes wr
 **How the product handles it:** `ForecastPipeline` validates before any forecast or manifest write, for both standard and multi-horizon runs. A blocker halts publication when `post_validation.halt_on_blocker` is true; unexpected checker exceptions always propagate when that layer is enabled. Failed validation leaves existing files unchanged, even on a repeat attempt for the same forecast origin. Each run clears its previous validation result and forecast-path state so a failed attempt cannot appear to have succeeded using stale state.
 
 **What to watch for:** `halt_on_blocker` defaults to false, and `min_grade` is warning-only. Set `halt_on_blocker: true` for blocking quality checks; `post_validation.enabled: false` is an explicit opt-out. Forecast keys use both the configured series ID and period, not just the series ID. This guarantee concerns validation failures before publication, not transactional recovery from later filesystem failures or the separate Spark/Fabric pipelines.
+
+---
+
+## 28. Invalid or Stale Forecast Plans
+
+**What happens:** YAML has invalid syntax, a wrong field type (such as `"false"`
+instead of a boolean), or an invalid horizon/model. Alternatively, a planner
+changes inputs while an earlier backtest or analysis is still running.
+
+**How the product handles it:** Both pipeline upload endpoints validate the config
+before constructing the pipeline or its stores and return a useful HTTP 400 error
+instead of substituting defaults. Explicit query horizons must be positive
+integers (HTTP 422). Valid explicit overrides take precedence over YAML, then
+platform defaults. The execution panel clears dependent results on input changes,
+ignores stale completions, and forwards only the current winner and horizon.
+Responses identify the resolved model, horizon, settings, and their sources.
+
+**What to watch for:** An absent config means defaults; an empty/null uploaded
+document is invalid (use `{}` for defaults explicitly). Standalone forecasting
+chooses the first configured model, not a remembered or guessed winner.
+Invalidation prevents stale UI selection, not cancellation of server work or
+transactional/immutable output storage. Multi-model backtest results are not
+silently reduced to their first row for this single-model handoff.

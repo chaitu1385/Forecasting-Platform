@@ -2,25 +2,144 @@
 
 from __future__ import annotations
 
+import inspect
 import io
 import json
 import logging
-from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import polars as pl
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 
 from ...auth.models import Permission, User
 from ...auth.rbac import require_permission
+from ...config.loader import parse_config_yaml
+from ...config.schema import PlatformConfig
+from ...forecasting.registry import registry
+from ...metrics.definitions import CONTEXT_METRICS, METRIC_REGISTRY
 from ..deps import validate_path_param, validate_upload_size
+from ..schemas import EffectivePipelineConfig, PipelineExecutionSettings, PipelineRunResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
 
 
-@router.post("/backtest")
+def _can_run_standalone(model_id: Optional[str], frequency: str) -> bool:
+    """Check constructor arguments without building/downloading a model."""
+    if model_id not in registry.available:
+        return False
+    signature = inspect.signature(registry.get(model_id))
+    kwargs = {"frequency": frequency} if "frequency" in signature.parameters else {}
+    try:
+        signature.bind(**kwargs)
+    except TypeError:
+        return False
+    return True
+
+
+async def _load_run_config(
+    request: Request, config_file: Optional[UploadFile], lob: str,
+) -> PlatformConfig:
+    """Resolve and validate a plan before constructing a pipeline or its stores."""
+    if config_file is None:
+        config = PlatformConfig(lob=lob)
+    else:
+        content = await validate_upload_size(config_file)
+        try:
+            config = parse_config_yaml(content.decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise HTTPException(400, detail="Invalid config: YAML must be UTF-8") from exc
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(400, detail=f"Invalid config: {exc}") from exc
+
+    fc = config.forecast
+    if not fc.forecasters:
+        raise HTTPException(400, detail="Invalid config: forecast.forecasters must not be empty")
+    for field in ("forecasters", "intermittent_forecasters"):
+        for model in getattr(fc, field):
+            if model not in registry.available:
+                raise HTTPException(400, detail=f"Invalid config: forecast.{field} has unknown model {model!r}")
+            if not _can_run_standalone(model, fc.frequency):
+                raise HTTPException(
+                    400,
+                    detail=f"Invalid config: model {model!r} requires configured components; choose a standalone forecaster",
+                )
+    if any(not 0 < q < 1 for q in fc.quantiles):
+        raise HTTPException(400, detail="Invalid config: forecast.quantiles must be between 0 and 1")
+    columns = (fc.series_id_column, fc.time_column, fc.target_column)
+    if any(not col.strip() for col in columns) or len(set(columns)) != 3:
+        raise HTTPException(400, detail="Invalid config: forecast columns must be non-empty and distinct")
+    if config.post_validation.min_grade not in {"A", "B", "C", "D", "F"}:
+        raise HTTPException(400, detail="Invalid config: post_validation.min_grade must be A, B, C, D or F")
+    bt = config.backtest
+    available_metrics = METRIC_REGISTRY.keys() | CONTEXT_METRICS.keys()
+    for field, metrics in (
+        ("metrics", config.metrics),
+        ("backtest.primary_metric", [bt.primary_metric]),
+        ("backtest.secondary_metric", [bt.secondary_metric]),
+    ):
+        for metric in metrics:
+            if metric not in available_metrics:
+                raise HTTPException(400, detail=f"Invalid config: {field} has unknown metric {metric!r}")
+    if bt.primary_metric == bt.secondary_metric:
+        raise HTTPException(400, detail="Invalid config: primary_metric and secondary_metric must differ")
+    if not {bt.primary_metric, bt.secondary_metric}.issubset(config.metrics):
+        raise HTTPException(
+            400, detail="Invalid config: metrics must include the backtest primary_metric and secondary_metric",
+        )
+
+    config.lob = lob
+    config.output.metrics_path = str(request.app.state.data_dir / "metrics")
+    config.output.forecast_path = str(request.app.state.data_dir / "forecasts")
+    return config
+
+
+def _execution_settings(
+    config: PlatformConfig,
+    config_file: Optional[UploadFile],
+    model_id: Optional[str],
+    model_source: Literal["request", "config", "default", "backtest"],
+    horizon_overridden: bool = False,
+) -> PipelineExecutionSettings:
+    fc, bt, dq, pv = config.forecast, config.backtest, config.data_quality, config.post_validation
+    return PipelineExecutionSettings(
+        model_id=model_id,
+        model_source=model_source,
+        horizon_periods=fc.horizon_periods,
+        horizon_source="request" if horizon_overridden else ("config" if config_file else "default"),
+        config_source="upload" if config_file else "default",
+        config=EffectivePipelineConfig(
+            frequency=fc.frequency,
+            season_length=fc.season_length,
+            series_id_column=fc.series_id_column,
+            time_column=fc.time_column,
+            target_column=fc.target_column,
+            forecasters=fc.forecasters,
+            intermittent_forecasters=fc.intermittent_forecasters,
+            quantiles=fc.quantiles,
+            fill_gaps=dq.fill_gaps,
+            fill_value=dq.fill_value,
+            min_series_length_periods=dq.effective_min_series_length(fc.frequency),
+            drop_zero_series=dq.drop_zero_series,
+            input_validation_enabled=dq.validation.enabled,
+            cleansing_enabled=dq.cleansing.enabled,
+            constraints_enabled=fc.constraints.enabled,
+            post_validation_enabled=pv.enabled,
+            halt_on_blocker=pv.halt_on_blocker,
+            min_grade=pv.min_grade,
+            backtest_n_folds=bt.n_folds,
+            backtest_val_periods=bt.val_periods,
+            backtest_gap_periods=bt.gap_periods,
+            selection_strategy=bt.selection_strategy,
+            champion_granularity=bt.champion_granularity,
+            primary_metric=bt.primary_metric,
+            secondary_metric=bt.secondary_metric,
+        ),
+    )
+
+
+@router.post("/backtest", response_model=PipelineRunResponse, response_model_exclude_unset=True)
 async def run_backtest(
     request: Request,
     file: UploadFile = File(..., description="Actuals CSV/Parquet"),
@@ -32,6 +151,7 @@ async def run_backtest(
     from ...pipeline.backtest import BacktestPipeline
 
     validate_path_param(lob, "lob")
+    config = await _load_run_config(request, config_file, lob)
     content = await validate_upload_size(file)
     filename = file.filename or ""
     try:
@@ -42,30 +162,7 @@ async def run_backtest(
     except (ValueError, UnicodeDecodeError, OSError) as exc:
         raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}")
 
-    # Load config
-    config = None
-    if config_file:
-        import yaml
-
-        from ...config.loader import _dict_to_config
-        from ...config.schema import PlatformConfig
-        config_content = await validate_upload_size(config_file)
-        try:
-            config_dict = yaml.safe_load(config_content.decode("utf-8"))
-            config = _dict_to_config(config_dict) if config_dict else PlatformConfig(lob=lob)
-            config.lob = lob
-        except (yaml.YAMLError, ValueError, TypeError, UnicodeDecodeError):
-            logging.getLogger(__name__).warning("Invalid config file, using defaults for lob=%s", lob, exc_info=True)
-            config = PlatformConfig(lob=lob)
-    else:
-        from ...config.schema import PlatformConfig
-        config = PlatformConfig(lob=lob)
-
     try:
-        # Point output paths at the API's data directory
-        data_dir = str(request.app.state.data_dir)
-        config.output.metrics_path = str(Path(data_dir) / "metrics")
-        config.output.forecast_path = str(Path(data_dir) / "forecasts")
         pipeline = BacktestPipeline(config=config)
         results = pipeline.run(actuals=df)
     except (ValueError, RuntimeError, KeyError) as exc:
@@ -76,6 +173,7 @@ async def run_backtest(
         "lob": lob,
         "status": "completed",
     }
+    selected_model = None
 
     if isinstance(results, dict):
         # Pipeline returns a dict with: leaderboard, champions, validation, etc.
@@ -102,8 +200,9 @@ async def run_backtest(
 
         champions = results.get("champions")
         if champions is not None and hasattr(champions, "to_dicts") and not champions.is_empty():
-            if "model_id" in champions.columns:
-                summary["champion_model"] = champions["model_id"][0]
+            # A multi-model plan cannot be represented by an arbitrary first row.
+            if "model_id" in champions.columns and champions["model_id"].n_unique() == 1:
+                selected_model = champions["model_id"][0]
 
         val = results.get("validation")
         if val and not val.get("skipped"):
@@ -114,27 +213,48 @@ async def run_backtest(
         if hasattr(results, "leaderboard") and results.leaderboard is not None:
             summary["leaderboard"] = results.leaderboard.to_dicts()
         if hasattr(results, "champion_model_id"):
-            summary["champion_model"] = results.champion_model_id
+            selected_model = results.champion_model_id
         if hasattr(results, "wmape"):
             summary["best_wmape"] = float(results.wmape) if results.wmape else None
 
-    return summary
+    if _can_run_standalone(selected_model, config.forecast.frequency):
+        summary["champion_model"] = selected_model
+    summary["execution"] = _execution_settings(config, config_file, selected_model, "backtest")
+    return PipelineRunResponse(**summary)
 
 
-@router.post("/forecast")
+@router.post("/forecast", response_model=PipelineRunResponse, response_model_exclude_unset=True)
 async def run_forecast(
     request: Request,
     file: UploadFile = File(..., description="Actuals CSV/Parquet"),
     config_file: Optional[UploadFile] = File(None, description="YAML config file"),
     lob: str = Query("default", description="LOB name"),
     model_id: Optional[str] = Query(None, description="Specific model to use"),
-    horizon: int = Query(12, description="Forecast horizon in periods"),
+    horizon: Optional[int] = Query(None, ge=1, description="Override the configured horizon in periods"),
     user: User = Depends(require_permission(Permission.RUN_PIPELINE)),
 ):
     """Run the forecast pipeline on uploaded data."""
     from ...pipeline.forecast import ForecastPipeline
 
     validate_path_param(lob, "lob")
+    config = await _load_run_config(request, config_file, lob)
+    effective_model = model_id if model_id is not None else config.forecast.forecasters[0]
+    if effective_model not in registry.available:
+        raise HTTPException(400, detail=f"Unknown model_id: {effective_model!r}")
+    if not _can_run_standalone(effective_model, config.forecast.frequency):
+        raise HTTPException(
+            400,
+            detail=f"Model {effective_model!r} requires configured components and cannot be selected by this endpoint; choose a standalone model",
+        )
+    if horizon is not None:
+        config.forecast.horizon_weeks = horizon
+    execution = _execution_settings(
+        config,
+        config_file,
+        effective_model,
+        "request" if model_id is not None else ("config" if config_file else "default"),
+        horizon_overridden=horizon is not None,
+    )
     content = await validate_upload_size(file)
     filename = file.filename or ""
     try:
@@ -145,36 +265,11 @@ async def run_forecast(
     except (ValueError, UnicodeDecodeError, OSError) as exc:
         raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}")
 
-    config = None
-    if config_file:
-        import yaml
-
-        from ...config.loader import _dict_to_config
-        from ...config.schema import PlatformConfig
-        config_content = await validate_upload_size(config_file)
-        try:
-            config_dict = yaml.safe_load(config_content.decode("utf-8"))
-            config = _dict_to_config(config_dict) if config_dict else PlatformConfig(lob=lob)
-            config.lob = lob
-        except (yaml.YAMLError, ValueError, TypeError, UnicodeDecodeError):
-            logging.getLogger(__name__).warning("Invalid config file, using defaults for lob=%s", lob, exc_info=True)
-            config = PlatformConfig(lob=lob)
-    else:
-        from ...config.schema import PlatformConfig
-        config = PlatformConfig(lob=lob)
-
     try:
-        # Point output paths at the API's data directory
-        data_dir = str(request.app.state.data_dir)
-        config.output.metrics_path = str(Path(data_dir) / "metrics")
-        config.output.forecast_path = str(Path(data_dir) / "forecasts")
         pipeline = ForecastPipeline(config=config)
-        # Override horizon in config if passed via query param
-        if horizon:
-            config.forecast.horizon_weeks = horizon
         result = pipeline.run(
             actuals=df,
-            champion_model=model_id or "naive_seasonal",
+            champion_model=effective_model,
         )
     except (ValueError, RuntimeError, KeyError) as exc:
         raise HTTPException(status_code=500, detail=f"Forecast pipeline failed: {exc}")
@@ -182,8 +277,9 @@ async def run_forecast(
     summary = {
         "lob": lob,
         "status": "completed",
-        "model_id": model_id or "naive_seasonal",
-        "horizon": horizon,
+        "model_id": effective_model,
+        "horizon": config.forecast.horizon_periods,
+        "execution": execution,
     }
 
     # result is a pl.DataFrame (or dict with "forecast" key for legacy callers)
@@ -202,7 +298,7 @@ async def run_forecast(
         summary["series_count"] = forecast_df[id_col].n_unique() if id_col in forecast_df.columns else 0
         summary["forecast_preview"] = forecast_df.head(100).to_dicts()
 
-    return summary
+    return PipelineRunResponse(**summary)
 
 
 @router.get("/manifests")

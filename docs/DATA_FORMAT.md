@@ -260,6 +260,45 @@ This manifest provides full provenance — you can trace exactly what data, conf
 
 ---
 
+## Output: Pipeline Execution Response
+
+`POST /pipeline/backtest` and `POST /pipeline/forecast` return a typed
+`PipelineRunResponse` (also documented in OpenAPI). Existing fields such as
+`champion_model`, `leaderboard`, `model_id`, `horizon`, `forecast_rows`, and
+`forecast_preview` remain available where applicable. The required `execution`
+object makes resolved intent explicit:
+
+| Field | Meaning |
+|-------|---------|
+| `model_id` | Forecast model, or the single selected backtest result (including a composite); null for multiple/no winners |
+| `model_source` | `request`, `config`, `default`, or `backtest` |
+| `horizon_periods` | Effective production horizon, not the backtest fold length |
+| `horizon_source` | `request`, `config`, or `default` |
+| `config_source` | `upload` (including inherited defaults) or `default` |
+| `config` | Allowlisted frequency, season length, column names, candidate models, quantiles, preprocessing/validation switches and backtest settings |
+
+The top-level `champion_model` is supplied only for a single winner that this
+name-based forecast endpoint can construct. A weighted-ensemble backtest still
+reports `execution.model_id: "weighted_ensemble"` and its selection strategy, but
+omits `champion_model` because its fitted components and weights are not carried
+by a model-name request. The UI blocks that unsupported handoff rather than
+substituting a baseline.
+
+For example, forecasting with `?model_id=croston` and YAML
+`forecast: {horizon_periods: 5, forecasters: [naive_seasonal, croston]}` reports
+`execution.model_id: "croston"`, `model_source: "request"`,
+`horizon_periods: 5`, and `horizon_source: "config"`. Sending `?horizon=3`
+instead reports 3 and `horizon_source: "request"`. With neither file nor overrides,
+the weekly platform default is 39 periods of `naive_seasonal`.
+
+This is a safe settings summary, not a raw configuration dump or persistent run
+catalog. It omits paths, credentials, webhook URLs, and arbitrary config metadata.
+Configuration parse/type/value errors are HTTP 400 responses with a `detail`
+message; query horizon validation uses HTTP 422. Invalid config uploads never
+start a pipeline or replace existing output.
+
+---
+
 ## Output: Metric Store (Parquet)
 
 Backtest results are stored in a date-partitioned Parquet metric store.

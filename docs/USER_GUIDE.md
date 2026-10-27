@@ -360,6 +360,49 @@ The frontend runs at `http://localhost:3000` by default. Set `NEXT_PUBLIC_API_UR
 | **Platform Health** | `/health` | Pipeline manifests, drift alerts, AI anomaly triage, audit log, cost tracking |
 | **S&OP Meeting** | `/sop` | AI commentary, cross-run comparison, model governance, BI export |
 
+### Running the Selected Forecast Plan
+
+After analyzing a file in **Data Onboarding**, the **Pipeline Execution** panel uses
+the recommended YAML by default. Optionally upload your own `.yaml` or `.yml` under
+**Pipeline Configuration** to replace that recommendation; **Use recommended
+configuration** switches back. The browser sends the YAML unchanged for validation
+by the API.
+
+Run **Backtest**, then **Forecast** to carry the current backtest champion and its
+configured production horizon into forecasting. For example, a Croston winner with
+`forecast.horizon_periods: 5` produces five Croston forecast periods per retained
+series. **Effective model**, **Horizon (periods)**, **Frequency**, and the expandable
+**Effective configuration** show what actually ran. A backtest validation window
+(`backtest.val_periods`) is separate from the production forecast horizon.
+
+Standalone forecasting remains available before backtesting: it uses the first
+entry in `forecast.forecasters`, not an inferred backtest winner. Without a config,
+the platform defaults are `naive_seasonal`, weekly frequency, and 39 periods.
+Changing the data, LOB, or configuration clears dependent results; late responses
+cannot restore an old winner. A new backtest also clears the previous selection and
+blocks forecasting while it is running. If no single champion is selected, the
+panel does not silently pick one. Composite selections such as a weighted ensemble
+remain valid backtest results, but cannot be reconstructed by sending only a model
+name. Their automatic forecast handoff is disabled; choose a single-model plan.
+Directly requesting a model that requires configured components (for example
+`weighted_ensemble` or `constrained_demand`) returns HTTP 400. Constraints configured
+through `forecast.constraints` on a standalone model remain supported.
+
+For API callers, precedence is **explicit query override > valid YAML > platform
+defaults**. Omit `horizon` to use `forecast.horizon_periods` (or the legacy
+`horizon_weeks` alias); when both YAML keys are present, `horizon_periods` wins.
+Both pipeline endpoints return HTTP 400 for malformed YAML, non-mapping/empty
+uploads, wrong known-field types, or invalid configuration values before any
+pipeline computation or publication. Use `{}` for an explicit defaults-only YAML.
+Unknown models return HTTP 400; non-positive or non-integer query horizons return
+HTTP 422. An override does not make a malformed config valid. Existing
+unknown-key handling and post-validation opt-out/nonblocking policies are unchanged.
+Backtest strategies are `champion` and `weighted_ensemble`; the legacy
+`best_metric` alias resolves to `champion`. Granularity must be `lob`,
+`product_group`, or `series`. Selection metrics must be distinct, registered
+metrics (including context-dependent `mase`), and included in the top-level
+`metrics` list so they are actually computed before champion selection.
+
 ### Authentication
 
 The login page (`/login`) collects username and password, which are sent to `POST /auth/token` on the FastAPI backend. The API returns a JWT token stored in the browser session via NextAuth. All subsequent API calls include this token in the `Authorization` header. Role-based access controls which pages and actions are visible.

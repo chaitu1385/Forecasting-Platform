@@ -5,7 +5,7 @@ Pydantic response models for the forecasting product REST API.
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -112,6 +112,61 @@ class AnalysisResponse(BaseModel):
     # LLM insights (null if not enabled)
     llm_narrative: Optional[str] = None
     llm_risk_factors: Optional[List[str]] = None
+
+
+class EffectivePipelineConfig(BaseModel):
+    """Allowlisted execution settings, never a serialized PlatformConfig."""
+
+    frequency: Literal["D", "W", "M", "Q"]
+    season_length: int
+    series_id_column: str
+    time_column: str
+    target_column: str
+    forecasters: List[str]
+    intermittent_forecasters: List[str]
+    quantiles: List[float]
+    fill_gaps: bool
+    fill_value: float
+    min_series_length_periods: int
+    drop_zero_series: bool
+    input_validation_enabled: bool
+    cleansing_enabled: bool
+    constraints_enabled: bool
+    post_validation_enabled: bool
+    halt_on_blocker: bool
+    min_grade: str
+    backtest_n_folds: int
+    backtest_val_periods: int
+    backtest_gap_periods: int
+    selection_strategy: str
+    champion_granularity: str
+    primary_metric: str
+    secondary_metric: str
+
+
+class PipelineExecutionSettings(BaseModel):
+    model_id: Optional[str]
+    model_source: Literal["request", "config", "default", "backtest"]
+    horizon_periods: int = Field(ge=1, description="Production forecast horizon, not a CV window")
+    horizon_source: Literal["request", "config", "default"]
+    config_source: Literal["upload", "default"]
+    config: EffectivePipelineConfig
+
+
+class PipelineRunResponse(BaseModel):
+    lob: str
+    status: str
+    execution: PipelineExecutionSettings
+    champion_model: Optional[str] = Field(None, description="Single backtest winner usable by the name-based forecast endpoint")
+    best_wmape: Optional[float] = None
+    leaderboard: Optional[List[Dict[str, Any]]] = None
+    validation_grade: Optional[str] = None
+    validation_score: Optional[int] = None
+    model_id: Optional[str] = None
+    horizon: Optional[int] = None
+    forecast_rows: Optional[int] = None
+    series_count: Optional[int] = None
+    forecast_preview: Optional[List[Dict[str, Any]]] = None
 
 
 
