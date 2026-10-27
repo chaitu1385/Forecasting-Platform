@@ -192,7 +192,7 @@ The forecast pipeline writes Parquet files with this schema:
 |--------|------|-------------|
 | `series_id` | String | Series identifier (matches input) |
 | `week` | Date | Forecast period date |
-| `forecast` | Float64 | Point forecast (P50) |
+| `forecast` | Float64 | Point forecast (equals P50 for seasonal naive) |
 | `forecast_p10` | Float64 | 10th percentile (if quantiles configured) |
 | `forecast_p50` | Float64 | 50th percentile (if quantiles configured) |
 | `forecast_p90` | Float64 | 90th percentile (if quantiles configured) |
@@ -202,6 +202,15 @@ Quantile columns are controlled by:
 forecast:
   quantiles: [0.1, 0.5, 0.9]    # generates forecast_p10, forecast_p50, forecast_p90
 ```
+
+For seasonal naive, `forecast_p50` is exactly the unchanged point forecast.
+Other percentiles add empirical seasonal residual quantiles **minus the residual
+median**: this intentionally recenters bounds, preserving their width and
+ordering, but does not establish empirical coverage. Other models retain their
+own point/quantile estimators. Only requested quantiles must be ordered; a point
+need not fall within an upper-tail-only range. Nonfinite/crossed quantiles,
+including invalid conformal corrections, fail before forecast publication.
+See [Numerical reliability](NUMERICAL_RELIABILITY.md#point-forecasts-naive-intervals-and-calibration).
 
 ### Example
 

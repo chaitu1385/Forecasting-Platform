@@ -58,6 +58,9 @@ class SeasonalNaiveForecaster(BaseForecaster):
         self._fitted_data = df.head(0).select([id_col, time_col, target_col])
         self._calendar = None
         if not df.is_empty():
+            values = df[target_col]
+            if not values.dtype.is_numeric() or values.null_count() or not values.is_finite().all():
+                raise ValueError(f"{self.name} requires finite numeric {target_col}")
             self._calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), self.frequency)
         self._fitted_data = df.select([id_col, time_col, target_col])
         self._target_col = target_col
@@ -127,9 +130,10 @@ class SeasonalNaiveForecaster(BaseForecaster):
         Interval estimation from year-over-year empirical residuals.
 
         For each seasonal position, collect historical ``value[t] - value[t - season_length]``
-        residuals, then use their empirical quantiles as additive offsets over the P50 point
-        forecast.  If fewer than two seasons of data are available, falls back to the
-        base-class degenerate intervals.
+        residuals. Offsets are their empirical quantiles minus their empirical
+        median, preserving the point/P50 and interval width. This location shift
+        does not establish empirical coverage. Without seasonal residuals, the
+        intervals are degenerate at the point forecast.
         """
         results = []
         point = self.predict(horizon, id_col=id_col, time_col=time_col)
@@ -171,6 +175,7 @@ class SeasonalNaiveForecaster(BaseForecaster):
 
                 pos = idx % sl
                 pos_residuals = residuals_by_pos.get(pos, [0.0])
+                residual_median = float(np.quantile(pos_residuals, 0.5))
 
                 row: Dict = {id_col: series_id, time_col: forecast_date}
                 for q in quantiles:
@@ -178,7 +183,9 @@ class SeasonalNaiveForecaster(BaseForecaster):
                     if abs(q - 0.5) < 1e-6:
                         row[col] = point_val
                     else:
-                        row[col] = point_val + float(np.quantile(pos_residuals, q))
+                        row[col] = point_val + (
+                            float(np.quantile(pos_residuals, q)) - residual_median
+                        )
                 results.append(row)
 
         if not results:
