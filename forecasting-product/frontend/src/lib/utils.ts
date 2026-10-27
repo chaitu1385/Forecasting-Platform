@@ -26,6 +26,15 @@ export function leaderboardScore(entry: LeaderboardEntry, metric: string): numbe
   return value != null && Number.isFinite(value) ? value : null;
 }
 
+export function storedMetricScores(entry: LeaderboardEntry): Record<string, number | null> {
+  const scores = { ...entry.scores };
+  if (!("wmape" in scores) && entry.wmape != null) scores.wmape = entry.wmape;
+  if (!("normalized_bias" in scores) && entry.normalized_bias != null) {
+    scores.normalized_bias = entry.normalized_bias;
+  }
+  return scores;
+}
+
 export function metricLabel(metric: string, policy?: string | null): string {
   if (metric === "wmape") return policy === "raw-observations-v1" ? "Volume WMAPE" : "Stored WMAPE";
   if (metric === "macro_wmape") return "Macro WMAPE";

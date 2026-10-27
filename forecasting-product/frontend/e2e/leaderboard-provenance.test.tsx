@@ -117,9 +117,36 @@ describe("stored leaderboard presentation", () => {
       group_key: null, competition_scope: null,
     }));
     show(value);
-    await screen.findByTestId("leaderboard-chart");
+    const table = await screen.findByRole("table", { name: "Stored model leaderboard" });
     expect(screen.getByText(/Scoring policy unknown/)).toBeVisible();
+    expect(screen.getByText(/Primary criterion unknown/)).toBeVisible();
+    expect(within(table).getByText("Stored WMAPE: 40.0%")).toBeVisible();
+    expect(within(table).getByText("Stored WMAPE: 10.0%")).toBeVisible();
+    expect(screen.queryByTestId("leaderboard-chart")).not.toBeInTheDocument();
     expect(screen.queryByText("Volume WMAPE", { exact: true })).not.toBeInTheDocument();
+    expect(screen.getByText("Best Model", { exact: true }).parentElement).toHaveTextContent("Unknown scope");
+  });
+
+  it.each(["rmse", "mae"])("preserves named historical %s values without inventing a primary criterion", async metric => {
+    const value = response();
+    value.scoring_provenance = {
+      source: "stored", status: "unknown", version: null, policy: null,
+      primary_metric: null, secondary_metric: null, competition_scope: null,
+    };
+    value.entries = value.entries.map((entry, index) => ({
+      ...entry, wmape: null, normalized_bias: null, primary_score: null,
+      scores: { [metric]: index + 2 }, group_key: null, competition_scope: null,
+    }));
+    show(value);
+    const table = await screen.findByRole("table", { name: "Stored model leaderboard" });
+    expect(within(table).getByText(`${metric.toUpperCase()}: 2.00`)).toBeVisible();
+    expect(within(table).getByText(`${metric.toUpperCase()}: 3.00`)).toBeVisible();
+    expect(screen.getByText(/Primary criterion unknown/)).toBeVisible();
+    expect(screen.queryByTestId("leaderboard-chart")).not.toBeInTheDocument();
+    expect(within(table).queryByText("Stored WMAPE", { exact: true })).not.toBeInTheDocument();
+    expect(within(table).getAllByRole("row").slice(1).map(row => row.getAttribute("data-model"))).toEqual([
+      "candidate_a", "candidate_b",
+    ]);
     expect(screen.getByText("Best Model", { exact: true }).parentElement).toHaveTextContent("Unknown scope");
   });
 

@@ -188,7 +188,10 @@ The Backtest Results page also treats leaderboard order, rank and scoring
 provenance as server-owned. It displays the stored primary criterion (including
 explicit macro WMAPE), keeps competition identity in table/chart keys, and
 suppresses a global winner for multiple or unknown scopes. Historical missing
-policy is labelled unknown, not volume WMAPE. FVA/calibration requests are pinned
+policy is labelled unknown, not volume WMAPE. If the primary criterion is unknown,
+the page displays available named stored scores (including RMSE/MAE-only history)
+and preserves row order/rank; it does not guess WMAPE or draw an empty primary-score
+chart that hides those values. FVA/calibration requests are pinned
 to the returned run ID; changing LOB/run invalidates stale derived responses,
 including retries. Derived FVA is labelled separately from the stored ranking.
 `e2e/leaderboard-provenance.test.tsx` covers these display and state boundaries.

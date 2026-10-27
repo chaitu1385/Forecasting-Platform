@@ -13,9 +13,19 @@ import { ChartSkeleton } from "@/components/shared/loading-skeleton";
 import { DataTable } from "@/components/data/data-table";
 import { useLeaderboard } from "@/hooks/use-leaderboard";
 import { api } from "@/lib/api-client";
-import { formatPct, formatMetric, leaderboardScore, metricLabel } from "@/lib/utils";
+import { formatPct, formatMetric, leaderboardScore, metricLabel, storedMetricScores } from "@/lib/utils";
 import { WorkflowNav } from "@/components/shared/workflow-nav";
-import type { FVAResponse, CalibrationResponse, ShapResponse } from "@/lib/types";
+import type { FVAResponse, CalibrationResponse, ShapResponse, LeaderboardEntry } from "@/lib/types";
+
+function StoredMetricValues({ entry }: { entry: LeaderboardEntry }) {
+  const scores = Object.entries(storedMetricScores(entry));
+  if (scores.length === 0) return <span>No stored metric values</span>;
+  return <div className="space-y-1">
+    {scores.map(([metric, value]) => (
+      <div key={metric}>{metricLabel(metric)}: {formatMetric(metric, value)}</div>
+    ))}
+  </div>;
+}
 
 export default function BacktestPage() {
   const { lob, setLob } = useLob();
@@ -96,11 +106,11 @@ export default function BacktestPage() {
   }
 
   const provenance = data?.scoring_provenance;
-  const primaryMetric = provenance?.primary_metric ?? "wmape";
-  const scoreLabel = metricLabel(primaryMetric, provenance?.policy);
+  const primaryMetric = provenance?.status === "recorded" ? provenance.primary_metric ?? null : null;
+  const scoreLabel = primaryMetric ? metricLabel(primaryMetric, provenance?.policy) : "Stored metric values";
   const groups = new Set(data?.entries.map(entry =>
     `${entry.competition_scope ?? provenance?.competition_scope ?? "unknown"}:${entry.group_key ?? lob}`));
-  const knownScope = provenance?.status === "recorded" && !!provenance.competition_scope;
+  const knownScope = provenance?.status === "recorded" && !!provenance.competition_scope && primaryMetric !== null;
   const singleCompetition = knownScope && groups.size === 1;
   const leading = singleCompetition ? data?.entries.find(entry => entry.rank === 1) : undefined;
 
@@ -162,8 +172,9 @@ export default function BacktestPage() {
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <MetricCard label="Models" value={new Set(data.entries.map(entry => entry.model)).size} />
               <MetricCard
-                label={knownScope ? `Best ${scoreLabel}` : "Stored primary score"}
-                value={leading ? formatMetric(primaryMetric, leaderboardScore(leading, primaryMetric)) : "N/A"}
+                label={knownScope ? `Best ${scoreLabel}` : "Primary criterion"}
+                value={!primaryMetric ? "Unknown" : leading
+                  ? formatMetric(primaryMetric, leaderboardScore(leading, primaryMetric)) : "N/A"}
               />
               <MetricCard
                 label="Best Model"
@@ -172,7 +183,13 @@ export default function BacktestPage() {
               <MetricCard label="Run Type" value={data.run_type} />
             </div>
             <div className="rounded-lg border p-4">
-              <LeaderboardBar entries={data.entries} primaryMetric={primaryMetric} scoringPolicy={provenance?.policy} />
+              {primaryMetric ? (
+                <LeaderboardBar entries={data.entries} primaryMetric={primaryMetric} scoringPolicy={provenance?.policy} />
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Primary criterion unknown; available named stored scores are shown below without re-ranking.
+                </p>
+              )}
             </div>
 
             {/* Leaderboard table */}
@@ -195,7 +212,9 @@ export default function BacktestPage() {
                         <td className="px-3 py-2 font-medium">{e.rank}</td>
                         <td className="px-3 py-2">{e.group_key ?? "Unknown"}</td>
                         <td className="px-3 py-2">{e.model}</td>
-                        <td className="px-3 py-2">{formatMetric(primaryMetric, leaderboardScore(e, primaryMetric))}</td>
+                        <td className="px-3 py-2">{primaryMetric
+                          ? formatMetric(primaryMetric, leaderboardScore(e, primaryMetric))
+                          : <StoredMetricValues entry={e} />}</td>
                         <td className="px-3 py-2">{formatPct(e.normalized_bias)}</td>
                         <td className="px-3 py-2">{e.n_series}</td>
                       </tr>
