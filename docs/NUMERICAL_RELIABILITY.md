@@ -159,8 +159,24 @@ runner information and observed scores. Capture is not approval or locked-profil
 qualification; no seed override or accepted lock is invented.
 
 The original empirical per-model regression and FVA gates remain separate.
-They must be completed using reviewed results from accepted native locked profiles;
-the exact naive reference does not replace either empirical gate. An emulated
+They now fail explicitly for missing/unapproved references, incomplete models,
+or incompatible native profiles instead of skipping. Their original 5% champion,
+10% per-model and 80% FVA-retention thresholds are unchanged. No authoritative
+prior learned-model reference was found in the repository/path history; captured
+runs are candidates for a first corrected-policy empirical reference, not proof
+of historical no-regression.
+
+The full fixture can bind its candidate and complete raw predictions to actual
+lock/manifest bytes, installed versions, selected wheel hashes and native profile
+probe evidence. The legacy capture script only prepares an **unapproved** review
+draft; independent approval must bind the entire captured record. Input hashes
+normalize only CRLF/LF; dependency/wheel hashes remain raw. References are specific
+to their exact native runtime/OS/profile and are never silently reused across OSes
+or dependency changes. See the [empirical qualification commands and evidence
+contract](../forecasting-product/tests/integration/baselines/README.md).
+
+Final references still require reviewed results from accepted native locked
+profiles; the exact naive oracle replaces neither empirical gate. An emulated
 runtime loader/CPU-feature failure is not evidence of incorrect model mathematics.
 
 ## Historical rankings are immutable evidence

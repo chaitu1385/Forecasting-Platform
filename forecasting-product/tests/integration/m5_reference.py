@@ -9,15 +9,26 @@ from __future__ import annotations
 import csv
 import hashlib
 import importlib.metadata
+import json
 import math
 import os
 import platform
+import re
+import sysconfig
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Iterable, Mapping
+from urllib.parse import unquote, urlsplit
+
+PROVENANCE_PACKAGES = (
+    "numpy", "scipy", "pandas", "polars", "polars-runtime-32", "polars-runtime-compat",
+    "pyarrow", "statsforecast", "mlforecast", "hierarchicalforecast", "lightgbm",
+    "xgboost", "xgboost-cpu", "scikit-learn", "duckdb", "coreforecast", "utilsforecast",
+    "fastapi", "starlette",
+)
 
 
 @dataclass(frozen=True)
@@ -156,25 +167,118 @@ def score_complete_predictions(
     return scores
 
 
+def _profile_provenance(root: Path, runtime: dict, versions: dict) -> dict:
+    """Bind optional native evidence to real lock bytes and installed wheels.
+
+    These are the existing V lock manifest, pip ``--report`` and native profile
+    probe formats. Reading them does not approve their numerical output.
+    """
+    variables = ("M5_PROFILE_LOCK", "M5_PROFILE_INSTALL_REPORT", "M5_PROFILE_QUALIFICATION")
+    supplied = [os.environ.get(name) for name in variables]
+    if not any(supplied):
+        return {"profile_lock_sha256": None}
+    if not all(supplied):
+        raise ValueError(f"Native M5 provenance requires all of {', '.join(variables)}")
+    lock, install_path, qualification_path = (root / value for value in supplied)
+    name = lock.resolve().relative_to((root / "requirements").resolve()).as_posix()
+    minor = "".join(runtime["python"].split(".")[:2])
+    if name != f"py{minor}/dev.txt":
+        raise ValueError("M5 profile must be the current Python minor's dev lock")
+    manifest_path = root / "requirements" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    entry = manifest["profiles"][name]
+    lock_sha = hashlib.sha256(lock.read_bytes()).hexdigest()
+    if entry["sha256"] != lock_sha or entry["python"] != runtime["python"]:
+        raise ValueError("M5 profile lock hash or exact Python version differs from its manifest")
+
+    pins, hashes, current = {}, {}, None
+    for line in lock.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^([A-Za-z0-9_.-]+)==([^\s;\\]+)", line)
+        if match:
+            current = re.sub(r"[-_.]+", "-", match[1]).lower()
+            pins[current] = match[2]
+            hashes[current] = set()
+        if current:
+            hashes[current].update(re.findall(r"--hash=sha256:([0-9a-f]{64})", line))
+    if not pins:
+        raise ValueError("M5 profile has no exact package pins")
+    for package, version in pins.items():
+        try:
+            installed = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError as exc:
+            raise ValueError(f"M5 locked package is not installed: {package}") from exc
+        if installed != version:
+            raise ValueError(f"M5 installed {package} differs from its exact lock pin")
+
+    native = json.loads(qualification_path.read_text(encoding="utf-8"))
+    expected_os = {"Linux": "linux", "Windows": "win32"}.get(runtime["system"])
+    if (
+        expected_os is None or native.get("profile") != "dev"
+        or native.get("python") != runtime["python"] or native.get("os") != expected_os
+        or native.get("host_architecture") != runtime["process_machine"]
+        or native.get("interpreter_platform") != runtime["interpreter_platform"]
+        or native.get("xgboost_build", {}).get("USE_CUDA") is not False
+        or set(native.get("synthetic_native_outputs", {})) != {"lgbm_direct", "xgboost_direct"}
+        or not native.get("packages")
+        or any(versions.get(package) != value for package, value in native["packages"].items())
+    ):
+        raise ValueError("Native profile qualification does not describe this runtime")
+
+    install = json.loads(install_path.read_text(encoding="utf-8"))
+    environment = install["environment"]
+    if (
+        environment.get("python_full_version") != runtime["python"]
+        or environment.get("sys_platform") != expected_os
+        or environment.get("platform_machine") != runtime["process_machine"]
+    ):
+        raise ValueError("Native pip install report does not describe this runtime")
+    installed_wheels = {}
+    for item in install["install"]:
+        package = re.sub(r"[-_.]+", "-", item["metadata"]["name"]).lower()
+        if package not in versions or versions[package] is None:
+            continue
+        download = item["download_info"]
+        digest = download.get("archive_info", {}).get("hashes", {}).get("sha256")
+        filename = unquote(urlsplit(download["url"]).path).rsplit("/", 1)[-1]
+        if (
+            package in installed_wheels or item.get("is_yanked", False)
+            or item["metadata"]["version"] != versions[package]
+            or digest not in hashes.get(package, set()) or not filename.endswith(".whl")
+        ):
+            raise ValueError(f"M5 selected wheel is incompatible with its lock: {package}")
+        installed_wheels[package] = {
+            "version": versions[package], "filename": filename, "sha256": digest,
+        }
+    if set(installed_wheels) != {name for name, value in versions.items() if value is not None}:
+        raise ValueError("M5 install report is missing numerical/runtime wheel evidence")
+    return {
+        "profile_lock_name": name, "profile_lock_sha256": lock_sha,
+        "profile_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        "profile_package_versions": pins, "profile_wheels": installed_wheels,
+        "profile_install_report_sha256": hashlib.sha256(install_path.read_bytes()).hexdigest(),
+        "profile_qualification_sha256": hashlib.sha256(qualification_path.read_bytes()).hexdigest(),
+    }
+
+
 def candidate_provenance(fixture: Path, config: Path) -> dict:
     """Describe an observed run without approving or inferring a locked profile."""
     versions = {}
-    for package in (
-        "numpy", "scipy", "pandas", "polars", "polars-runtime-32", "polars-runtime-compat",
-        "pyarrow", "statsforecast", "mlforecast", "hierarchicalforecast", "lightgbm",
-        "xgboost", "xgboost-cpu", "scikit-learn", "duckdb", "coreforecast", "utilsforecast",
-        "fastapi", "starlette",
-    ):
+    for package in PROVENANCE_PACKAGES:
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
             versions[package] = None
-    return {
-        "approved_baseline": False,
-        "profile_lock_sha256": None,
+    runtime = {
         "python": platform.python_version(),
         "system": platform.system(),
         "process_machine": platform.machine(),
+        "interpreter_platform": sysconfig.get_platform(),
+        "os_release": platform.platform(),
+    }
+    return {
+        "approved_baseline": False,
+        **runtime,
+        **_profile_provenance(Path(__file__).resolve().parents[2], runtime, versions),
         "packages": versions,
         "fixture_utf8_lf_sha256": canonical_text_sha256(fixture),
         "fixture_raw_sha256": hashlib.sha256(fixture.read_bytes()).hexdigest(),
