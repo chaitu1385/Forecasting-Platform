@@ -142,6 +142,36 @@ def main() -> None:
             result.sort(["series_id", "week"]),
             expected.sort(["series_id", "week"]),
         )
+    elif scenario == "serialization-failure":
+        from src.backtesting.engine import BacktestEngine
+        from src.config.schema import BacktestConfig, ForecastConfig, OutputConfig, ParallelismConfig, PlatformConfig
+        from src.forecasting.naive import SeasonalNaiveForecaster
+        from src.forecasting.statistical import AutoETSForecaster
+        from src.pipeline.batch_runner import BatchInferenceRunner
+
+        model = SeasonalNaiveForecaster(frequency="D")
+        model.unpicklable = lambda: None
+        try:
+            BatchInferenceRunner(n_workers=2, batch_size=1).run_forecast(data, model, horizon=4)
+        except RuntimeError as error:
+            assert "Forecast batch" in str(error)
+            assert "pickle" in str(error.__cause__).lower()
+        else:
+            raise AssertionError("Serialization failure was hidden as a successful partial forecast")
+
+        config = PlatformConfig(
+            forecast=ForecastConfig(frequency="D", quantiles=[]),
+            backtest=BacktestConfig(n_folds=1, val_weeks=4),
+            parallelism=ParallelismConfig(n_workers=2),
+            output=OutputConfig(metrics_path=str(output / "failed-model-metrics")),
+        )
+        engine = BacktestEngine(config)
+        result = engine.run(data, [model, AutoETSForecaster(frequency="D")])
+        assert result.height == 8
+        assert result["model_id"].unique().to_list() == ["auto_ets"]
+        assert len(engine.failures) == 1
+        assert engine.failures[0]["model_id"] == "naive_seasonal"
+        assert "pickle" in engine.failures[0]["error_message"].lower()
     else:
         raise ValueError(f"Unknown scenario: {scenario}")
     assert multiprocessing.get_start_method() == start_method

@@ -11,7 +11,7 @@ import pytest
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("scenario", ["backtest", "backtest-payload", "batch"])
+@pytest.mark.parametrize("scenario", ["backtest", "backtest-payload", "batch", "serialization-failure"])
 def test_parallel_execution_after_polars_initialization(scenario, tmp_path):
     env = {
         **os.environ,
