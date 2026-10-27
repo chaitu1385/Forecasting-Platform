@@ -107,6 +107,10 @@ def test_full_native_matrix_captures_unapproved_m5_evidence_without_hiding_failu
         '>> "$GITHUB_ENV"',
     ))
     assert env["M5_PROFILE_LOCK"].endswith("/requirements/${{ matrix.profile }}/dev.txt")
+    assert env["M5_BASELINE_PATH"] == (
+        "${{ github.workspace }}/forecasting-product/tests/integration/baselines/"
+        "m5_daily_baseline_${{ matrix.profile }}_linux.json"
+    )
     assert not {"GITHUB_RUN_ID", "GITHUB_SHA", "RUNNER_ARCH"} & env.keys()
     restore = steps["Install dependencies"]["run"]
     assert all(value in restore for value in (

@@ -217,6 +217,16 @@ prior learned-model reference was found in the repository/path history; captured
 runs are candidates for a first corrected-policy empirical reference, not proof
 of historical no-regression.
 
+The initial Linux x86-64 py311/py312/py313 references from native run
+`40587318909` were subsequently approved in this
+[independent coordinator audit](https://github.com/chaitu1385/Forecasting-Platform/pull/124#issuecomment-6455007868).
+The full Linux matrix selects its exact `m5_daily_baseline_<profile>_linux.json`
+through `M5_BASELINE_PATH`. Captured provenance, unapproved-candidate flags,
+original source identity, null seed and full-precision observations remain
+unchanged inside each approved reference. This is an AI coordinator audit
+assertion, not a human review, cryptographic signature, historical regression
+claim or Windows M5 qualification.
+
 Both empirical gates consume the independently rescored winner's WMAPE, never
 the API summary as the scoring authority. The API `best_wmape` must additionally
 match that score at the existing `1e-12` relative/absolute arithmetic precision.

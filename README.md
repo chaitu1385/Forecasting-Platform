@@ -143,7 +143,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 2043 unit + integration cases
+├── tests/                  # 2047 unit + integration cases
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 ├── notebooks/              # Jupyter notebooks for exploration
@@ -998,7 +998,7 @@ POLARS_MAX_THREADS=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1 \
   python -m pytest -v --timeout=180 --timeout-method=thread \
     -o faulthandler_timeout=60
-# 2043 cases across 77 test modules; no test module exclusions
+# 2047 cases across 77 test modules; no test module exclusions
 # Use the matching py311/py313 profile with those interpreters; no module exclusions.
 ```
 
@@ -1011,6 +1011,13 @@ series and 76,755 rows. One real three-model/two-fold backtest is shared by thos
 consumers, with separate artifact copies and application/response state; the
 forecast still runs through the real API. No model search settings, fixture rows,
 folds or numerical assertions are reduced.
+
+The full M5 empirical gates also require the matching approved Linux x86-64
+reference selected through `M5_BASELINE_PATH`, with native install/qualification
+receipts from the same test environment. CI supplies these per profile; see the
+[reference protocol](forecasting-product/tests/integration/baselines/README.md).
+The initial references are not historical learned-model no-regression evidence
+or a generic/Windows M5 baseline.
 
 The stable **CI gate** requires successful lint, focused validation/intent,
 process safety, the full backend matrix, frontend, Docker cold/restart smoke,
@@ -1028,8 +1035,9 @@ only mocked chart component tests.
 | Test file | Tests | Covers |
 |-----------|------:|--------|
 | `test_platform.py` | 85 | Config, hierarchy, reconciliation, metrics, transitions, registry, backtest, REST API, deployment, drift |
-| `test_dependency_profiles.py` | 29 | All Python/profile locks, hashes, CPU-only boundaries, audited closure/marker coverage, release policy and stale/tampered export rejection |
-| `test_forecast_intent.py` | 107 | Real ASGI champion/horizon/config handoff, aliases, safe execution settings, invalid-input no-publication guarantees |
+| `test_dependency_profiles.py` | 30 | Profile locks/hashes, CPU-only boundaries, audited closure/marker coverage, release policy, stale/tampered exports and native capture/reference wiring |
+| `test_m5_baseline.py` | 67 | Original empirical thresholds, complete observations, profile compatibility and audit-bound initial reference integrity |
+| `test_forecast_intent.py` | 113 | Real ASGI champion/horizon/config handoff, aliases, safe execution settings, invalid-input no-publication guarantees |
 | `test_forecast_explainability.py` | 59 | Comparator, ExceptionEngine, Explainer (STL+SHAP+narrative), ModelCard, Registry, DriftDetector, Lineage |
 | `test_intermittent_demand.py` | 55 | SparseDetector, Croston, CrostonSBA, TSB, backtest routing |
 | `test_mint_reconciliation.py` | 46 | S-matrix math, OLS/WLS/MinT correctness, coherence, edge cases |

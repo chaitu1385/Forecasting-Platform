@@ -2,3 +2,4 @@ forecasting-product/requirements/**/*.txt text eol=lf
 forecasting-product/requirements/manifest.json text eol=lf
 forecasting-product/frontend/package-lock.json text eol=lf
 forecasting-product/frontend/npm-integrity-normalization.json text eol=lf
+forecasting-product/tests/integration/baselines/m5_daily_baseline_*_linux.json text eol=lf

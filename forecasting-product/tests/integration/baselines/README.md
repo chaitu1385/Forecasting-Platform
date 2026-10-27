@@ -13,6 +13,26 @@ that file. Captured runs are therefore candidates for a **first empirical
 reference under `raw-observations-v1`**, not proof of historical no-regression.
 Capture, a successful CI run, and agreement with the naive oracle are not approval.
 
+The first Linux x86-64 empirical references were independently approved in the
+[coordinator audit record](https://github.com/chaitu1385/Forecasting-Platform/pull/124#issuecomment-6455007868)
+at `2026-10-27T22:19:15Z`, using native run `40587318909`. They retain the full
+captured provenance, its original `approved_baseline: false`, the actual tested
+merge SHA `0af8188d49671ee8c0ef843a3213e51efbd33c37`, full-precision scores and
+`seed: null`; only the outer reference approval and scope notes are added.
+
+| Exact Linux Python / dev profile | Explicit reference |
+|---|---|
+| 3.11.18 / py311 | `m5_daily_baseline_py311_linux.json` |
+| 3.12.16 / py312 | `m5_daily_baseline_py312_linux.json` |
+| 3.13.18 / py313 | `m5_daily_baseline_py313_linux.json` |
+
+This is an independent GitHub Copilot coordinator review, not a human review or
+cryptographic signature. These are first corrected-policy references, not
+historical learned-model no-regression evidence or calibrated-coverage approval.
+The Linux full-suite CI matrix explicitly sets `M5_BASELINE_PATH` to its matching
+file. There is no generic fallback or approved Windows M5 reference; another
+native profile/OS requires its own evidence and independent qualification.
+
 The two original tests retain their original numerical requirements:
 
 - `test_baseline_no_regression`: champion WMAPE ≤ reference × **1.05**;
@@ -55,7 +75,7 @@ from `forecasting-product` after dependency-profile integration:
 
 ```powershell
 $tag = python -c "import sys; print(f'py{sys.version_info.major}{sys.version_info.minor}')"
-$out = "artifacts\m5-$tag"
+$out = "artifacts\m5-$tag-$(New-Guid)"
 New-Item -ItemType Directory -Force "$out\runtime" | Out-Null
 $env:TEMP = (Resolve-Path "$out\runtime").Path
 $env:TMP = $env:TEMP
@@ -141,3 +161,9 @@ Finally rerun the **same complete** integration suite against the approved
 reference with fresh candidate output paths. Both original empirical gates
 must pass. Keep archived runs/reference files immutable; record intentional
 updates as new reviewed evidence rather than retroactively relabeling old runs.
+
+For an already qualified Linux profile, the explicit selector is, for example,
+`M5_BASELINE_PATH=tests/integration/baselines/m5_daily_baseline_py312_linux.json`.
+The native install report and qualification inputs above remain mandatory for
+that full run. Selecting a reference does not qualify an arbitrary local
+environment, and this Linux example must not be reused as a Windows claim.

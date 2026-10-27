@@ -315,6 +315,7 @@ jobs:
       PYTHONUNBUFFERED: "1"
       PYTHONFAULTHANDLER: "1"
       M5_PROFILE_LOCK: ${{ github.workspace }}/forecasting-product/requirements/${{ matrix.profile }}/dev.txt
+      M5_BASELINE_PATH: ${{ github.workspace }}/forecasting-product/tests/integration/baselines/m5_daily_baseline_${{ matrix.profile }}_linux.json
     strategy:
       fail-fast: false
       matrix:

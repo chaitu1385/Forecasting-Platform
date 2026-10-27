@@ -1,4 +1,4 @@
-"""Bounded empirical-gate checks; all learned scores/profile receipts here are synthetic."""
+"""Bounded gate controls and immutable approved-reference bindings; no model fits."""
 
 import hashlib
 import json
@@ -15,11 +15,64 @@ REFERENCE = json.loads(
     .read_text(encoding="utf-8")
 )
 
+INITIAL_REFERENCES = (
+    ("py311", "3.11.18", "9c8258c1079cae76dcca1841b190dc35966574c42ba3e0543a477101cc1d954a"),
+    ("py312", "3.12.16", "354db091f450cd94eb36cb1fcc7100f6d1703cbe3f4d620e678847e52306ee15"),
+    ("py313", "3.13.18", "44458444276842c2ac99d53793af5695367b7b46a25765535e8743d6064defc0"),
+)
+
 
 def _digest(value):
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     ).hexdigest()
+
+
+@pytest.mark.parametrize("profile,python_version,digest", INITIAL_REFERENCES)
+def test_initial_linux_reference_preserves_its_reviewed_capture(monkeypatch, profile, python_version, digest):
+    """Verify the stored audit binding, not current-machine native qualification."""
+    path = gates.BASELINES_DIR / f"m5_daily_baseline_{profile}_linux.json"
+    raw = path.read_bytes()
+    assert b"\r" not in raw
+    document = json.loads(raw)
+    candidate = document["provenance"]
+    assert document["approved_baseline"] is True and document["seed"] is None
+    assert document["approval"] == {
+        "reviewed_by": "GitHub Copilot, independent coordinator review",
+        "review_reference": "https://github.com/chaitu1385/Forecasting-Platform/pull/124#issuecomment-6455007868",
+        "approved_at": "2026-10-27T22:19:15Z",
+        "candidate_sha256": digest,
+    }
+    assert candidate["approved_baseline"] is False
+    assert _digest(candidate) == digest
+    assert candidate["ci_source_sha"] == "0af8188d49671ee8c0ef843a3213e51efbd33c37"
+    assert candidate["ci_run_id"] == "40587318909"
+    assert candidate["python"] == python_version
+    assert candidate["system"] == "Linux" and candidate["process_machine"] == "x86_64"
+    assert candidate["profile_lock_name"] == f"{profile}/dev.txt"
+    assert document["per_model_wmape"] == {
+        model: metrics["wmape"] for model, metrics in candidate["scalar_reference_scores"].items()
+    }
+    assert document["champion_wmape"] == document["per_model_wmape"][candidate["champion_model"]]
+    assert document["fva_vs_naive"] == document["naive_wmape"] - document["champion_wmape"]
+    assert "First empirical reference" in document["notes"]
+    monkeypatch.setenv("M5_BASELINE_PATH", str(path))
+    loaded = gates.require_baseline("daily", unittest.TestCase(), observed=candidate)
+    assert loaded.raw == document
+    for other, _, _ in INITIAL_REFERENCES:
+        if other == profile:
+            continue
+        observed = json.loads(
+            (gates.BASELINES_DIR / f"m5_daily_baseline_{other}_linux.json").read_text()
+        )["provenance"]
+        with pytest.raises(AssertionError, match="incompatible"):
+            gates.verify_baseline_compatibility(unittest.TestCase(), loaded, observed)
+
+
+def test_profile_specific_references_do_not_become_an_implicit_generic_reference(monkeypatch):
+    monkeypatch.delenv("M5_BASELINE_PATH", raising=False)
+    assert gates.baseline_path("daily") == gates.BASELINES_DIR / "m5_daily_baseline.json"
+    assert gates.load_baseline("daily") is None
 
 
 def _candidate():
