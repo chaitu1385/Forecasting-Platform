@@ -114,7 +114,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 1281 tests (pytest)
+├── tests/                  # 1608 tests (pytest)
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 └── notebooks/              # Jupyter notebooks for exploration
@@ -172,11 +172,27 @@ Helper functions: `get_frequency_profile(freq)` returns the profile dict; `freq_
 - Framework: pytest
 - Test files mirror source structure with `test_` prefix
 - Helper fixtures use `_make_*` factory functions (e.g., `_make_weekly_actuals`)
-- 1281 tests across 53 test files
+- 1608 cases across 62 test modules; run the full suite without module exclusions
 - Key test modules: `test_platform.py` (85 tests), `test_sku_mapping.py` (81), `test_ai_*.py` (73), `test_forecast_explainability.py` (59), `test_intermittent_demand.py` (55), `test_observability.py` (41), `test_file_classifier.py` (26), `test_file_merger.py` (20)
 - Focused forecast-intent coverage: `test_forecast_intent.py` (107 real ASGI cases),
   plus frontend `e2e/pipeline-execution.test.tsx` and `e2e/data-onboarding-state.test.tsx`
   (21 handoff/state cases). These require only core/API and existing frontend test dependencies.
+- Process safety: `test_process_execution.py` has four real subprocess cases,
+  including the ASGI backtest path, configured model/frequency parity, and
+  serialization errors. Both production pools use a local `spawn` context, never
+  a global multiprocessing start-method override. Worker model objects must
+  remain importable/pickleable; failed forecast batches must not return partial success.
+- CI limits native pools to Polars 2 and OpenMP/OpenBLAS/MKL/Numba 1 per process.
+  ML forecasters pass `num_threads` to native learners as `n_jobs` unless the
+  caller explicitly overrides the learner budget. Pool size is capped by useful tasks.
+- The M5 tests preserve all 105 checked-in series, 76,755 rows, three models and
+  two folds. They share only the expensive real backtest result; each consuming
+  class gets private files, client and response state. Only these classes receive
+  a 1200-second test timeout; process regressions retain their 90-second deadline.
+- `test_docker_seed.py` covers cold/restart path consistency and seed/process
+  failure handling. `.github/scripts/*.test.cjs` contains 57 automation tests.
+  Keep the `CI gate` required-job list aligned with its `needs` and evaluator;
+  no failed/cancelled/skipped constituent may pass it.
 
 ## Key Dependencies
 

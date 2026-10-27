@@ -14,6 +14,11 @@ docker compose up
 
 Open **http://localhost:3000** in your browser. That's it.
 
+On the first boot, wait for the API log's **Seed complete** message before using
+the preloaded demo results. Restarts reuse the `api-data` volume without
+retraining the demo. If seeding fails, inspect the container logs; do not delete
+the volume as a workaround.
+
 ## Path B — Local Python
 
 Requires Python 3.8+.

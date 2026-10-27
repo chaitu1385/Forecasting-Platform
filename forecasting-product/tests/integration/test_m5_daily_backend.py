@@ -80,7 +80,7 @@ def _make_app(data_dir: str, metrics_dir: str):
 
 @pytest.fixture(scope="module")
 def _daily_backtest(tmp_path_factory):
-    """Run the unchanged 50-series, three-model, two-fold workload once."""
+    """Run the complete checked-in sample, three models and two folds once."""
     data_dir = tmp_path_factory.mktemp("m5-backtest") / "data"
     metrics_dir = data_dir / "metrics"
     metrics_dir.mkdir(parents=True)

@@ -144,6 +144,7 @@ jobs:
       MKL_NUM_THREADS: "1"
       NUMBA_NUM_THREADS: "1"
       PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -181,6 +182,7 @@ jobs:
       MKL_NUM_THREADS: "1"
       NUMBA_NUM_THREADS: "1"
       PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -227,7 +229,7 @@ jobs:
   build:
     name: Docker Build
     runs-on: ubuntu-latest
-    needs: test
+    needs: [lint, process-safety]
     timeout-minutes: 20
     permissions:
       contents: read

@@ -21,7 +21,11 @@ This starts two services:
 | REST API (FastAPI) | 8000 | http://localhost:8000/docs (Swagger UI) |
 | Frontend (Next.js) | 3000 | http://localhost:3000 |
 
-Both services share a data volume at `./forecasting-product/data`.
+The API persists data in the named `api-data` volume mounted at
+`/app/forecasting-product/data`; the frontend retrieves it through the API.
+First boot seeds the demo backtest and forecast. Subsequent containers use the
+same volume and skip seeding only after the completion marker has been written.
+Do not delete that volume to troubleshoot a restart.
 
 ### Docker Environment Variables
 
@@ -29,6 +33,8 @@ Both services share a data volume at `./forecasting-product/data`.
 |----------|---------|-------------|
 | `API_DATA_DIR` | `forecasting-product/data/` | Root data directory for the API |
 | `API_METRICS_DIR` | `forecasting-product/data/metrics/` | Metric store location |
+| `POLARS_MAX_THREADS` | `2` in the image | Native Polars threads per process |
+| `OMP_NUM_THREADS`, `OPENBLAS_NUM_THREADS`, `MKL_NUM_THREADS`, `NUMBA_NUM_THREADS` | `1` in the image | Native pool budgets; set before process startup |
 | `ANTHROPIC_API_KEY` | (empty) | Claude API key for AI features (optional) |
 | `NEXTAUTH_SECRET` | `docker-dev-secret` | Secret for NextAuth.js session encryption |
 | `NEXTAUTH_URL` | `http://localhost:3000` | Canonical URL of the Next.js frontend |
@@ -41,7 +47,20 @@ ANTHROPIC_API_KEY=sk-ant-... docker compose up
 
 ### Docker Health Check
 
-The API service has a built-in health check hitting `GET /health` every 30 seconds. The Next.js service waits for the API to be healthy before starting.
+The API service has a built-in health check hitting `GET /health` every 30 seconds.
+Compose starts the frontend after the API container has started; this does not
+itself guarantee that demo seeding has finished. The seeder resolves storage
+paths once and passes identical absolute data/metrics paths on cold and restart
+launches. A failed backtest, missing champion, failed/empty forecast or child
+startup failure does not write the marker or leave an apparently seeded server
+running. The child is stopped and reaped on startup failure or termination.
+
+CI checks more than HTTP liveness: it waits up to 240 seconds for seeded
+readiness, retrieves all 10 demo series / 120 forecasts and the leaderboard,
+then starts a **new container with the same test volume** and compares persisted
+artifact hashes. An exit trap stops test containers even on failure and removes
+only the temporary volume created by that smoke run. This does not reset
+deployment data.
 
 ---
 
@@ -325,7 +344,43 @@ parallelism:
 ```
 
 - Reduce `n_workers` if hitting memory limits
-- Increase `batch_size` to reduce memory per worker (each worker loads its batch + model)
+- Reduce `batch_size` to reduce memory per worker (each worker loads its batch + model)
+
+Local backtest and inference pools explicitly use `spawn`, which starts a fresh
+interpreter instead of inheriting native-library locks through `fork`. Parallel
+workers receive the configured model object, including non-default parameters
+and frequency, and pools never allocate more workers than useful tasks. Custom
+forecasters must be importable and pickleable; use a guarded script entry point
+(`if __name__ == "__main__":`) when launching local multiprocessing.
+
+LightGBM/XGBoost point and quantile learners inherit the forecaster's
+`num_threads` budget as `n_jobs`; an explicit learner `n_jobs` override takes
+precedence. Configure native pool environment variables before importing Polars
+or numerical libraries. Do not compensate for an unsafe fork with fewer threads.
+Backtest model failures remain available through `engine.failures`; batch
+inference raises on a failed worker rather than returning an incomplete forecast.
+
+### CI and branch cleanup
+
+Require the stable `CI gate` status in repository branch protection. It evaluates
+every lint, focused, process, full-backend-matrix, frontend, Docker and automation
+job, including failure/cancellation/skip states. Administrators configure that
+required context separately from these workflows.
+
+`Cleanup merged branch` is **manual and dry-run by default**, never triggered
+by a push. Run it from the actual default branch with one merged PR number.
+It retains forks, default/conventional main/current/protected branches, branches
+used by an open PR, and any branch whose live head differs from the merged PR
+head. Unchecking `dry_run` explicitly opts into deletion after fresh checks.
+The exact expected-SHA Git lease rejects a concurrent head advance; it is a
+conditional deletion, not permission to force-update history. API/Git failures
+are surfaced, not reported as deletion success.
+
+The SHA lease is not an atomic transaction with GitHub PR metadata: an open PR
+can be created after the last check, and a branch deleted/recreated at the
+identical SHA is indistinguishable by Git. Inspect a dry run and coordinate
+branch reuse before opting in. Do not reactivate the legacy broad push-triggered
+workflow; enable only the reviewed manual replacement after it has been merged.
 
 ### PySpark (Distributed)
 

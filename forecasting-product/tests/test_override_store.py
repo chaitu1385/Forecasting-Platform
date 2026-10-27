@@ -13,11 +13,47 @@ Covers:
 import re
 import tempfile
 import unittest
+from datetime import date, datetime
+from types import SimpleNamespace
 
 import polars as pl
 import pytest
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize("arrow_method", ["to_arrow_table", "fetch_arrow_table"])
+@pytest.mark.parametrize("empty", [False, True])
+def test_arrow_result_preserves_rows_and_schema_across_duckdb_apis(arrow_method, empty):
+    from polars.testing import assert_frame_equal
+
+    from src.overrides.store import OverrideStore
+
+    expected = pl.DataFrame({
+        "old_sku": ["B", "A"],
+        "effective_date": [date(2024, 1, 1), None],
+        "created_at": [datetime(2024, 1, 1, 12, 30), None],
+        "proportion": [0.6, None],
+    })
+    if empty:
+        expected = expected.head(0)
+    result = SimpleNamespace(**{arrow_method: lambda: expected.to_arrow()})
+    store = OverrideStore.__new__(OverrideStore)
+    store._conn = SimpleNamespace(execute=lambda query, params: result)
+    assert_frame_equal(store.get_all(), expected)
+
+
+def test_arrow_conversion_error_is_not_hidden_by_legacy_fallback():
+    from src.overrides.store import OverrideStore
+
+    def fail():
+        raise RuntimeError("Arrow conversion failed")
+
+    result = SimpleNamespace(to_arrow_table=fail)
+    store = OverrideStore.__new__(OverrideStore)
+    store._conn = SimpleNamespace(execute=lambda query, params: result)
+    with pytest.raises(RuntimeError, match="Arrow conversion failed"):
+        store.get_all()
 
 
 class TestOverrideStoreDuckDB(unittest.TestCase):

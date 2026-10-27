@@ -395,6 +395,15 @@ report = builder._last_quality_report
 
 ### Backtests are slow
 
+Distinguish a stalled worker from expensive optimization. A parent waiting in
+`as_completed` is not sufficient evidence of a deadlock: inspect worker stacks
+and CPU use. Old Linux pools could fork after Polars initialization and block in
+`read_ipc`/`collect`; current pools use explicit `spawn`. Active ARIMA likelihood
+optimization is a different case and can legitimately take minutes on the full
+daily sample. Do not disable tests, models or assertions to hide either case.
+CI emits stack diagnostics and uses bounded test/job deadlines; the expensive
+M5 setup runs once with isolated copies for its consumers.
+
 - **Reduce models** — Start with 2-3 candidates, not all 18
 - **Reduce folds** — `n_folds: 2` instead of 5 (less robust but faster)
 - **Skip neural models** — `nbeats`, `nhits`, `tft` are orders of magnitude slower than statistical/ML
@@ -404,11 +413,18 @@ report = builder._last_quality_report
 ### Out of memory
 
 - **Reduce `n_workers`** — Each worker loads a full model + data copy
-- **Increase `batch_size`** — Smaller chunks per worker
+- **Reduce `batch_size`** — Smaller chunks per worker
 - **Use Spark** — `backend: spark` for datasets that don't fit in memory
 - **Drop neural models** — They have the largest memory footprint
 
 ### Docker container crashes
+
+Check the seeder logs before deleting or recreating data. Cold and restart
+launches must use the same absolute data/metrics paths, and `.seeded` is written
+only after both pipelines succeed with nonempty forecast output. A failed seed
+now exits and reaps its child instead of leaving an unseeded service running.
+Keep the named data volume intact; CI separately exercises a fresh-container
+restart against an unchanged temporary volume.
 
 - Provision at least **2 GB RAM** for datasets with 1000+ series
 - The Rossmann demo dataset (1M rows) runs comfortably in 2 GB
