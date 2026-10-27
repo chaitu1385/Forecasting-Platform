@@ -411,7 +411,11 @@ def _model_metadata(
         _model_metadata(component, configured_frequency, horizon, ancestors)
         for component in components
     ]
-    declared = model.get_params()
+    # Wrapper getters may flatten child values over their own constraints.
+    declared = (
+        {"base": model.base.name, **asdict(model.constraints)}
+        if isinstance(model, ConstrainedDemandEstimator) else model.get_params()
+    )
     if not isinstance(declared, Mapping):
         raise TypeError("Model parameters must be a mapping")
     parameters = _safe_settings(declared, omitted, "parameters")

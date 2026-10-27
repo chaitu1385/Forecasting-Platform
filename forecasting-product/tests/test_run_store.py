@@ -153,6 +153,44 @@ def test_nested_supported_composites_redact_component_secrets_and_report_omissio
     )
 
 
+def test_stacked_constraints_persist_each_nodes_own_parameters_and_config_identity(tmp_path):
+    from src.config.schema import ConstraintConfig
+    from src.forecasting.constrained import ConstrainedDemandEstimator
+    from src.forecasting.naive import SeasonalNaiveForecaster
+    from src.pipeline.manifest import model_metadata
+
+    store = RunStore(tmp_path / "runs")
+    saved = []
+    configurations = []
+    predictions = []
+    for cap in (10.0, 20.0):
+        manifest, config, frames = _bundle(50.0)
+        model = ConstrainedDemandEstimator(
+            ConstrainedDemandEstimator(
+                SeasonalNaiveForecaster(season_length=1),
+                ConstraintConfig(enabled=True, max_capacity=30.0),
+            ),
+            ConstraintConfig(enabled=True, max_capacity=cap),
+        )
+        model.fit(frames["input"])
+        before = model.predict(1)
+        manifest.models = [model_metadata(model, "W", 1)]
+        manifest.execution["models"] = manifest.models
+        assert model.predict(1).equals(before)
+        frames["forecast"] = before
+        committed = store.publish(manifest, config, frames, {"skipped": True})
+        saved.append(store.get("retail", committed.run_id))
+        configurations.append(store.json_member("retail", committed.run_id, "config"))
+        predictions.append(store.frame("retail", committed.run_id, "forecast")["forecast"].to_list())
+    assert predictions == [[10.0], [20.0]]
+    assert configurations[0]["settings"] == configurations[1]["settings"]
+    assert [item.models[0]["parameters"]["max_capacity"] for item in saved] == [10.0, 20.0]
+    assert all(item.models[0]["components"][0]["parameters"]["max_capacity"] == 30.0 for item in saved)
+    assert [item["execution"]["models"][0]["parameters"]["max_capacity"] for item in configurations] == [10.0, 20.0]
+    assert saved[0].config_hash != saved[1].config_hash
+    assert saved[0].models != saved[1].models
+
+
 def test_composite_metadata_rejects_cycles_before_reading_recursive_parameters():
     from src.config.schema import ConstraintConfig
     from src.forecasting.constrained import ConstrainedDemandEstimator
