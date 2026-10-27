@@ -209,10 +209,38 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0, Node 24
+        if: runner.os == 'Linux'
         with:
           python-version: ${{ matrix.runtime.python }}
           cache: pip
           cache-dependency-path: forecasting-product/requirements/**/*.txt
+      - name: Provision exact native Windows security-release Python
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          UV_PYTHON_INSTALL_DIR: ${{ runner.temp }}/forecast-python
+          UV_CACHE_DIR: ${{ runner.temp }}/forecast-uv-cache
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'forecast-uv.zip'
+          $tools = Join-Path $env:RUNNER_TEMP 'forecast-uv'
+          Invoke-WebRequest 'https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-pc-windows-msvc.zip' -OutFile $archive
+          $expected = 'a2a8820d5eea32f08ef467ef3b7f66883a9b076d5737a2fc2fbb5f458d1bb50f'
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+            throw 'The uv archive does not match the pinned upstream SHA256'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $tools
+          $uv = Join-Path $tools 'uv.exe'
+          & $uv python install '${{ matrix.runtime.python }}' --no-bin --no-registry
+          if ($LASTEXITCODE -ne 0) { throw 'Managed Python installation failed' }
+          $python = & $uv python find '${{ matrix.runtime.python }}' --managed-python
+          if ($LASTEXITCODE -ne 0) { throw 'Managed Python lookup failed' }
+          $venv = Join-Path $env:RUNNER_TEMP 'forecast-runtime'
+          & $python -m venv $venv
+          if ($LASTEXITCODE -ne 0) { throw 'Isolated Python environment creation failed' }
+          $scripts = Join-Path $venv 'Scripts'
+          & (Join-Path $scripts 'python.exe') -c "import platform, sysconfig; assert platform.python_version() == '${{ matrix.runtime.python }}'; assert platform.machine().lower() in ('amd64', 'x86_64'); assert sysconfig.get_platform() == 'win-amd64'"
+          if ($LASTEXITCODE -ne 0) { throw 'The native interpreter does not match the qualified target' }
+          $scripts | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Install authentication test dependencies
         run: >-
           python -m pip install --require-hashes --only-binary=:all:

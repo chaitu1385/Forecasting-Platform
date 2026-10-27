@@ -98,6 +98,14 @@ support through October 2027, 3.12 through October 2028 and 3.13 through October
 before its security window ends; do not restore an EOL CI lane to preserve a
 misleading compatibility claim.
 
+These are source/security releases: GitHub's `setup-python` manifest has no
+Windows installer for the selected patches. Native Windows CI therefore uses
+checksum-pinned uv 0.13.6 to provision Astral's CPython builds in job-private
+directories, with `--no-bin --no-registry`, then creates an isolated venv and
+verifies the exact patch version, native host and `win-amd64` interpreter ABI.
+It does not silently select an old Windows patch or modify OS registry/global
+Python settings. Linux CI and the Python container retain their declared providers.
+
 `pyproject.toml` is the canonical declaration. The committed
 `requirements/py311`, `py312` and `py313` directories contain **separately
 resolved, SHA-256-locked profiles**, not a universal lock compiled on one
