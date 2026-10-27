@@ -172,6 +172,14 @@ A catalog of the failure modes that break forecasting platforms — what goes wr
 
 **What to watch for:** A silently failed batch means some series are missing from the output. Always check `engine.failures` after a parallel backtest run and compare the number of output series against the input. Memory pressure is the most common cause — each worker loads a full copy of the model plus its batch data. If you see OOM errors, reduce `batch_size` or `n_workers`. For models that aren't pickle-safe (e.g., those with live database connections), the parallel path will fail — use `n_workers=1` as a safe fallback.
 
+Previously fitted ML models can also carry cached quantile learners trained on a
+different date range. Each refit clears that training-dependent cache while
+retaining model configuration. Otherwise point predictions can land on validation
+dates while cached intervals target dates beyond the full history, silently
+leaving missing intervals or using information from outside the training fold.
+Real LightGBM/XGBoost refit and previously fitted parallel-fold tests compare
+against fresh training on the same fold, including non-null interval checks.
+
 ---
 
 ## 18. Stale Alerts from Drift Detection

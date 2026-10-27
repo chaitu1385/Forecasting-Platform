@@ -122,6 +122,8 @@ class _DirectMLBase(BaseForecaster):
         self._id_col = id_col
         self._time_col = time_col
         self._target_col = target_col
+        # Quantile models belong to the previous training window, not this refit.
+        self._quantile_mlfs.clear()
 
         df = self.validate_and_prepare(df, target_col, time_col, id_col)
 

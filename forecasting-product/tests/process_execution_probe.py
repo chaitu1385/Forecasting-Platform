@@ -143,6 +143,55 @@ def main() -> None:
             result.sort(["series_id", "week"]),
             expected.sort(["series_id", "week"]),
         )
+    elif scenario == "fitted-quantiles":
+        from polars.testing import assert_frame_equal
+
+        from src.backtesting.engine import BacktestEngine
+        from src.config.schema import BacktestConfig, CalibrationConfig, ForecastConfig, OutputConfig, ParallelismConfig, PlatformConfig
+        from src.forecasting.ml import LGBMDirectForecaster
+        from src.forecasting.naive import SeasonalNaiveForecaster
+
+        params = {
+            "frequency": "D", "lags": [1, 2], "num_threads": 1,
+            "lgbm_params": {"n_estimators": 12, "num_leaves": 7, "min_child_samples": 3, "random_state": 17},
+        }
+        quantiles = [0.1, 0.5, 0.9]
+        primed = LGBMDirectForecaster(**params)
+        primed.fit(data)
+        future = primed.predict_quantiles(4, quantiles)
+        assert set(primed._quantile_mlfs) == {0.1, 0.9}
+        assert future["week"].min() > data["week"].max()
+        original_cache = dict(primed._quantile_mlfs)
+
+        config = PlatformConfig(
+            forecast=ForecastConfig(
+                frequency="D", quantiles=quantiles,
+                calibration=CalibrationConfig(enabled=True),
+            ),
+            backtest=BacktestConfig(n_folds=2, val_weeks=4),
+            parallelism=ParallelismConfig(n_workers=2),
+            output=OutputConfig(metrics_path=str(output / "quantile-metrics")),
+        )
+        engine = BacktestEngine(config)
+        results = engine.run(data, [primed, SeasonalNaiveForecaster(frequency="D")])
+        assert engine.failures == []
+        observed = results.filter(pl.col("model_id") == "lgbm_direct")
+        assert observed.height == 16
+        q_columns = ["forecast_p10", "forecast_p50", "forecast_p90"]
+        for column in q_columns:
+            assert observed[column].null_count() == 0, observed
+
+        keys = ["series_id", "week"]
+        for fold, train, _val in engine._cv.split_data(data):
+            fresh = LGBMDirectForecaster(**params)
+            fresh.fit(train)
+            expected = fresh.predict(4).join(fresh.predict_quantiles(4, quantiles), on=keys)
+            assert set(fresh._quantile_mlfs) == {0.1, 0.9}
+            actual = observed.filter(pl.col("fold") == fold.fold_index).select(
+                "series_id", pl.col("target_week").alias("week"), "forecast", *q_columns,
+            )
+            assert_frame_equal(actual.sort(keys), expected.sort(keys))
+        assert all(primed._quantile_mlfs[q] is original_cache[q] for q in original_cache)
     elif scenario == "serialization-failure":
         from src.backtesting.engine import BacktestEngine
         from src.config.schema import BacktestConfig, ForecastConfig, OutputConfig, ParallelismConfig, PlatformConfig

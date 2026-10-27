@@ -143,7 +143,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 1608 unit + integration tests
+├── tests/                  # 1611 unit + integration tests
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 ├── notebooks/              # Jupyter notebooks for exploration
@@ -969,7 +969,7 @@ POLARS_MAX_THREADS=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1 \
   python -m pytest -v --timeout=180 --timeout-method=thread \
     -o faulthandler_timeout=60
-# 1608 cases across 62 test modules; no test module exclusions
+# 1611 cases across 62 test modules; no test module exclusions
 ```
 
 On Windows, set the same process environment variables with PowerShell
@@ -1016,7 +1016,7 @@ workflow code alone does not configure repository protection.
 | `test_statistical_forecasters.py` | 12 | AutoARIMA, AutoETS fit/predict/quantiles |
 | `test_fva.py` | 12 | FVA classification, layer metrics, cascade computation, FVAAnalyzer |
 | `test_data_preprocessor.py` | 12 | Data preprocessing pipeline |
-| `test_ml_forecasters.py` | 17 | LightGBM, XGBoost direct forecasters and native learner thread budgets |
+| `test_ml_forecasters.py` | 19 | LightGBM/XGBoost, native thread budgets, fresh quantile models after refitting |
 | `test_hierarchy_aggregator.py` | 11 | Aggregation, disaggregation, proportions |
 | `test_data_integrity.py` | 9 | Data integrity checks |
 | `test_multi_horizon.py` | 8 | Multi-horizon forecast evaluation |
@@ -1029,7 +1029,7 @@ workflow code alone does not configure repository protection.
 | `test_sku_mapping.py` | 81 | SKU transition engine, predecessor matching (attribute, naming, curve fitting, temporal), Bayesian fusion |
 | `test_observability.py` | 41 | PipelineContext, StructuredLogger, MetricsEmitter, AlertDispatcher, CostEstimator, PipelineScheduler |
 | `test_batch_runner.py` | 8 | BatchInferenceRunner, ParallelismConfig |
-| `test_process_execution.py` | 4 | Bounded real ASGI/process execution, sequential/parallel payload parity and serialization failures |
+| `test_process_execution.py` | 5 | Bounded real ASGI/process execution, payload parity, fitted-model quantile isolation and serialization failures |
 | `test_docker_seed.py` | 11 | Identical cold/restart paths, complete seed success and child-process cleanup |
 | `test_fabric_portability.py` | 19 | requirements-fabric.txt, ParquetOverrideStore, get_override_store factory, FabricNotebookAdapter |
 | `test_evaluator.py` | 5 | Evaluation orchestration |
