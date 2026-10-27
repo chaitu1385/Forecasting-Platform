@@ -52,6 +52,34 @@ from which model happened to succeed. Its unique key is
 responses do not publish the easiest group's score as a global `best_wmape`.
 Immutable publication must retain this scope and the stored leaderboard.
 
+## Point forecasts, naive intervals and calibration
+
+Seasonal naive retains its existing **point forecast = P50** contract, including
+the plain-naive case (`season_length=1`). For each forecast's existing seasonal
+residual population, its requested percentile is now:
+
+`point + (empirical residual quantile(q) - empirical residual median)`
+
+P50 is returned as the unchanged point exactly. Previously, nonmedian bounds
+included the residual location while P50 did not, so biased residuals could put
+the labeled median outside the bounds. Subtracting the same median from every
+offset intentionally shifts the bounds without changing point predictions,
+residual membership, model defaults or interval widths. It is not sorting,
+clipping or widening. A single residual yields zero-width intervals at the point,
+not evidence of certainty. Ordered point-centered intervals do **not** by
+themselves establish empirical coverage; evaluate that on held-out observations.
+
+Production quantiles must be finite and nondecreasing across **requested**
+levels, including P50 when requested. A raw point need not lie inside an
+upper-tail-only range such as P75–P90. Conformal correction keeps its existing
+order-statistic and symmetric-bound formulas; it never changes the point/P50.
+Valid negative corrections still tighten intervals. If correction would cross
+any requested percentiles (including nested interval levels), it fails explicitly
+before publication rather than clipping bounds or modifying the correction.
+Malformed/nonfinite values fail explicitly; empty calibration residuals remain
+a no-op for valid quantiles. Both named and prebuilt champions use only their
+own model's residuals. Existing archived forecasts are not rewritten.
+
 ## Metric definitions and configuration
 
 `src/metrics/definitions.py` defines the formulas and ranking directions.

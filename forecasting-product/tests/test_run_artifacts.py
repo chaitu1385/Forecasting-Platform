@@ -1,6 +1,5 @@
 """Real pipeline/API contracts for immutable run identity and restart retrieval."""
 
-import json
 import secrets
 import shutil
 from datetime import date, timedelta
@@ -10,13 +9,13 @@ import polars as pl
 import pytest
 import yaml
 from fastapi.testclient import TestClient
-
 from src.api.app import create_app
 from src.auth.token import create_token
 from src.config.schema import PlatformConfig
 from src.pipeline.backtest import BacktestPipeline
 from src.pipeline.forecast import ForecastPipeline
-from src.pipeline.run_store import MANIFEST_NAME, RunStore, resolve_run_root
+from src.pipeline.manifest import PipelineManifest
+from src.pipeline.run_store import MANIFEST_NAME, RunStore, new_run_id, resolve_run_root
 
 
 def _actuals(value=10.0):
@@ -113,6 +112,88 @@ def test_backtest_metrics_context_and_manifest_use_one_identity(api):
     assert board.status_code == 200 and board.json()["run_id"] == manifest.run_id
     wrong_type = client.get("/forecast/retail", params={"run_id": run_id}, headers=headers["viewer"])
     assert wrong_type.status_code == 404
+
+
+def test_exact_crossed_archive_survives_new_ordered_publication_and_restart(api):
+    client, headers, roots, key = api
+    store = RunStore(roots["runs_dir"])
+    config = PlatformConfig(lob="retail")
+    config.forecast.horizon_weeks = 2
+    config.forecast.quantiles = [0.1, 0.5, 0.9]
+    config.post_validation.enabled = False
+    actuals = _actuals()
+    origin = actuals["week"].max()
+    archived = pl.DataFrame({
+        "series_id": ["synthetic", "synthetic"],
+        "week": [origin + timedelta(weeks=lead) for lead in (1, 2)],
+        "forecast": [6.0, 3.0],
+        "forecast_p10": [11.0, -2.0],
+        "forecast_p50": [6.0, 3.0],
+        "forecast_p90": [11.0, -2.0],
+        "model": ["naive_seasonal", "naive_seasonal"],
+    })
+    started = "2026-01-01T12:00:00.000000+00:00"
+    historical = PipelineManifest(
+        run_id=new_run_id(), run_type="forecast", lob="retail",
+        started_at=started, timestamp=started, forecast_origin=origin.isoformat(),
+        input_row_count=actuals.height, input_series_count=1,
+        forecast_row_count=2, forecast_horizon=2, champion_model_id="naive_seasonal",
+        models=[{"name": "naive_seasonal", "parameters": {"season_length": 52}}],
+        execution={"model_id": "naive_seasonal", "horizon_periods": 2, "frequency": "W"},
+    )
+    store.publish(
+        historical, config,
+        {"input": actuals, "prepared": actuals.clone(), "forecast": archived},
+        {"skipped": True},
+    )
+    old_id = historical.run_id
+    directory = store.directory("retail", old_id)
+    original_bytes = {file.name: file.read_bytes() for file in directory.iterdir() if file.is_file()}
+    old_response = client.get(
+        "/forecast/retail", params={"run_id": old_id}, headers=headers["viewer"],
+    )
+    assert old_response.status_code == 200
+    old_payload = old_response.json()
+    assert [row["forecast_p50"] for row in old_payload["points"]] == [6.0, 3.0]
+    assert [row["forecast_p10"] for row in old_payload["points"]] == [11.0, -2.0]
+    assert [row["forecast_p90"] for row in old_payload["points"]] == [11.0, -2.0]
+    assert store.get("retail", old_id).source == {}
+
+    history = _actuals().with_columns(
+        pl.Series("quantity", [float(index + 1) for index in range(actuals.height)])
+    )
+    settings = _config()
+    settings["forecast"]["quantiles"] = [0.1, 0.5, 0.9]
+    response = client.post(
+        "/pipeline/forecast", params={"lob": "retail"}, headers=headers["admin"],
+        files={
+            "file": ("synthetic.csv", history.write_csv().encode(), "text/csv"),
+            "config_file": ("plan.yaml", yaml.safe_dump(settings).encode(), "text/yaml"),
+        },
+    )
+    assert response.status_code == 200, response.text
+    new_id = response.json()["run_id"]
+    assert new_id != old_id
+    corrected = store.frame("retail", new_id, "forecast")
+    assert corrected["forecast"].to_list() == [13.0, 14.0]
+    assert corrected["forecast_p50"].to_list() == [13.0, 14.0]
+    assert (corrected["forecast_p10"] <= corrected["forecast_p50"]).all()
+    assert (corrected["forecast_p50"] <= corrected["forecast_p90"]).all()
+    assert {"forecasting.naive", "evaluation.calibration", "pipeline.forecast"}.issubset(
+        store.get("retail", new_id).source["observed_source_sha256"]
+    )
+    with TestClient(create_app(**roots, auth_enabled=True, dev_mode=False, jwt_secret=key)) as restarted:
+        assert restarted.get(
+            "/forecast/retail", params={"run_id": old_id}, headers=headers["viewer"],
+        ).json() == old_payload
+        assert restarted.get(
+            "/forecast/retail", headers=headers["viewer"],
+        ).json()["run_id"] == new_id
+        assert restarted.get(
+            f"/pipeline/runs/retail/{old_id}", headers=headers["viewer"],
+        ).json()["source"] == {}
+    assert store.frame("retail", old_id, "forecast").equals(archived)
+    assert {file.name: file.read_bytes() for file in directory.iterdir() if file.is_file()} == original_bytes
 
 
 @pytest.mark.parametrize("operation", ["forecast", "backtest"])
@@ -255,7 +336,6 @@ def test_spark_local_adapter_preserves_forecasts_without_claiming_a_run_bundle(t
     from types import SimpleNamespace
 
     import pandas as pd
-
     from src.fabric.deployment import DeploymentOrchestrator
     from src.pipeline import run_store
     from src.pipeline.readers import RunReader

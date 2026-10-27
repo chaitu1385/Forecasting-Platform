@@ -525,6 +525,7 @@ def runtime_metadata() -> Dict[str, Any]:
         ("series", "builder.py"), ("config", "schema.py"),
         ("backtesting", "engine.py"), ("backtesting", "scoring.py"),
         ("metrics", "definitions.py"), ("metrics", "aggregation.py"),
+        ("forecasting", "naive.py"), ("evaluation", "calibration.py"),
         ("utils", "calendar.py"),
     )
     hashes = {

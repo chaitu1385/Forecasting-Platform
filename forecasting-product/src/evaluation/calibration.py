@@ -57,6 +57,30 @@ def _quantile_col(q: float) -> str:
     return f"forecast_p{int(round(q * 100))}"
 
 
+def validate_quantile_forecasts(
+    forecast_df: pl.DataFrame,
+    quantiles: List[float],
+    context: str = "Forecast",
+) -> None:
+    """Require finite, ordered requested percentiles, not point containment."""
+    if any(not math.isfinite(q) or not 0 <= q <= 1 for q in quantiles):
+        raise ValueError(f"{context} quantile levels must be finite and between 0 and 1")
+    columns = [_quantile_col(q) for q in sorted(quantiles)]
+    if len(set(columns)) != len(columns):
+        raise ValueError(f"{context} quantile levels must have distinct percentile column names")
+    for column in columns:
+        if column not in forecast_df.columns:
+            raise ValueError(f"{context} quantiles missing column {column}")
+        values = forecast_df[column]
+        if not values.dtype.is_numeric() or values.null_count() or not values.is_finite().all():
+            raise ValueError(f"{context} quantiles require finite numeric {column}")
+    for lower, upper in zip(columns, columns[1:]):
+        if (forecast_df[lower] > forecast_df[upper]).any():
+            raise ValueError(
+                f"{context} requires ordered quantiles: {lower} exceeds {upper}"
+            )
+
+
 # --------------------------------------------------------------------------- #
 #  Core metric
 # --------------------------------------------------------------------------- #
@@ -242,7 +266,11 @@ def apply_conformal_correction(
     For each coverage target:
       1. From residuals, compute the correction quantile q_hat at level
          ceil((n+1) * nominal) / n
-      2. Widen intervals: lower -= q_hat, upper += q_hat
+      2. Adjust intervals: lower -= q_hat, upper += q_hat
+
+    Negative corrections may tighten intervals, but a correction that crosses
+    requested quantiles raises ValueError rather than clipping or changing the
+    correction. The point forecast and any median are unchanged.
 
     Parameters
     ----------
@@ -263,6 +291,7 @@ def apply_conformal_correction(
     -------
     Forecast DataFrame with adjusted quantile columns.
     """
+    validate_quantile_forecasts(forecast_df, quantiles, "Conformal input")
     if conformal_residuals.is_empty():
         return forecast_df
 
@@ -282,7 +311,10 @@ def apply_conformal_correction(
             continue
 
         # Compute the conformal quantile (global, not per-series)
-        scores = resids[resid_col].drop_nulls().sort()
+        scores = resids[resid_col]
+        if not scores.dtype.is_numeric() or scores.null_count() or not scores.is_finite().all():
+            raise ValueError(f"Conformal residuals require finite numeric {resid_col}")
+        scores = scores.sort()
         n = scores.len()
         if n == 0:
             continue
@@ -292,12 +324,10 @@ def apply_conformal_correction(
         idx = max(idx, 0)
         q_hat = float(scores[idx])
 
-        # Only widen intervals (q_hat > 0 means intervals were too narrow)
-        # If q_hat < 0, intervals are already wider than needed — still apply
-        # to tighten them symmetrically
         forecast_df = forecast_df.with_columns(
             (pl.col(lower_col) - q_hat).alias(lower_col),
             (pl.col(upper_col) + q_hat).alias(upper_col),
         )
 
+    validate_quantile_forecasts(forecast_df, quantiles, "Conformal correction")
     return forecast_df

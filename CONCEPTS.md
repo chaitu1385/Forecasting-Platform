@@ -81,7 +81,7 @@ You can't fit an ARIMA model to a series that's 80% zeros — the model wastes i
 
 ### Conformal Prediction / Calibration
 
-A model that claims "80% prediction interval" but actually covers only 65% of outcomes will cause systematic safety stock miscalculation — you'll understock because you trusted the interval. Conformal prediction fixes this without distributional assumptions: it computes nonconformity scores on a calibration set (how wrong was the model?), then widens the prediction intervals symmetrically until empirical coverage matches the nominal target. The platform's calibration report checks whether actual values fall within stated intervals, and `apply_conformal_correction()` adjusts intervals that are too narrow or too wide.
+A model that claims "80% prediction interval" but actually covers only 65% of outcomes can cause systematic safety stock miscalculation. Conformal correction estimates an interval adjustment from held-out nonconformity scores; its coverage guarantees depend on appropriate calibration data and exchangeability, not merely ordered bounds. The platform's calibration report measures empirical coverage, and `apply_conformal_correction()` widens or tightens bounds symmetrically without moving the point or P50. Corrections that would cross requested percentiles fail explicitly before publication. Seasonal-naive intervals are median-centered residual quantiles so their P50 remains the raw point; this preserves interval width but does not prove calibration.
 
 *Implementation: `src/evaluation/calibration.py` — `compute_calibration_report()`, `apply_conformal_correction()`*
 

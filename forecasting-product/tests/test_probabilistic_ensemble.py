@@ -56,20 +56,16 @@ class TestNaivePredictQuantiles:
         qdf = f.predict_quantiles(horizon=13, quantiles=[0.1, 0.5, 0.9])
         assert len(qdf) == 2 * 13  # 2 series × 13 weeks
 
-    def test_p10_le_p90(self):
-        """P10 ≤ P90 for every row — interval width must be non-negative.
-
-        Note: P50 is not guaranteed to lie between P10 and P90 because
-        empirical YoY residuals can be all-positive (trending series) or
-        all-negative, meaning the naive point forecast is biased relative
-        to the residual distribution.  The key invariant is just P10 ≤ P90.
-        """
+    def test_p10_le_p50_le_p90(self):
+        """Every requested percentile is ordered, including the point/P50."""
         f = _naive()
         data = _make_weekly_series(n_series=2, n_weeks=104)
         f.fit(data, target_col="quantity", time_col="week", id_col="series_id")
         qdf = f.predict_quantiles(horizon=13, quantiles=[0.1, 0.5, 0.9])
         violations = (qdf["forecast_p10"] > qdf["forecast_p90"] + 1e-6).sum()
         assert violations == 0, f"{violations} rows where P10 > P90"
+        assert (qdf["forecast_p10"] <= qdf["forecast_p50"]).all()
+        assert (qdf["forecast_p50"] <= qdf["forecast_p90"]).all()
 
     def test_base_class_degenerate_intervals(self):
         """When a forecaster doesn't override, all quantiles equal point forecast."""
@@ -195,6 +191,8 @@ class TestWeightedEnsembleForecaster:
         ens.fit(data)
         qdf = ens.predict_quantiles(horizon=8, quantiles=[0.1, 0.5, 0.9])
         assert (qdf["forecast_p10"] > qdf["forecast_p90"] + 1e-6).sum() == 0
+        assert (qdf["forecast_p10"] <= qdf["forecast_p50"]).all()
+        assert (qdf["forecast_p50"] <= qdf["forecast_p90"]).all()
 
     def test_get_params_contains_weights(self):
         ens = self._make_ensemble()

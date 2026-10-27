@@ -19,6 +19,7 @@ from typing import Optional, Union
 import polars as pl
 
 from ..config.schema import PlatformConfig
+from ..evaluation.calibration import apply_conformal_correction, validate_quantile_forecasts
 from ..forecasting.base import BaseForecaster
 from ..forecasting.registry import registry
 from ..observability.context import PipelineContext
@@ -26,7 +27,7 @@ from ..observability.metrics import MetricsEmitter
 from ..series.builder import SeriesBuilder
 from .manifest import PipelineManifest, build_manifest, model_metadata, runtime_metadata
 from .run_store import RunStore, resolve_run_root, utc_timestamp
-from .validation_step import run_post_validation
+from .validation_step import ValidationError, run_post_validation
 
 logger = logging.getLogger(__name__)
 
@@ -253,22 +254,30 @@ class ForecastPipeline:
             forecast = forecast.join(
                 qdf, on=[fc.series_id_column, fc.time_column], how="left"
             )
+            try:
+                validate_quantile_forecasts(forecast, fc.quantiles)
 
-        # Step 4c: Conformal prediction correction (if calibration configured)
-        cal = fc.calibration
-        if (fc.quantiles and cal.enabled and cal.conformal_correction
-                and self._conformal_residuals is not None):
-            from ..evaluation.calibration import apply_conformal_correction
-            forecast = apply_conformal_correction(
-                forecast,
-                self._conformal_residuals,
-                fc.quantiles,
-                cal.coverage_targets,
-                fc.series_id_column,
-                model_id=base_model_name if isinstance(champion_model, str) else None,
-            )
-            logger.info("Applied conformal prediction correction to intervals")
-            optional_inputs["conformal_residuals"] = self._conformal_residuals
+                # Step 4c: Conformal prediction correction (if configured)
+                cal = fc.calibration
+                if (cal.enabled and cal.conformal_correction
+                        and self._conformal_residuals is not None):
+                    forecast = apply_conformal_correction(
+                        forecast,
+                        self._conformal_residuals,
+                        fc.quantiles,
+                        cal.coverage_targets,
+                        fc.series_id_column,
+                        model_id=base_model_name,
+                    )
+                    logger.info("Applied conformal prediction correction to intervals")
+                    optional_inputs["conformal_residuals"] = self._conformal_residuals
+            except ValueError as exc:
+                validation = self.config.post_validation
+                if validation.enabled and validation.halt_on_blocker:
+                    raise ValidationError(
+                        f"[{self.config.lob}] Quantile BLOCKER: {exc}"
+                    ) from exc
+                raise
 
         self._publish(
             actuals, series, forecast, base_model_name, forecast_origin,
