@@ -10,6 +10,64 @@ OBSERVATION_KEYS = ["run_id", "lob", "fold", "series_id", "target_week", "foreca
 SCORING_POLICY = "raw-observations-v1"
 
 
+def observation_metrics(
+    records: pl.DataFrame,
+    metric_names: Sequence[str],
+    group_cols: Sequence[str] = (),
+    *,
+    preserve_context: bool = True,
+) -> pl.DataFrame:
+    """Reporting aggregates from paired raw observations, never cached scores.
+
+    This is not a champion-selection helper. By default run/LOB/model identity
+    remains in the output. An explicit ``preserve_context=False`` requests
+    descriptive pooling over the supplied rows and reports the population counts.
+    Summary-only legacy metrics cannot reconstruct volume-weighted errors.
+    """
+    missing = {"actual", "forecast", *group_cols} - set(records.columns)
+    if missing:
+        raise ValueError(f"Raw observation metrics require columns {sorted(missing)}")
+    validate_metric_inputs(records["actual"], records["forecast"])
+    names = list(dict.fromkeys(metric_names))
+    if set(names) - set(METRIC_DIRECTIONS):
+        raise ValueError(f"Unknown metrics: {sorted(set(names) - set(METRIC_DIRECTIONS))}")
+    identity = [
+        column for column in ("run_id", "lob", "model_id", "grain_level", "channel")
+        if column in records.columns
+    ]
+    groups = list(dict.fromkeys((identity if preserve_context else []) + list(group_cols)))
+    keys = OBSERVATION_KEYS + ["model_id"] + [
+        column for column in ("grain_level", "channel") if column in records.columns
+    ]
+    if set(keys).issubset(records.columns) and records.select(keys).is_duplicated().any():
+        raise ValueError("Duplicate raw observation keys in reporting metrics")
+    if "mase" in names and "mase_scale" not in records.columns:
+        raise ValueError("MASE requires the training-only mase_scale")
+    expressions = [metric_expression(name) for name in names if name != "macro_wmape"]
+    expressions += [
+        pl.col("actual").count().alias("n_observations"),
+        pl.col("actual").abs().sum().alias("total_volume"),
+    ]
+    for column, output in (("series_id", "n_series"), ("run_id", "n_runs"), ("model_id", "n_models")):
+        if column in records.columns:
+            expressions.append(pl.col(column).n_unique().alias(output))
+    result = records.group_by(groups).agg(expressions) if groups else records.select(expressions)
+    if "macro_wmape" in names:
+        if not {"series_id", "fold"}.issubset(records.columns):
+            raise ValueError("macro_wmape requires series/fold identity, not summary-only scores")
+        units = list(dict.fromkeys(groups + identity + ["series_id", "fold"]))
+        unit_scores = records.group_by(units).agg(metric_expression("wmape"))
+        expression = pl.when(pl.col("wmape").is_not_null().all()).then(
+            pl.col("wmape").mean()
+        ).otherwise(None).alias("macro_wmape")
+        macro = unit_scores.group_by(groups).agg(expression) if groups else unit_scores.select(expression)
+        result = result.join(macro, on=groups) if groups else result.with_columns(macro["macro_wmape"])
+    return result.with_columns(
+        pl.lit(SCORING_POLICY).alias("scoring_policy"),
+        pl.lit("run/model/groups" if preserve_context else "all supplied observations").alias("metric_population"),
+    )
+
+
 def validate_comparable_records(records: pl.DataFrame, group_cols: Sequence[str] = ()) -> None:
     """Require one run, unique full keys and identical actual populations per model.
 
@@ -38,7 +96,7 @@ def validate_comparable_records(records: pl.DataFrame, group_cols: Sequence[str]
     populations = records.partition_by(list(group_cols), maintain_order=True) if group_cols else [records]
     for population in populations:
         expected = population.select(keys).unique().height
-        counts = population.group_by("model_id").len()
+        counts = population.group_by("model_id").agg(pl.col("model_id").count().alias("len"))
         if counts.filter(pl.col("len") != expected).height:
             raise ValueError("Model coverage differs: all candidates must score the exact same observation population")
         disagreement = population.group_by(keys).agg(pl.col("actual").n_unique().alias("_actuals"))
@@ -68,7 +126,7 @@ def aggregate_metrics(
     ]
     expressions += [
         pl.col("series_id").n_unique().alias("n_series"),
-        pl.len().alias("n_observations"),
+        pl.col("actual").count().alias("n_observations"),
         pl.col("fold").n_unique().alias("n_folds"),
     ]
     if "mase" in names and "mase_scale" not in records.columns:

@@ -103,13 +103,14 @@ class BIExporter:
 
         df = metric_store.read(run_type=run_type, lob=lob, model_id=model_id)
         if not df.is_empty():
+            from ..metrics.aggregation import observation_metrics
+
             bias = (
-                df.group_by("series_id")
-                .agg([
-                    pl.col("normalized_bias").mean().alias("avg_bias"),
-                    pl.col("wmape").mean().alias("avg_wmape"),
-                    pl.col("actual").sum().alias("total_volume"),
-                ])
+                observation_metrics(df, ["wmape", "normalized_bias"], ["series_id"])
+                .with_columns(
+                    pl.col("normalized_bias").alias("avg_bias"),
+                    pl.col("wmape").alias("avg_wmape"),
+                )
                 .sort("avg_bias")
             )
         else:

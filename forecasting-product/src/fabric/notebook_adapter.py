@@ -212,7 +212,9 @@ class FabricNotebookAdapter:
 
         Returns
         -------
-        Spark DataFrame with per-series, per-model, per-fold metrics.
+        Spark DataFrame with validated raw observations and a ``model`` column.
+        Project with ``backtest_metrics_for_legacy_storage`` when writing a
+        pre-existing per-series/model/fold Delta metrics table.
         """
         return self._pipeline.run_backtest(
             actuals_sdf,
@@ -223,7 +225,8 @@ class FabricNotebookAdapter:
     def select_champion(
         self,
         backtest_results_sdf,
-        primary_metric: str = "wmape",
+        primary_metric: Optional[str] = None,
+        secondary_metric: Optional[str] = None,
     ) -> str:
         """
         Select the best model from backtest results.
@@ -233,12 +236,15 @@ class FabricNotebookAdapter:
         from pyspark.sql import functions as F
 
         leaderboard = self._pipeline.select_champion(
-            backtest_results_sdf, primary_metric=primary_metric
+            backtest_results_sdf,
+            primary_metric=primary_metric or self._config.backtest.primary_metric,
+            secondary_metric=secondary_metric or self._config.backtest.secondary_metric,
         )
+        model_column = "model" if "model" in leaderboard.columns else "model_id"
         champion = (
             leaderboard
             .filter(F.col("rank") == 1)
-            .select("model")
+            .select(model_column)
             .first()[0]
         )
         logger.info("Champion model: %s", champion)

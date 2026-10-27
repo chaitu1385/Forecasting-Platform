@@ -118,18 +118,30 @@ class CommentaryEngine(AIFeatureBase):
     @staticmethod
     def _compute_stats(metrics_df: pl.DataFrame) -> Dict[str, Any]:
         """Compute aggregate statistics from metrics data."""
+        from ..metrics.aggregation import observation_metrics
+
         stats: Dict[str, Any] = {}
 
-        if "wmape" in metrics_df.columns:
-            wmape_vals = metrics_df["wmape"].drop_nulls()
-            if len(wmape_vals) > 0:
-                stats["overall_wmape"] = round(float(wmape_vals.mean()), 4)
-                stats["wmape_median"] = round(float(wmape_vals.median()), 4)
-
-        if "normalized_bias" in metrics_df.columns:
-            bias_vals = metrics_df["normalized_bias"].drop_nulls()
-            if len(bias_vals) > 0:
-                stats["overall_bias"] = round(float(bias_vals.mean()), 4)
+        if not metrics_df.is_empty() and {"actual", "forecast"}.issubset(metrics_df.columns):
+            pooled = observation_metrics(
+                metrics_df, ["wmape", "normalized_bias"], preserve_context=False,
+            ).row(0, named=True)
+            for name, output in (("wmape", "overall_wmape"), ("normalized_bias", "overall_bias")):
+                if pooled[name] is not None:
+                    stats[output] = round(pooled[name], 4)
+            stats["metric_population"] = pooled["metric_population"]
+            stats["scoring_policy"] = pooled["scoring_policy"]
+            for name in ("n_runs", "n_models"):
+                if name in pooled:
+                    stats[name] = pooled[name]
+            units = [column for column in ("series_id", "fold") if column in metrics_df.columns]
+            unit_scores = observation_metrics(metrics_df, ["wmape"], units)["wmape"]
+            stats["n_undefined_wmape_units"] = unit_scores.null_count()
+            median = unit_scores.median()
+            if median is not None:
+                stats["wmape_median"] = round(median, 4)
+        elif not metrics_df.is_empty():
+            stats["metric_population"] = "summary-only: raw observations required for WMAPE/bias"
 
         if "series_id" in metrics_df.columns:
             stats["n_series"] = metrics_df["series_id"].n_unique()

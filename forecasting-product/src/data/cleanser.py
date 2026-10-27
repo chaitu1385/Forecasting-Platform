@@ -12,7 +12,7 @@ from typing import Tuple
 import polars as pl
 
 from ..config.schema import CleansingConfig, get_frequency_profile
-from ..utils.calendar import PeriodCalendar, advance_date
+from ..utils.calendar import PeriodCalendar
 
 # --------------------------------------------------------------------------- #
 #  Result types
@@ -322,22 +322,25 @@ class DemandCleanser:
         sl = get_frequency_profile(frequency)["season_length"]
         if df.is_empty():
             return df
-        dates = df[time_col].unique().sort().to_list()
+        month_end = False
         if frequency in ("M", "Q"):
-            PeriodCalendar.from_dates(dates, frequency)
+            calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), frequency)
+            month_end = calendar.origin.day != 1
         # A fixed D/W lookup need not impose a model grid on diagnostic data.
         # For example, the legacy audit uses a weekly lookback on daily rows.
-        lookup_columns = {
-            time_col: dates,
-            "_lookup_date": [advance_date(value, frequency, -sl) for value in dates],
-            "_previous_date": [advance_date(value, frequency, -1) for value in dates],
-            "_next_date": [advance_date(value, frequency, 1) for value in dates],
-        }
-        offsets = pl.DataFrame(
-            lookup_columns,
-            schema_overrides={column: df[time_col].dtype for column in lookup_columns},
+        size, unit = {"D": (1, "d"), "W": (1, "w"), "M": (1, "mo"), "Q": (3, "mo")}[frequency]
+
+        def shifted(periods: int) -> pl.Expr:
+            shifted_date = pl.col(time_col).dt.offset_by(f"{periods * size}{unit}")
+            return shifted_date.dt.month_end() if month_end else shifted_date
+
+        # Native expressions retain Date/Datetime units, timezone and sub-us
+        # labels. A Python datetime round-trip would lose nanosecond keys.
+        df = df.with_columns(
+            shifted(-sl).alias("_lookup_date"),
+            shifted(-1).alias("_previous_date"),
+            shifted(1).alias("_next_date"),
         )
-        df = df.join(offsets, on=time_col, validate="m:1")
 
         lookup = df.select(
             pl.col(sid_col),

@@ -18,6 +18,7 @@ from typing import Optional
 
 import polars as pl
 
+from ..metrics.aggregation import observation_metrics
 from ..metrics.store import MetricStore
 
 
@@ -31,6 +32,18 @@ class ForecastAnalytics:
 
     def __init__(self, metric_store_path: str = "data/metrics/"):
         self._store = MetricStore(metric_store_path)
+
+    @staticmethod
+    def _metric_dispersion(df: pl.DataFrame, groups: list, metric: str) -> pl.DataFrame:
+        """Dispersion of complete series/fold metrics, not observation ratios."""
+        context = [
+            column for column in ("run_id", "lob", "model_id", "grain_level", "channel")
+            if column in df.columns
+        ]
+        keys = list(dict.fromkeys(context + groups))
+        units = list(dict.fromkeys(groups + [column for column in ("series_id", "fold") if column in df.columns]))
+        scores = observation_metrics(df, [metric], units)
+        return scores.group_by(keys).agg(pl.col(metric).std().alias(f"std_{metric}"))
 
     # ── Model comparison ──────────────────────────────────────────────────
 
@@ -66,8 +79,7 @@ class ForecastAnalytics:
             return df
 
         return (
-            df.group_by(["model_id", "fold"])
-            .agg(pl.col(metric).mean().alias(metric))
+            observation_metrics(df, [metric], ["fold"])
             .sort(["model_id", "fold"])
         )
 
@@ -110,15 +122,12 @@ class ForecastAnalytics:
         if df.is_empty() or grain_column not in df.columns:
             return df
 
-        return (
-            df.group_by(grain_column)
-            .agg([
-                pl.col(metric).mean().alias(f"avg_{metric}"),
-                pl.col(metric).std().alias(f"std_{metric}"),
-                pl.col("series_id").n_unique().alias("n_series"),
-            ])
-            .sort(f"avg_{metric}")
-        )
+        scores = observation_metrics(df, [metric], [grain_column])
+        dispersion = self._metric_dispersion(df, [grain_column], metric)
+        keys = [column for column in dispersion.columns if column != f"std_{metric}"]
+        return scores.join(dispersion, on=keys).with_columns(
+            pl.col(metric).alias(f"avg_{metric}")
+        ).sort(f"avg_{metric}")
 
     # ── Bias analysis ─────────────────────────────────────────────────────
 
@@ -131,22 +140,21 @@ class ForecastAnalytics:
         """
         Bias distribution across series.
 
-        Returns per-series average normalized bias — helps identify
+        Returns per-series pooled normalized bias — helps identify
         which series are systematically over/under-forecasted.
         """
         df = self._store.read(run_type=run_type, lob=lob, model_id=model)
         if df.is_empty():
             return df
 
-        return (
-            df.group_by("series_id")
-            .agg([
-                pl.col("normalized_bias").mean().alias("avg_bias"),
-                pl.col("normalized_bias").std().alias("std_bias"),
-                pl.col("wmape").mean().alias("avg_wmape"),
-            ])
-            .sort("avg_bias")
-        )
+        scores = observation_metrics(df, ["wmape", "normalized_bias"], ["series_id"])
+        dispersion = self._metric_dispersion(df, ["series_id"], "normalized_bias")
+        keys = [column for column in dispersion.columns if column != "std_normalized_bias"]
+        return scores.join(dispersion, on=keys).with_columns(
+            pl.col("normalized_bias").alias("avg_bias"),
+            pl.col("std_normalized_bias").alias("std_bias"),
+            pl.col("wmape").alias("avg_wmape"),
+        ).sort("avg_bias")
 
     # ── Transition impact ─────────────────────────────────────────────────
 
@@ -167,10 +175,11 @@ class ForecastAnalytics:
         if df.is_empty():
             return df
 
-        return df.filter(
-            pl.col("series_id").is_in([old_sku, new_sku])
-        ).group_by(["series_id", "model_id"]).agg(
-            pl.col(metric).mean().alias(f"avg_{metric}")
+        selected = df.filter(pl.col("series_id").is_in([old_sku, new_sku]))
+        if selected.is_empty():
+            return selected
+        return observation_metrics(selected, [metric], ["series_id"]).with_columns(
+            pl.col(metric).alias(f"avg_{metric}")
         ).sort(["series_id", f"avg_{metric}"])
 
     # ── Backtest vs Live comparison ───────────────────────────────────────
@@ -195,13 +204,15 @@ class ForecastAnalytics:
                 f"live_{metric}": pl.Float64,
             })
 
-        bt_agg = (
-            bt.group_by("model_id")
-            .agg(pl.col(metric).mean().alias(f"backtest_{metric}"))
+        # This explicitly compares the supplied backtest/live populations over
+        # time, not any original historical run ranking.
+        bt_agg = observation_metrics(bt, [metric], ["model_id"], preserve_context=False).select(
+            "model_id", pl.col(metric).alias(f"backtest_{metric}"),
+            pl.col("n_observations").alias("backtest_n_observations"),
         )
-        live_agg = (
-            live.group_by("model_id")
-            .agg(pl.col(metric).mean().alias(f"live_{metric}"))
+        live_agg = observation_metrics(live, [metric], ["model_id"], preserve_context=False).select(
+            "model_id", pl.col(metric).alias(f"live_{metric}"),
+            pl.col("n_observations").alias("live_n_observations"),
         )
 
         return bt_agg.join(live_agg, on="model_id", how="outer_coalesce").sort(

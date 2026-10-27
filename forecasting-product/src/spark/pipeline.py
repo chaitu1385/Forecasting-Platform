@@ -41,6 +41,45 @@ logger = logging.getLogger(__name__)
 _BATCH_ML_MODELS = {"lgbm_direct", "xgboost_direct"}
 
 
+def public_spark_leaderboard(frame):
+    """Keep the established public ``model`` identifier at the Spark boundary."""
+    if "model_id" not in frame.columns:
+        raise ValueError("Canonical Spark leaderboard requires model_id")
+    return frame.withColumnRenamed("model_id", "model")
+
+
+def leaderboard_for_legacy_storage(frame):
+    """Project new-run scores to the existing Delta leaderboard column schema.
+
+    The historical ``mean_*`` names are deprecated wire aliases for the current
+    metric definitions, not instructions to average observation metric columns.
+    This function never reads or recomputes an existing stored leaderboard.
+    """
+    columns = ["model", "wmape", "normalized_bias", "mae", "n_evals", "rank"]
+    missing = set(columns) - set(frame.columns)
+    if missing:
+        raise ValueError(f"Leaderboard persistence requires current score columns: {sorted(missing)}")
+    return frame.select(columns).toDF(
+        "model", "mean_wmape", "mean_normalized_bias", "mean_mae", "n_evals", "rank",
+    )
+
+
+def backtest_metrics_for_legacy_storage(frame, id_col: str = "series_id"):
+    """Preserve the existing series/model/fold Delta grain for newly scored runs."""
+    from pyspark.sql import functions as F
+
+    required = {id_col, "model", "fold", "actual", "forecast"}
+    if not required.issubset(frame.columns):
+        raise ValueError(f"Backtest persistence requires raw observations: {sorted(required)}")
+    error = F.col("forecast") - F.col("actual")
+    volume = F.sum(F.abs(F.col("actual")))
+    return frame.groupby(id_col, "model", "fold").agg(
+        F.when(volume > 0, F.sum(F.abs(error)) / volume).alias("wmape"),
+        F.when(volume > 0, F.sum(error) / volume).alias("normalized_bias"),
+        F.avg(F.abs(error)).alias("mae"),
+    )
+
+
 def _extract_forecast_params(config, champion_model: str, horizon: int) -> dict:
     """
     Pull only the primitive values needed by executor tasks from a PlatformConfig.
@@ -77,6 +116,12 @@ def forecast_partition(pdf, params: dict):
     if pdf.empty:
         return pd.DataFrame(columns=[id_col, time_col, "forecast"])
     series = _validated_frame(pl.from_pandas(pdf), id_col, time_col, [target_col], "Training data")
+    forecaster = registry.build(params["model_name"], frequency=params["frequency"])
+    prepared = forecaster.validate_and_prepare(series, target_col=target_col, time_col=time_col, id_col=id_col)
+    prepared = _validated_frame(prepared, id_col, time_col, [target_col], "Prepared training data")
+    if set(prepared[id_col].unique().to_list()) != set(series[id_col].unique().to_list()):
+        raise ValueError("Training preparation changed series coverage")
+    series = prepared
     calendar = PeriodCalendar.from_dates(series[time_col].unique().to_list(), params["frequency"])
     expected = []
     for group in series.partition_by(id_col):
@@ -84,7 +129,6 @@ def forecast_partition(pdf, params: dict):
             {id_col: group[id_col][0], time_col: label}
             for label in calendar.future_dates(group[time_col].max(), params["horizon"])
         )
-    forecaster = registry.build(params["model_name"], frequency=params["frequency"])
     forecaster.fit(series, target_col=target_col, time_col=time_col, id_col=id_col)
     result = require_exact_coverage(
         pl.DataFrame(expected), forecaster.predict(params["horizon"], id_col=id_col, time_col=time_col),
@@ -256,7 +300,8 @@ class SparkForecastPipeline:
 
         Returns
         -------
-        Spark DataFrame with the canonical raw observation/metric schema.
+        Spark DataFrame of raw observations with the public ``model`` identifier.
+        Use ``backtest_metrics_for_legacy_storage`` at legacy Delta write sites.
         """
         import polars as pl
         from pyspark.sql import types as T
@@ -311,6 +356,9 @@ class SparkForecastPipeline:
             "SparkForecastPipeline.run_backtest launched (models=%s, folds=%d)",
             model_names, self.config.backtest.n_folds,
         )
+        results_sdf = results_sdf.withColumnRenamed("model_id", "model")
+        if id_col != "series_id":
+            results_sdf = results_sdf.withColumnRenamed("series_id", id_col)
         return results_sdf
 
     # ── champion selection ────────────────────────────────────────────────────
@@ -335,8 +383,8 @@ class SparkForecastPipeline:
 
         Returns
         -------
-        Spark DataFrame with model_id, raw-error aggregate metrics and rank.
-        Legacy ``mean_wmape`` is deliberately not used to label volume WMAPE.
+        Spark DataFrame with model, canonical raw-error aggregate metrics and rank.
+        Legacy Delta writes use ``leaderboard_for_legacy_storage`` explicitly.
         """
         from pyspark.sql import functions as F
         from pyspark.sql.window import Window
@@ -347,6 +395,11 @@ class SparkForecastPipeline:
         if primary_metric not in supported or secondary_metric not in supported:
             raise ValueError("Unsupported Spark selection metric")
         df = backtest_results_sdf
+        if "model_id" not in df.columns and "model" in df.columns:
+            df = df.withColumnRenamed("model", "model_id")
+        id_col = self.config.forecast.series_id_column
+        if "series_id" not in df.columns and id_col in df.columns:
+            df = df.withColumnRenamed(id_col, "series_id")
         keys = ["run_id", "lob", "fold", "series_id", "target_week", "forecast_step"]
         missing = set(keys + ["model_id", "actual", "forecast"]) - set(df.columns)
         if missing:
@@ -366,6 +419,8 @@ class SparkForecastPipeline:
             row_valid = row_valid & F.col(column).isNotNull()
         for column in ("actual", "forecast"):
             row_valid = row_valid & ~F.isnan(column) & (F.abs(F.col(column)) != float("inf"))
+        if "model" in df.columns:
+            row_valid = row_valid & (F.col("model") == F.col("model_id"))
         validity = validity.crossJoin(df.agg(
             F.countDistinct("run_id").alias("_runs"),
             F.min(F.when(row_valid, 1).otherwise(0)).alias("_values_valid"),
@@ -379,7 +434,8 @@ class SparkForecastPipeline:
             F.mean(F.abs(error)).alias("mae"),
             F.mean(F.when(F.col("actual") != 0, F.abs(error) / F.abs(F.col("actual")))).alias("mape"),
             F.sqrt(F.mean(error * error)).alias("rmse"),
-            F.count("*").alias("n_evals"),
+            F.countDistinct(F.struct("lob", "series_id", "fold")).alias("n_evals"),
+            F.count("*").alias("n_observations"),
         )
         if "mase" in (primary_metric, secondary_metric):
             valid_scale = F.col("mase_scale").isNotNull() & (F.col("mase_scale") > 0)
@@ -408,4 +464,6 @@ class SparkForecastPipeline:
             (F.abs(F.col(name)) if METRIC_DIRECTIONS[name] == "minimize_absolute" else F.col(name)).asc_nulls_last()
             for name in (primary_metric, secondary_metric)
         ] + [F.col("model_id").asc()]
-        return leaderboard.withColumn("rank", F.row_number().over(Window.orderBy(*ordering))).orderBy("rank")
+        return public_spark_leaderboard(
+            leaderboard.withColumn("rank", F.row_number().over(Window.orderBy(*ordering))).orderBy("rank")
+        )

@@ -155,11 +155,20 @@ class NaturalLanguageQueryEngine(AIFeatureBase):
         if metrics_df is not None and not metrics_df.is_empty():
             series_metrics = metrics_df.filter(pl.col("series_id") == series_id) if "series_id" in metrics_df.columns else metrics_df
             if not series_metrics.is_empty():
+                from ..metrics.aggregation import observation_metrics
+
                 metric_ctx: Dict[str, Any] = {}
-                if "wmape" in series_metrics.columns:
-                    metric_ctx["wmape"] = round(float(series_metrics["wmape"].mean()), 4)
-                if "normalized_bias" in series_metrics.columns:
-                    metric_ctx["bias"] = round(float(series_metrics["normalized_bias"].mean()), 4)
+                if {"actual", "forecast"}.issubset(series_metrics.columns):
+                    scores = observation_metrics(
+                        series_metrics, ["wmape", "normalized_bias"], preserve_context=False,
+                    ).row(0, named=True)
+                    for name, output in (("wmape", "wmape"), ("normalized_bias", "bias")):
+                        if scores[name] is not None:
+                            metric_ctx[output] = round(scores[name], 4)
+                    metric_ctx["aggregation"] = scores["metric_population"]
+                    metric_ctx["scoring_policy"] = scores["scoring_policy"]
+                else:
+                    metric_ctx["aggregation"] = "summary-only: raw observations required for WMAPE/bias"
                 if metric_ctx:
                     context["metrics"] = metric_ctx
                     sources.append("metrics")

@@ -18,6 +18,12 @@ helper validates, rather than guesses, the grid:
   are scored. `forecast_step` is the lead from training end: with gap 2, the first
   scored observation is step 3. A requested bucket without complete coverage fails.
 - Explicit season lengths are preserved; only omitted values use profile defaults.
+- Backend aliases come from installed pandas public offsets, preserving fiscal
+  anchors without version-string parsing. Cleansing shifts retain Date/Datetime
+  units, timezone and nanosecond labels using native expressions.
+- Spark ML expectations use the same prepared panel as model fitting. Under ML's
+  existing forward-fill policy, shorter series are padded to the panel end;
+  forecast origins follow that declared policy, not independently guessed endpoints.
 
 ## Comparable observations
 
@@ -37,6 +43,14 @@ Different candidate populations cannot be compared as a single LOB competition;
 use an appropriate shared population or series-level selection. Spark worker
 errors fail their task instead of returning deceptively successful partial rows.
 The pure-worker contract is testable locally; it does not certify live Fabric.
+
+The producer declares `competition_scope` (`lob`, `series_id`, or the configured
+grouping column). A leaderboard retains `competition_scope` and `group_key`;
+equal coverage is required **within** each declared competition, never inferred
+from which model happened to succeed. Its unique key is
+`(competition_scope, group_key, model_id)`, not merely `model_id`. Multi-group API
+responses do not publish the easiest group's score as a global `best_wmape`.
+Immutable publication must retain this scope and the stored leaderboard.
 
 ## Metric definitions and configuration
 
@@ -81,6 +95,35 @@ is zero. Macro WMAPE is undefined if any constituent ratio is undefined; it cann
 drop hard cases silently. MASE stores a nullable training-only `mase_scale`;
 missing or zero scales do not yield a comparable MASE score. Undefined primary
 criteria cause an explicit insufficient-data error, not an arbitrary champion.
+
+### FVA and downstream reports
+
+FVA first validates full per-run/series model populations, then recomputes each
+model's complete fold score, then chooses a single model within each layer.
+It never takes the best observation or combines different models' best periods.
+FVA summaries explicitly average **series/fold layer scores**, not observation
+ratios, retain run identity, distinguish series counts from evaluation counts,
+and report undefined evaluations. Undefined layers cannot receive a `Keep`
+recommendation. Missing model coverage produces an explicit API conflict.
+
+Notebook/BI reports, model cards and AI numeric context also recompute from
+paired raw observations. Explicit descriptive pooling is labelled with its
+population and counts; it is not champion selection. `avg_*` reporting names
+remain compatibility aliases alongside canonical weighted metrics. Legacy
+score-only summaries cannot reconstruct volume-weighted errors.
+
+### Spark/Fabric boundaries
+
+The public Spark model identifier remains `model`; workers use `model_id`
+internally. Primary and secondary criteria reach the notebook adapter.
+In-memory leaderboards expose canonical metric names. Existing notebook, CLI
+and deployment Delta write sites use explicit compatibility projections:
+backtests retain the old `(series, model, fold)` table grain; leaderboards retain
+the `model` merge key and historical `mean_*` column names as deprecated wire
+aliases for newly computed metrics, **not** mean-of-observation formulas.
+This avoids an implicit table-schema migration or changes to the Delta writer.
+These projections never re-score an existing stored leaderboard. Validation
+covers pure adapter/write-boundary contracts, not a live Fabric deployment.
 
 ## Preprocessing and validation targets
 

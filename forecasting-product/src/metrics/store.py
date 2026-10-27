@@ -11,7 +11,7 @@ from typing import Optional
 
 import polars as pl
 
-from .aggregation import aggregate_metrics, rank_metrics
+from .aggregation import aggregate_metrics, observation_metrics, rank_metrics
 
 # The canonical schema for all metric records
 METRIC_SCHEMA = {
@@ -128,6 +128,7 @@ class MetricStore:
         df: pl.DataFrame,
         primary_metric: str = "wmape",
         secondary_metric: str = "normalized_bias",
+        group_col: Optional[str] = None,
     ) -> pl.DataFrame:
         """Compute a run-scoped leaderboard from validated raw observations."""
 
@@ -139,8 +140,19 @@ class MetricStore:
                 "n_series": pl.UInt32,
             })
 
-        board = aggregate_metrics(df, [primary_metric, secondary_metric])
-        return rank_metrics(board, primary_metric, secondary_metric)
+        if group_col is None and "competition_scope" in df.columns:
+            declared = df["competition_scope"].unique().to_list()
+            if len(declared) != 1 or declared[0] is None:
+                raise ValueError("Ambiguous competition scope; select a run and explicit grouping")
+            group_col = None if declared[0] == "global" else declared[0]
+        if group_col is not None and group_col not in df.columns:
+            raise ValueError(f"Declared competition column {group_col!r} is missing")
+        groups = [group_col] if group_col else []
+        board = aggregate_metrics(df, [primary_metric, secondary_metric], groups)
+        return rank_metrics(board, primary_metric, secondary_metric, groups).with_columns(
+            (pl.col(group_col).cast(pl.Utf8) if group_col else pl.lit("global")).alias("group_key"),
+            pl.lit(group_col or "global").alias("competition_scope"),
+        )
 
     def accuracy_over_time(
         self,
@@ -160,4 +172,4 @@ class MetricStore:
         if df.is_empty():
             return pl.DataFrame(schema={time_column: pl.Date, metric: pl.Float64})
 
-        return aggregate_metrics(df, [metric], [time_column]).select(time_column, metric).sort(time_column)
+        return observation_metrics(df, [metric], [time_column]).sort(time_column)

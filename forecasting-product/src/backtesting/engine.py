@@ -278,6 +278,10 @@ class BacktestEngine:
         if combined.is_empty():
             raise ValueError("No model completed all requested CV folds; inspect the failure summary")
         combined = combined.sort(["fold", "model_id", "series_id", "forecast_step"])
+        scope = {"lob": "lob", "series": "series_id", "product_group": "product_group"}[
+            self.bt_config.champion_granularity
+        ]
+        combined = combined.with_columns(pl.lit(scope).alias("competition_scope"))
 
         if persist:
             self.metric_store.write(

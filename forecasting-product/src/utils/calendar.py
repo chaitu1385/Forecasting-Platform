@@ -5,7 +5,7 @@ Monthly/quarterly model grids support period-start and period-end labels,
 including fiscal quarters. Weekly grids retain their observed weekday.
 """
 
-from calendar import month_abbr, monthrange
+from calendar import monthrange
 from dataclasses import dataclass
 from datetime import date, timedelta
 from numbers import Integral
@@ -106,7 +106,10 @@ class PeriodCalendar:
             return "D"
         if self.frequency == "W":
             return "W-" + ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")[self.origin.weekday()]
-        suffix = "S" if self.origin.day == 1 else "E"
+        from pandas.tseries import offsets
+
+        starts = self.origin.day == 1
         if self.frequency == "M":
-            return "M" + suffix
-        return "Q" + suffix + "-" + month_abbr[self.origin.month].upper()
+            return (offsets.MonthBegin() if starts else offsets.MonthEnd()).freqstr
+        offset = offsets.QuarterBegin if starts else offsets.QuarterEnd
+        return offset(startingMonth=self.origin.month).freqstr
