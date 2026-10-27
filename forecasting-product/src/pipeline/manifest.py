@@ -475,16 +475,45 @@ def read_scoring_contract(execution: Mapping[str, Any]) -> Optional[Dict[str, An
     return dict(contract)
 
 
+def _distribution_version(name: str) -> Optional[str]:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
 def runtime_metadata() -> Dict[str, Any]:
     """Record installed runtime versions; absent optional backends remain explicit."""
     versions: Dict[str, Optional[str]] = {
         "python": ".".join(map(str, sys.version_info[:3])), "polars": pl.__version__,
     }
-    for package in ("statsforecast", "mlforecast", "lightgbm", "xgboost", "numpy", "neuralforecast", "nixtla"):
-        try:
-            versions[package] = importlib.metadata.version(package)
-        except importlib.metadata.PackageNotFoundError:
-            versions[package] = None
+    distributions: Dict[str, str] = {}
+    for package in ("polars", "statsforecast", "mlforecast", "lightgbm", "numpy", "neuralforecast", "nixtla"):
+        version = _distribution_version(package)
+        if package != "polars":
+            versions[package] = version
+        if version is not None:
+            distributions[package] = version
+    xgboost_distributions = {
+        package: version for package in ("xgboost", "xgboost-cpu")
+        if (version := _distribution_version(package)) is not None
+    }
+    if len(xgboost_distributions) > 1:
+        raise ValueError("Multiple installed XGBoost distributions make runtime provenance ambiguous")
+    versions["xgboost"] = next(iter(xgboost_distributions.values()), None)
+    distributions.update(xgboost_distributions)
+
+    variant = getattr(importlib.import_module("polars._plr"), "RUNTIME_REPR", None)
+    runtime_packages = {
+        "rt32": "polars-runtime-32", "rt64": "polars-runtime-64", "rtcompat": "polars-runtime-compat",
+    }
+    if variant not in runtime_packages:
+        raise ValueError("The loaded Polars runtime identity is not supported")
+    runtime_distribution = runtime_packages[variant]
+    runtime_version = _distribution_version(runtime_distribution)
+    if runtime_version is None:
+        raise ValueError("The loaded Polars runtime distribution metadata is missing")
+    distributions[runtime_distribution] = runtime_version
     revision = os.environ.get("FORECAST_BUILD_REVISION") or None
     if revision is not None and not re.fullmatch(r"[0-9a-f]{40,64}", revision):
         raise ValueError("FORECAST_BUILD_REVISION must be a hexadecimal source revision")
@@ -506,6 +535,10 @@ def runtime_metadata() -> Dict[str, Any]:
     }
     return {
         "runtime_versions": versions, "code_revision": revision or "not_stamped",
+        "runtime_distributions": distributions,
+        "polars_runtime": {
+            "variant": variant, "distribution": runtime_distribution, "version": runtime_version,
+        },
         "observed_source_sha256": hashes,
         "source_hash_scope": "listed installed source files observed at publication; not a full dependency closure",
     }

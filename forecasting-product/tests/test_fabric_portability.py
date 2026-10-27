@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # ── requirements-fabric.txt ──────────────────────────────────────────────────
 
 class TestRequirementsFabric:
-    """Verify requirements-fabric.txt is valid and a subset of requirements.txt."""
+    """Verify the managed-runtime candidate excludes locally supplied engines."""
 
     def _parse_requirements(self, path: Path):
         """Parse a requirements file, returning package names (lowercase)."""
@@ -33,6 +33,11 @@ class TestRequirementsFabric:
         for line in path.read_text().splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
+                continue
+            if line.startswith("-r "):
+                names.update(self._parse_requirements(path.parent / line[3:].strip()))
+                continue
+            if line.startswith("--"):
                 continue
             # Extract package name before version specifier
             for sep in (">=", "<=", "==", "~=", "!=", ">", "<"):

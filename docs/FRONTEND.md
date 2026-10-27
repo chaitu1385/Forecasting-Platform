@@ -1,17 +1,18 @@
 # Frontend Architecture
 
-Next.js 15 frontend for the Forecasting Product, providing a workflow-driven UI for S&OP forecasting operations.
+Next.js 16 frontend for the Forecasting Product, providing a workflow-driven UI for S&OP forecasting operations.
 
 ## Tech Stack
 
 | Category | Technology | Version |
 |----------|-----------|---------|
-| Framework | Next.js (App Router) | 15.1 |
+| Runtime | Node.js / npm | 24.22.1 / 11.19.1 |
+| Framework | Next.js (App Router, Webpack) | 16.4.2 |
 | Language | TypeScript | 5.7 |
 | UI | React | 19 |
 | Styling | Tailwind CSS | 3.4 |
 | Primitives | Radix UI | Various |
-| Charts | Recharts + Plotly.js | 2.15 / 2.35 |
+| Charts | Recharts + Plotly.js | 2.15 / 4.1 |
 | Server State | TanStack React Query | 5.62 |
 | Tables | TanStack React Table | 8.20 |
 | Auth | Server-verified operator JWT / explicit demo | Per-tab memory only |
@@ -291,6 +292,11 @@ All TypeScript interfaces (`src/lib/types.ts`) mirror the FastAPI Pydantic schem
 - **Unit tests:** Vitest + React Testing Library (`npm run test:e2e` — note: script name is misleading, runs Vitest)
 - **E2E tests:** Playwright (`@playwright/test` in devDependencies)
 - **Test runner:** `jsdom` environment for component tests
+- **Runtime compatibility:** `npm run test:runtime-browser` starts the production
+  standalone server on an isolated loopback port and exercises real Plotly fan
+  and sunburst React components. It checks quantile traces, series changes,
+  legend toggles, hierarchy values and drilldown; API data is synthetic and
+  off-host requests fail the tests.
 
 ## Environment Variables
 
@@ -302,9 +308,40 @@ All TypeScript interfaces (`src/lib/types.ts`) mirror the FastAPI Pydantic schem
 
 ```bash
 cd forecasting-product/frontend
-npm install
-npm run dev          # Start dev server (port 3000)
-npm run build        # Production build
-npm run lint         # ESLint
+npm ci
+npm run dev          # Webpack dev server (port 3000)
+npm run build        # Production Webpack build
+npm run lint         # Explicit, noninteractive ESLint configuration
 npm run test:e2e     # Run Vitest unit tests
+npm run test:runtime-browser  # Requires the production build and Chromium
 ```
+
+The [Next support policy](https://nextjs.org/support-policy) lists 16 as Active
+LTS. The former 15 label conflicts with its stated two-year maintenance window;
+the supported profile therefore uses 16 instead of claiming continued 15 support.
+The [official migration guide](https://nextjs.org/docs/app/guides/upgrading/version-16)
+explicitly supports `--webpack`, which retains the existing bundler and avoids an
+unrelated Turbopack migration. No synchronous server request APIs needed
+conversion. NextAuth is not used or installed: production sign-in remains the
+custom server-verified JWT flow.
+
+The new Next 16 `react-hooks/set-state-in-effect` performance diagnostic is
+reported as a warning for existing effect-driven state handoffs. This migration
+does not rewrite authentication, cache invalidation or pipeline ownership merely
+to satisfy a new style/performance rule. Rules of Hooks, other Next/React errors,
+type checking and behavioral tests remain enforced.
+
+Two upstream-required **development-only** release-label exceptions are explicit:
+`eslint-plugin-react` 7.37.5 requires `resolve ^2.0.0-next.5`, resolving to
+`2.0.0-next.6`; the available stable `resolve` 1.x does not satisfy that API range.
+Babel 7.29.7 requires `gensync ^1.0.0-beta.2`, whose published latest is still
+`1.0.0-beta.2`. Neither is in the production npm dependency closure. The Vite
+React plugin is updated normally to 6.1.2 to use stable Rolldown plugin utilities,
+without enabling optional compiler peers.
+
+Repository dependency maintainers own revisiting these two exceptions when
+compatible stable upstream dependencies exist. Dependency-policy tests enforce
+the exact labels, direct-parent requirements, dev-only graph placement and
+artifact integrity. This is not a CVE/yanked-release waiver, a global `--pre`
+policy, or an assertion about vendored code embedded inside framework packages;
+the normal security audits, lint/type checks and behavioral gates still apply.

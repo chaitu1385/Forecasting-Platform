@@ -248,6 +248,16 @@ members when used. Internal candidate/attempt/failure files are not commit marke
 | `reproducibility` | Snapshot stages, supplied optional inputs, omitted/external state and retraining limitations |
 | Validation/cleansing fields | Per-attempt reports, including configured opt-out and post-validation grade/score |
 
+New `source.runtime_distributions` records allowlisted installed distribution
+names and versions, including `xgboost-cpu` when it supplies the existing logical
+`source.runtime_versions.xgboost` value. `source.polars_runtime` records the
+loaded Polars variant, its distribution name and version; it does not guess the
+standard runtime. Ambiguous XGBoost installations or unidentified Polars runtimes
+block new publication: use a clean locked environment rather than mixing
+distributions. These observations are not native-platform qualification or a
+promise of deterministic retraining. Historical source metadata is never
+backfilled from the current environment.
+
 For scoped backtests, `validation.json` also retains paradox-comparison
 applicability: `evaluated`, `status`, `comparisons_run`, performed comparisons and
 an `unavailable` list with reasons/population counts. Unavailable evidence is a

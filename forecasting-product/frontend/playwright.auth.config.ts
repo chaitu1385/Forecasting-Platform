@@ -11,6 +11,10 @@ if (![apiPort, frontendPort].every(port => Number.isInteger(port) && port > 1024
 }
 const apiUrl = `http://127.0.0.1:${apiPort}`;
 const frontendUrl = `http://127.0.0.1:${frontendPort}`;
+const frontendMode = process.env.AUTH_E2E_FRONTEND_MODE || "development";
+if (!["development", "production"].includes(frontendMode)) {
+  throw new Error("AUTH_E2E_FRONTEND_MODE must be development or production");
+}
 function quote(value: string) {
   if (process.platform === "win32") {
     if (value.includes('"')) throw new Error("Unsupported fixture path");
@@ -56,11 +60,16 @@ export default defineConfig({
       },
     },
     {
-      command: `node node_modules/next/dist/bin/next dev --hostname 127.0.0.1 --port ${frontendPort}`,
+      command: frontendMode === "production"
+        ? `node -e "require('node:fs').cpSync('.next/static', '.next/standalone/.next/static', { recursive: true })" && node .next/standalone/server.js`
+        : `node node_modules/next/dist/bin/next dev --webpack --hostname 127.0.0.1 --port ${frontendPort}`,
       url: `${frontendUrl}/login`,
       reuseExistingServer: false,
       timeout: 120_000,
-      env: { NEXT_PUBLIC_API_URL: apiUrl, NEXT_TELEMETRY_DISABLED: "1", JWT_SECRET_KEY: "" },
+      env: {
+        NEXT_PUBLIC_API_URL: apiUrl, NEXT_TELEMETRY_DISABLED: "1", JWT_SECRET_KEY: "",
+        HOSTNAME: "127.0.0.1", PORT: String(frontendPort),
+      },
     },
   ],
 });

@@ -362,10 +362,12 @@ python forecasting-product/scripts/serve.py --demo --port 8000
 
 # In a separate terminal, start the frontend
 cd forecasting-product/frontend
-npm install
+npm ci
 npm run dev
 ```
 
+Use Node.js 24.22.1 / npm 11.19.1 and the matching locked Python API profile
+from the [deployment guide](DEPLOYMENT.md#supported-runtimes-and-locked-profiles).
 The frontend runs at `http://localhost:3000` by default. Set `NEXT_PUBLIC_API_URL` in `.env.local` to point to your API server (defaults to `http://localhost:8000`).
 
 ### Pages

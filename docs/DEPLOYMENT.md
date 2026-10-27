@@ -79,20 +79,188 @@ are used. No signing material or browser traces are uploaded.
 
 ## Local Python Setup
 
-### Prerequisites
+### Supported runtimes and locked profiles
 
-- Python 3.8+
-- pip
+The production target is **CPython 3.12.16**. Separate resolutions cover
+**3.11.18, 3.12.16 and 3.13.18 on Windows x86-64 and glibc Linux x86-64**.
+The Python metadata deliberately excludes 3.10 and 3.14+. A successful install
+on another interpreter, ARM, macOS or musl does not qualify that combination.
+The standard Polars runtime requires its advertised CPU features (including AVX2).
+Windows native libraries require the Microsoft Visual C++ runtime; Linux needs
+`libgomp1` (included in the API image). The CPU profile uses the official
+`xgboost-cpu` distribution, which retains the `xgboost` import but **does not
+provide CUDA/GPU training**. Neural/foundation model frameworks and weights are
+not part of these profiles.
 
-### Install Dependencies
+The [Python lifecycle](https://devguide.python.org/versions/) lists 3.11 security
+support through October 2027, 3.12 through October 2028 and 3.13 through October
+2029. Python 3.10 reached end of life on October 1, 2026. Revisit 3.11 support
+before its security window ends; do not restore an EOL CI lane to preserve a
+misleading compatibility claim.
+
+These are source/security releases: GitHub's `setup-python` manifest has no
+Windows installer for the selected patches. Native Windows CI therefore uses
+checksum-pinned uv 0.13.6 to provision Astral's CPython builds in job-private
+directories, with `--no-bin --no-registry`, then creates an isolated venv and
+verifies the exact patch version, native host and `win-amd64` interpreter ABI.
+It does not silently select an old Windows patch or modify OS registry/global
+Python settings. Linux CI and the Python container retain their declared providers.
+
+`pyproject.toml` is the canonical declaration. The committed
+`requirements/py311`, `py312` and `py313` directories contain **separately
+resolved, SHA-256-locked profiles**, not a universal lock compiled on one
+interpreter. Use the directory matching the interpreter's minor version.
+
+| Profile | Included | Deliberately excluded |
+|---|---|---|
+| `core.txt` | Data processing, statistical/CPU ML models, hierarchy and SKU matching | HTTP API, DuckDB, provider SDK, test tools |
+| `api.txt` | Core, FastAPI/Starlette/Uvicorn, JWT, multipart, DuckDB and optional-use Anthropic SDK | Test/build tools, Spark, neural/GPU frameworks |
+| `dev.txt` | API, visualization, holiday calendars, full test/build/lint/audit and lock tooling | Spark and neural/GPU frameworks |
+| `ai.txt` | Core plus Anthropic SDK | HTTP server, credentials, inference calls and model weights |
+| `fabric.txt` | Core, visualization and holiday libraries for local compatibility evaluation | API, DuckDB, Azure SDKs and managed Spark/Delta replacement |
+| `spark.txt` | Core plus the declared local PySpark/Delta combination | API, managed Fabric configuration and neural/GPU frameworks |
 
 ```bash
-# Full install (all features)
-pip install -r forecasting-product/requirements.txt
-
-# Fabric-compatible subset (no DuckDB, PySpark, neuralforecast)
-pip install -r forecasting-product/requirements-fabric.txt
+python -m venv .venv
+# Activate .venv first; choose py311 or py313 for those interpreters.
+python -m pip install --require-hashes --only-binary=:all: -r forecasting-product/requirements/py312/api.txt
+python -m pip check
+# For the complete development/test environment instead:
+python -m pip install --require-hashes --only-binary=:all: -r forecasting-product/requirements/py312/dev.txt
 ```
+
+`requirements.txt` is a compatibility entry point to the **Python 3.12 dev**
+profile, not an unconstrained "install everything" file. Package extras describe
+feature dependencies, but an unconstrained `pip install .[all]` is not a
+reproducible supported deployment. Polars **2.0 is the supported floor**:
+the previous 0.20 validation-only job never established whole-application
+compatibility (for example, champion selection uses `Expr.replace_strict`).
+The locked stack, rather than every possible combination of manifest bounds,
+is the compatibility contract.
+
+### Regenerating dependency profiles
+
+Regenerate under each of the three exact supported interpreters, in its own
+virtual environment, using **pip 26.2.2 and pip-tools 7.6.2**. The build backend
+is also pinned in `pyproject.toml`. Use a private cache outside the checkout;
+never commit wheel archives, credentials or authenticated package-feed URLs.
+
+```bash
+python -m pip install pip==26.2.2 pip-tools==7.6.2 setuptools==84.2.0 wheel==0.48.0
+cd forecasting-product
+python scripts/lock_dependencies.py --wheelhouse /absolute/private/cache/wheels
+python scripts/lock_dependencies.py --check
+# CI also checks current upstream release/yank policy, independently of CVE audits:
+python scripts/lock_dependencies.py --check --upstream
+```
+
+On Windows, pass an absolute Windows path for `--wheelhouse`. The generator
+resolves from the manifest, stages only the supported Windows/Linux artifacts,
+and runs pip-tools' hash generation against that bounded local wheelhouse.
+The dev resolution constrains shared dependencies in every smaller profile.
+The hash-export pass is constrained to the resolver's exact versions and markers:
+a shared wheel cache must not promote a different cached version. Generation
+rejects prerelease/development versions and yanked upstream artifacts, and verifies
+every selected hash against PyPI metadata before replacing an export. CI repeats
+the online policy check; hashes and a clean CVE audit alone do not prove release
+quality. In particular, pytest-timeout 2.5.0 was yanked for an accidental breaking
+change and wrapt 2.5.2rc1 is a prerelease; the qualified bounds retain stable
+pytest-timeout 2.4 and wrapt 2.5.1 instead.
+`requirements/manifest.json` records the interpreter, generator and content
+hashes; `--check` is offline and rejects missing/stale/modified exports.
+Installation never needs that private wheelhouse: the committed exports contain
+package versions and hashes, not local URLs. Use one trusted package index for
+regeneration, retain TLS verification, and verify any mirror's artifact hashes
+against upstream PyPI. Never fix an install by removing hashes or using
+`--trusted-host`.
+
+The API image consumes only the locked `py312/api.txt` profile. Container bases
+are pinned to upstream digests; normal OS security updates still make image
+rebuilds different from bit-for-bit reproducible application dependency restores.
+CI must use clean hash-enforced installs, `pip check`, the full backend suite,
+Windows/Linux authentication and the real browser/container checks before an
+updated resolution becomes supported.
+
+### Managed Fabric and optional Spark
+
+The [Fabric runtime matrix](https://learn.microsoft.com/en-us/fabric/data-engineering/runtime)
+currently identifies Runtime 2.0 as GA: Python 3.13, Spark 4.1, Delta 4.2 and
+Java 21. Runtime 1.3 (Python 3.11/Spark 3.5.5) is EOSA. A local PyPI resolution
+does **not** certify either managed runtime, its preinstalled scientific
+libraries, native engine, Azure SDKs or workspace settings.
+`requirements-fabric.txt` selects the local Python 3.13 candidate only.
+Inventory the actual workspace environment and validate a separate nonproduction
+environment before applying an overlay. Do not blindly `%pip install` this
+file into an existing Fabric workspace or replace its managed Spark/Delta.
+The local Spark profile is separate from that managed environment and requires
+the Java/runtime version compatible with its locked PySpark/Delta packages.
+
+PySpark 4.1.1 is published as a source archive rather than a platform wheel.
+Only that named optional dependency is allowed to build; all core/API/scientific
+packages restore binary wheels. Keep its build tools constrained as well:
+
+```bash
+# Run from a locked dev tooling environment; select the matching Python directory.
+python -m pip install --require-hashes --only-binary=:all: --no-binary=pyspark \
+  --build-constraint forecasting-product/requirements/py312/dev.txt \
+  -r forecasting-product/requirements/py312/spark.txt
+```
+
+`scripts/check_dependency_profile.py --all --output <evidence-directory>` uses
+the locked installer to create separate clean environments, verifies dependency
+consistency, imports the actual native stack, and records bounded synthetic
+LightGBM/XGBoost point and interval outputs. It refuses to call ARM-host x64
+emulation native qualification. Spark checks cover the Python SDK import, not a
+distributed cluster, Java security posture or managed Fabric certification.
+The numerical report retains the original seeded/sampled probe and a separate
+fully sampled XGBoost diagnostic, input hash/scale, actual parameters and CPU
+build identity. Same-platform repeatability, same-platform profile upgrades and
+cross-OS variation are distinct comparisons: a seed is not a cross-compiler
+bitwise guarantee. These fixture-scoped compatibility probes do not replace
+independently derived mathematical oracles or justify relaxed tolerances.
+
+### Dependency advisory review (October 27, 2026)
+
+The initial default-branch GitHub inventory had **101 npm advisory alerts**
+(5 critical, 44 high, 40 moderate, 12 low). These are advisory records, not
+distinct packages. The corresponding initial `npm audit` grouped **22 affected
+packages** (4 critical, 11 high, 7 moderate). The updated Node 24 / Next 16 lock
+has **zero known findings** in the audit snapshot, for both runtime and
+development dependencies; that does not manually close default-branch alerts.
+
+Python was separately checked. The old resolved Starlette 0.46.2 graph produced
+14 audit records representing **7 distinct advisories**, including 3 high.
+The independently resolved Python 3.11/3.12/3.13 dev and Spark closures have zero
+known findings in the update snapshot. Core/API/AI/Fabric share constrained
+versions with those closures; they are not assumed safe merely because GitHub
+did not report Python alerts.
+The profile tests prove package/version containment and active-marker coverage
+on each claimed Python/OS pair; the Spark closure is separately audited.
+
+| Dependency / scope | Reachability and remediation |
+|---|---|
+| Next / server runtime | App Router runs in production and local Windows development. Upgraded to supported Next 16.4.2; retained Webpack. Includes fixes for Windows-hosted RCE and the image-optimization advisories, not just one prior patch. |
+| Sharp / optional Next runtime | Image optimization is a server surface even though the app has no `next/image` imports. Locked Sharp 0.35.5 includes upstream AVIF/SVG library fixes; OS-specific prerequisites are not used to waive the upgrade. |
+| NextAuth / formerly installed, unused | Source/config/route searches found no NextAuth integration or email provider; custom JWT auth owns login. Removed the unused package, rather than suggesting its magic-link advisory applied to the actual login flow. |
+| Plotly / browser runtime | The app uses scatter/fan and sunburst, not map attribution. Upgraded Plotly 2 to 4.1.2 through its supported dependency graph, bringing MapLibre 6.11.2 and patched image probing. Real React-page browser checks cover both rendered charts and their interactions. |
+| CSS/URL/build transitives | Updated affected Browserslist, Nano ID, Source Map JS, image probing and other reachable tree nodes through normal parent/range resolution. The final Next 16 tree needs no forced transitive override. |
+| Vite/Vitest/Undici/YAML/glob tooling | Development-only paths are distinguished from production. Windows editor integration and test-server mock registration have additional prerequisites, but their affected packages were patched rather than ignored. |
+| Starlette / API runtime | Form parsing is reachable through upload/request handling. No API `StaticFiles`, `FileResponse` or `HTTPEndpoint` usage was found, but all seven advisories were patched anyway with Starlette 1.3.1 and a compatible FastAPI release. No forced incompatible Starlette override or auth-default change is used. |
+
+Primary upstream examples:
+[Next image RCE](https://github.com/advisories/GHSA-2464-fhr4-w9xw),
+[Next Windows RCE](https://github.com/advisories/GHSA-p293-qw3h-jr36),
+[MapLibre sanitizer](https://github.com/advisories/GHSA-jrc7-96c5-q579),
+[unused NextAuth email normalization](https://github.com/advisories/GHSA-7rqj-j65f-68wh),
+and [Starlette form limits](https://github.com/advisories/GHSA-82w8-qh3p-5jfq).
+
+Repository maintainers own dependency updates and new advisory triage; CI
+rechecks the declared closures. Platform operators own supported OS/JDK updates,
+container scanning and validation of optional Spark/Fabric environments, including
+bundled JVM/native libraries not covered by npm/pip advisory databases. No model
+weights, paid inference, real provider credentials, deployment or alert dismissal
+is part of this verification. CodeQL findings are a separate workstream, and
+zero package findings is not a claim that the application has no security risks.
 
 ### Start the API Server
 
@@ -118,11 +286,14 @@ local synthetic demo only, add `--demo`. Explicit path flags override
 
 ### Start the Next.js Frontend
 
-Requires Node.js 18+. The frontend connects to the FastAPI backend over REST.
+Requires **Node.js 24.22.1 and npm 11.19.1**, as recorded in `.nvmrc`,
+`package.json` and the container image. Node 24 is maintenance LTS through
+April 30, 2028; [Node 20 reached EOL on April 30, 2026](https://github.com/nodejs/Release/blob/main/schedule.json).
+The frontend connects to the FastAPI backend over REST.
 
 ```bash
 cd forecasting-product/frontend
-npm install
+npm ci
 npm run dev
 ```
 
@@ -138,6 +309,31 @@ For production builds:
 npm run build
 npm start          # starts production server on port 3000
 ```
+
+`npm ci` must consume the committed lock without rewriting it. `npm run lint`
+uses an explicit, noninteractive ESLint configuration with Next/React hook rules.
+The lock retains exact versions and integrity hashes but omits registry-specific
+`resolved` URLs, so a developer's configured package mirror cannot leak into
+deployment artifacts. npm resolves the pinned artifact through the configured
+registry and still verifies its integrity; it does not reselect package versions.
+If a mirror emits legacy SHA-1 integrity metadata, the bounded
+`npm run lock:integrity -- --refresh` tool fetches only those exact existing
+tarballs with their original integrity enforced, records SHA-512 using the
+pinned npm tooling, and asserts that every package/version/dependency/platform
+field is unchanged. Set `npm_config_cache` to an absolute task-owned directory.
+The generated normalization record contains no tarballs or private feed URLs.
+
+Hash strengthening over mirror bytes is **not** independent upstream
+authentication. Acceptance requires `npm run lock:integrity -- --check-upstream`
+on the native CI host: every normalized digest must match authoritative public
+registry SHA-512 metadata or the exact official HTTPS tarball if metadata is
+legacy. Any discrepancy fails the gate; expected hashes are never rewritten to
+make it pass. Corrupted-original, upstream-mismatch and graph-change negative
+controls remain required, followed by a clean `npm ci` and the normal checks.
+`npm run test:runtime-browser` requires a production build and exercises the
+actual fan-chart and sunburst React components, including series updates,
+legend toggling and drilldown, against an isolated standalone server and
+synthetic API responses. No map tiles, provider calls or external data are used.
 
 ---
 
@@ -598,7 +794,9 @@ parallelism:
 ### Prerequisites
 
 - Fabric workspace with a Lakehouse
-- `requirements-fabric.txt` installed in notebook environment
+- An inventoried managed runtime and a validated nonproduction library overlay;
+  `requirements-fabric.txt` is only a local compatibility candidate, not permission
+  to overwrite the workspace's supplied environment.
 
 ### Limitations
 
