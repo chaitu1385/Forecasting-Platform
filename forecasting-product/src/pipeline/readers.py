@@ -60,8 +60,8 @@ class RunReader:
     @staticmethod
     def _legacy_columns(frame: pl.DataFrame) -> tuple[str, str, str]:
         identifiers = ("series_id", "sku_id", "product_id", "item_id", "sku")
-        dates = ("week", "date", "period", "timestamp", "period_end")
-        targets = ("quantity", "target", "value", "sales", "demand")
+        dates = ("week", "date", "ds", "timestamp", "month", "quarter", "period", "period_end")
+        targets = ("quantity", "target", "value", "sales", "demand", "y")
         identifier = next((name for name in identifiers if name in frame.columns), None)
         time = next((name for name in dates if name in frame.columns), None)
         target = next((name for name in targets if name in frame.columns), "quantity")

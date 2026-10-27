@@ -245,8 +245,19 @@ class RunStore:
         if info is not None and not stat.S_ISDIR(info.st_mode):
             raise RunIntegrityError("store_root_is_not_directory")
 
+    def _partition(self, lob: str) -> Path:
+        """Reject filesystem aliases without folding distinct case-sensitive LOBs."""
+        partition = checked_child(self.root, validate_lob(lob))
+        info = _entry_info(partition)
+        if info is not None:
+            if not stat.S_ISDIR(info.st_mode):
+                raise RunIntegrityError("lob_partition_is_not_directory")
+            if not any(entry.name == lob for entry in self.root.iterdir()):
+                raise ValueError("LOB spelling must match the existing filesystem partition")
+        return partition
+
     def directory(self, lob: str, run_id: str) -> Path:
-        return checked_child(self.root, validate_lob(lob), validate_run_id(run_id))
+        return checked_child(self._partition(lob), validate_run_id(run_id))
 
     def publish(
         self,
@@ -273,7 +284,6 @@ class RunStore:
             for column, value in (("run_id", manifest.run_id), ("run_type", "backtest"), ("lob", manifest.lob)):
                 if column not in metrics.columns or metrics.filter(pl.col(column).is_null() | (pl.col(column) != value)).height:
                     raise ValueError("Backtest metric identity does not match the run")
-        directory = self.directory(manifest.lob, manifest.run_id)
         stage = "reserve"
         reserved = False
         marker_bytes = None
@@ -281,7 +291,7 @@ class RunStore:
             self.root.mkdir(parents=True, exist_ok=True)
             parent = checked_child(self.root, manifest.lob)
             parent.mkdir(exist_ok=True)
-            _entry_info(parent)
+            directory = self.directory(manifest.lob, manifest.run_id)
             directory.mkdir(mode=0o700)
             reserved = True
             attempt = {
@@ -470,10 +480,16 @@ class RunStore:
             if not isinstance(data.get(field), dict):
                 raise RunIntegrityError("invalid_provenance_fields", run_id)
         models = data.get("models")
-        if not isinstance(models, list) or not models or any(
-            not isinstance(model, dict) or not isinstance(model.get("name"), str)
-            or not isinstance(model.get("parameters"), dict) for model in models
-        ):
+
+        def valid_models(items: Any, depth: int = 0) -> bool:
+            return depth < 16 and isinstance(items, list) and bool(items) and all(
+                isinstance(model, dict) and isinstance(model.get("name"), str)
+                and isinstance(model.get("parameters"), dict)
+                and ("components" not in model or valid_models(model["components"], depth + 1))
+                for model in items
+            )
+
+        if not valid_models(models):
             raise RunIntegrityError("invalid_model_metadata", run_id)
         for field in ("started_at", "completed_at"):
             value = data.get(field)
@@ -521,9 +537,11 @@ class RunStore:
         """List only committed bundles, ordered by attempt start then ID."""
         if run_type is not None and run_type not in _KINDS:
             raise ValueError("Unsupported run type")
+        if lob is not None:
+            validate_lob(lob)
         if _entry_info(self.root) is None:
             return []
-        lobs: Iterable[Path] = [checked_child(self.root, validate_lob(lob))] if lob else sorted(self.root.iterdir())
+        lobs: Iterable[Path] = [self._partition(lob)] if lob is not None else sorted(self.root.iterdir())
         manifests = []
         for partition in lobs:
             if partition.name.startswith("."):

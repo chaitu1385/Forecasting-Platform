@@ -282,6 +282,15 @@ output:
   metrics_path: /other-volume/legacy-metrics
 ```
 
+On a case-insensitive filesystem, a LOB must use the exact spelling of its
+existing partition. Competing initial case variants cannot both publish: the
+filesystem's first directory spelling wins, and an alias is rejected before
+reserving its artifact directory. Case-sensitive filesystems still support distinct `retail`
+and `RETAIL` partitions. There is no automatic lowercasing or legacy rename.
+Preserve those namespace distinctions during backup/restore: case-only distinct
+LOBs cannot be combined on a case-insensitive destination without an explicit
+operator migration.
+
 New metrics and forecasts are inside the run authority, not mirrored into those
 legacy roots. This is one local consistency boundary even when legacy paths are
 on different volumes. `MetricStore(base_path, runs_path=...)` and
@@ -339,6 +348,10 @@ trusted attempt identity. Derived BI files retain full `source_run_id` and
 `actuals_run_id` columns (null when unbound), rather than duplicating several IDs
 in a potentially overlong filename.
 No managed Delta transaction or schema migration is implied or tested here.
+Legacy history preserves the historical `ds`, `month`, `quarter` and `y`
+aliases and original column priority. Legacy AI explanations omit accuracy
+metrics with no verified association, even if a newer committed backtest has
+the same series ID; the prompt labels that accuracy lineage unknown.
 
 For inspection, use the read-only CLI from the repository root:
 

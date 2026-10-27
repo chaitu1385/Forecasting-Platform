@@ -19,7 +19,8 @@ def main():
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--control", required=True, type=Path)
     parser.add_argument("--name", required=True)
-    parser.add_argument("--mode", choices=["write", "barrier", "crash", "verify"], default="write")
+    parser.add_argument("--mode", choices=["write", "barrier", "crash", "verify", "case-race"], default="write")
+    parser.add_argument("--lob", default="retail")
     parser.add_argument("--value", type=float, default=10.0)
     parser.add_argument("--started-at", default="2026-01-01T12:00:00.000000+00:00")
     args = parser.parse_args()
@@ -39,7 +40,7 @@ def main():
         } for item in store.list()]
         report("result", rows)
         return
-    manifest, config, frames = _bundle(args.value, started_at=args.started_at)
+    manifest, config, frames = _bundle(args.value, started_at=args.started_at, lob=args.lob)
     original_link, original_write = run_store.os.link, run_store._write_new
 
     def wait_for_release():
@@ -61,9 +62,22 @@ def main():
             wait_for_release()
         return result
 
-    with patch.object(run_store.os, "link", barrier), patch.object(run_store, "_write_new", stop_after_input):
-        committed = store.publish(manifest, config, frames, {"skipped": True})
-    report("result", {"run_id": committed.run_id, "value": args.value})
+    if args.mode == "case-race":
+        wait_for_release()
+    try:
+        with patch.object(run_store.os, "link", barrier), patch.object(run_store, "_write_new", stop_after_input):
+            committed = store.publish(manifest, config, frames, {"skipped": True})
+    except run_store.RunPublicationError as exc:
+        if args.mode != "case-race":
+            raise
+        report("result", {
+            "run_id": manifest.run_id, "lob": args.lob, "outcome": exc.outcome,
+            "stage": exc.stage, "cause": type(exc.__cause__).__name__,
+            "namespace_rejected": isinstance(exc.__cause__, ValueError)
+            and str(exc.__cause__) == "LOB spelling must match the existing filesystem partition",
+        })
+    else:
+        report("result", {"run_id": committed.run_id, "value": args.value, "lob": args.lob, "outcome": "committed"})
 
 
 if __name__ == "__main__":

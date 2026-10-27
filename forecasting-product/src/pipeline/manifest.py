@@ -386,9 +386,31 @@ def configuration_snapshot(
 
 def model_metadata(model: Any, configured_frequency: str, horizon: int) -> Dict[str, Any]:
     """Capture declared model parameters without serializing fitted state or secrets."""
+    return _model_metadata(model, configured_frequency, horizon, frozenset())
+
+
+def _model_metadata(
+    model: Any, configured_frequency: str, horizon: int, ancestors: frozenset[int],
+) -> Dict[str, Any]:
+    from ..forecasting.constrained import ConstrainedDemandEstimator
+    from ..forecasting.ensemble import WeightedEnsembleForecaster
+
+    if id(model) in ancestors or len(ancestors) >= 16:
+        raise ValueError("Composite forecaster metadata requires an acyclic tree of at most 16 levels")
+    ancestors = ancestors | {id(model)}
     omitted: List[str] = []
     if not isinstance(model.name, str) or not model.name or _private_string(model.name):
         raise ValueError("Model identity cannot contain credential material")
+    if isinstance(model, WeightedEnsembleForecaster):
+        components = model._forecasters
+    elif isinstance(model, ConstrainedDemandEstimator):
+        components = [model.base]
+    else:
+        components = None
+    component_metadata = None if components is None else [
+        _model_metadata(component, configured_frequency, horizon, ancestors)
+        for component in components
+    ]
     declared = model.get_params()
     if not isinstance(declared, Mapping):
         raise TypeError("Model parameters must be a mapping")
@@ -412,6 +434,8 @@ def model_metadata(model: Any, configured_frequency: str, horizon: int) -> Dict[
         result["implementation_sha256"] = hashlib.sha256(Path(filename).read_bytes()).hexdigest()
     else:
         result["implementation_sha256"] = None
+    if component_metadata is not None:
+        result["components"] = component_metadata
     return result
 
 

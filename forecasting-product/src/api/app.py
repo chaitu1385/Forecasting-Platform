@@ -615,6 +615,7 @@ def create_app(
                     raise_run_error(exc)
             except (RunIntegrityError, ValueError, OSError) as exc:
                 raise_run_error(exc)
+        metrics_df = pl.DataFrame()
         if selected is not None and selected.manifest is not None:
             try:
                 matching = next((
@@ -625,9 +626,6 @@ def create_app(
                 metrics_df = reader.store.frame(request.lob, matching.run_id, "metrics") if matching else pl.DataFrame()
             except (RunIntegrityError, ValueError, OSError) as exc:
                 raise_run_error(exc)
-        else:
-            metrics_df, _ = metric_records(http_request, request.lob, "backtest", latest=True)
-
         engine = NaturalLanguageQueryEngine()
         result = engine.query(
             series_id=request.series_id,
@@ -636,6 +634,8 @@ def create_app(
             history=history_df if not history_df.is_empty() else None,
             forecast=forecast_df if not forecast_df.is_empty() else None,
             metrics_df=metrics_df if not metrics_df.is_empty() else None,
+            lineage={"artifact_source": "legacy", "run_id": None, "accuracy": "unknown"}
+            if selected is not None and selected.source == "legacy" else None,
         )
 
         return NLQueryResponse(

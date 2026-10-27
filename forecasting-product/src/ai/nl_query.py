@@ -50,6 +50,7 @@ class NaturalLanguageQueryEngine(AIFeatureBase):
         ml_model: Optional[Any] = None,
         features_df: Optional[pl.DataFrame] = None,
         comparison: Optional[pl.DataFrame] = None,
+        lineage: Optional[Dict[str, Any]] = None,
     ) -> NLQueryResult:
         """Answer a natural-language question about a specific series.
 
@@ -73,6 +74,8 @@ class NaturalLanguageQueryEngine(AIFeatureBase):
             Feature DataFrame for SHAP computation.
         comparison : pl.DataFrame, optional
             Comparison data (e.g. vs external forecasts).
+        lineage : dict, optional
+            Verified source labels or explicit unknown legacy provenance.
 
         Returns
         -------
@@ -86,6 +89,8 @@ class NaturalLanguageQueryEngine(AIFeatureBase):
             series_id, history, forecast, metrics_df,
             ml_model, features_df, comparison,
         )
+        if lineage is not None:
+            context["lineage"] = dict(lineage)
 
         try:
             prompt = self._build_prompt(series_id, question, lob, context)

@@ -18,14 +18,14 @@ PROBE = Path(__file__).with_name("run_store_process_probe.py")
 pytestmark = pytest.mark.timeout(150)
 
 
-def _start(root, control, name, mode, value=10.0, started_at="2026-01-01T12:00:00.000000+00:00"):
+def _start(root, control, name, mode, value=10.0, started_at="2026-01-01T12:00:00.000000+00:00", lob="retail"):
     environment = {
         **os.environ, "POLARS_MAX_THREADS": "2", "OMP_NUM_THREADS": "1",
         "OPENBLAS_NUM_THREADS": "1", "MKL_NUM_THREADS": "1", "NUMBA_NUM_THREADS": "1",
     }
     return subprocess.Popen(
         [sys.executable, str(PROBE), "--root", str(root), "--control", str(control),
-         "--name", name, "--mode", mode, "--value", str(value), "--started-at", started_at],
+         "--name", name, "--mode", mode, "--value", str(value), "--started-at", started_at, "--lob", lob],
         cwd=ROOT, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         start_new_session=os.name != "nt",
     )
@@ -102,3 +102,39 @@ def test_killed_staging_writer_is_not_visible_after_process_restart(tmp_path):
             _stop(later)
         if restarted is not None:
             _stop(restarted)
+
+
+def test_real_initial_case_variant_race_never_publishes_an_unlistable_run(tmp_path, record_property):
+    root, control = tmp_path / "runs", tmp_path / "control"
+    root.mkdir()
+    probe = tmp_path / "CaseProbe"
+    probe.mkdir()
+    case_insensitive = (tmp_path / "caseprobe").exists()
+    record_property("case_alias_race_filesystem", case_insensitive)
+    probe.rmdir()
+    lower = _start(root, control, "lower", "case-race", 10.0, lob="retail")
+    upper = _start(root, control, "upper", "case-race", 20.0, lob="RETAIL")
+    try:
+        _wait(control / "lower.ready.json", [lower, upper])
+        _wait(control / "upper.ready.json", [lower, upper])
+        assert list(root.iterdir()) == []
+        (control / "lower.release").touch()
+        (control / "upper.release").touch()
+        _finish(lower)
+        _finish(upper)
+        results = [_wait(control / f"{name}.result.json", [lower, upper]) for name in ("lower", "upper")]
+        outcomes = sorted(result["outcome"] for result in results)
+        assert outcomes == (["committed", "not_committed"] if case_insensitive else ["committed", "committed"])
+        for result in results:
+            if result["outcome"] != "committed":
+                assert result["stage"] == "reserve" and result["namespace_rejected"], result
+        store = RunStore(root)
+        successful = [result for result in results if result["outcome"] == "committed"]
+        assert {item.run_id for item in store.list()} == {result["run_id"] for result in successful}
+        for result in successful:
+            assert store.get(result["lob"], result["run_id"]).lob == result["lob"]
+            assert store.frame(result["lob"], result["run_id"], "forecast")["forecast"].to_list() == [result["value"]]
+            assert store.latest(result["lob"], "forecast").run_id == result["run_id"]
+    finally:
+        _stop(lower)
+        _stop(upper)

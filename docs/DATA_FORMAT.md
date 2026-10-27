@@ -255,6 +255,10 @@ not captured or promised deterministic. Configuration omits descriptions,
 credentials, webhook/network settings and private server paths. No secret-bearing
 raw YAML or model `__dict__` dump is saved. Canonical JSON uses sorted keys and
 explicit tags for dates/nonfinite metadata, not arbitrary object repr.
+Supported weighted ensembles and constrained wrappers also record ordered,
+recursively sanitized component parameters in `models[].components`, including
+nested omissions. This changes their canonical effective configuration identity
+when a constituent changes, without serializing fitted state or changing predictions.
 
 Historical `forecast_*_manifest.json` and `manifest_*.json` sidecars remain legacy
 schema zero, with unknown/unverified lineage. They are not upgraded into verified

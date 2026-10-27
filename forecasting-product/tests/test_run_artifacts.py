@@ -4,6 +4,7 @@ import json
 import secrets
 import shutil
 from datetime import date, timedelta
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -308,3 +309,121 @@ def test_bi_export_retains_both_run_identities_without_long_filenames(tmp_path):
         assert saved["forecast"].to_list() == [10.0]
         assert saved["quantity"].to_list() == [12.0]
         assert len(path.name) == 10 + 1 + 32 + len(".parquet")
+
+
+@pytest.mark.parametrize("time_column", ["week", "date", "ds", "timestamp", "month", "quarter"])
+def test_legacy_history_aliases_preserve_actual_http_values(api, time_column):
+    client, headers, roots, _ = api
+    directory = Path(roots["data_dir"]) / "history" / "retail"
+    directory.mkdir(parents=True)
+    pl.DataFrame({
+        "series_id": ["synthetic", "synthetic"],
+        time_column: [date(2024, 4, 1), date(2024, 1, 1)],
+        "y": [31.5, 12.0],
+    }).write_parquet(directory / "actuals.parquet")
+    response = client.get("/series/retail/synthetic/history?legacy=true", headers=headers["viewer"])
+    assert response.status_code == 200, response.text
+    assert response.json()["run_id"] is None
+    assert response.json()["artifact_source"] == "legacy"
+    assert response.json()["points"] == [
+        {"week": "2024-01-01", "value": 12.0},
+        {"week": "2024-04-01", "value": 31.5},
+    ]
+
+
+@pytest.mark.parametrize("time_column", ["week", "date", "ds", "timestamp", "month", "quarter"])
+def test_legacy_series_aliases_preserve_classification_inputs(api, time_column):
+    client, headers, roots, _ = api
+    directory = Path(roots["data_dir"]) / "history" / "retail"
+    directory.mkdir(parents=True)
+    pl.DataFrame({
+        "series_id": ["synthetic"] * 12,
+        time_column: [date(2024, 1, 1) + timedelta(days=index) for index in range(12)],
+        "y": [float(index + 1) for index in range(12)],
+    }).write_parquet(directory / "actuals.parquet")
+    response = client.get("/series/retail?legacy=true", headers=headers["viewer"])
+    assert response.status_code == 200, response.text
+    assert response.json()["series_count"] == 1
+    observed = response.json()["series"][0]
+    assert observed["series_id"] == "synthetic" and observed["n_observations"] == 12
+    assert observed["adi"] == 1.0 and observed["demand_class"] == "smooth"
+
+
+def test_legacy_history_keeps_original_column_precedence(api):
+    client, headers, roots, _ = api
+    directory = Path(roots["data_dir"]) / "history" / "retail"
+    directory.mkdir(parents=True)
+    pl.DataFrame({
+        "sku_id": ["synthetic"], "item_id": ["not-selected"],
+        "ds": [date(2024, 1, 1)], "timestamp": [date(2025, 1, 1)],
+        "period": [date(2026, 1, 1)], "value": [12.5], "sales": [999.0], "y": [-999.0],
+    }).write_parquet(directory / "actuals.parquet")
+    response = client.get("/series/retail/synthetic/history?legacy=true", headers=headers["viewer"])
+    assert response.status_code == 200
+    assert response.json()["points"] == [{"week": "2024-01-01", "value": 12.5}]
+
+
+def _capture_explanation_provider(monkeypatch):
+    from src.ai import nl_query
+
+    engine = nl_query.NaturalLanguageQueryEngine.__new__(nl_query.NaturalLanguageQueryEngine)
+    engine._client = object()
+    captured = {}
+    gather = engine._gather_context
+
+    def gather_context(*args):
+        context, sources = gather(*args)
+        captured["metrics"] = args[3]
+        return context, sources
+
+    def provider(system_prompt, user_prompt):
+        captured["prompt"] = user_prompt
+        return "### ANSWER\nSynthetic response.\n### CONFIDENCE\nlow\n### SUPPORTING_DATA\n{}"
+
+    monkeypatch.setattr(engine, "_gather_context", gather_context)
+    monkeypatch.setattr(engine, "_call_claude", provider)
+    monkeypatch.setattr(nl_query, "NaturalLanguageQueryEngine", lambda: engine)
+    return captured
+
+
+def test_legacy_ai_never_attaches_unbound_committed_accuracy(api, monkeypatch):
+    client, headers, roots, _ = api
+    data = Path(roots["data_dir"])
+    history = data / "history" / "retail"
+    forecast = data / "forecasts" / "retail"
+    history.mkdir(parents=True)
+    forecast.mkdir(parents=True)
+    _actuals(10.0).write_parquet(history / "actuals.parquet")
+    _actuals(10.0).rename({"quantity": "forecast"}).write_parquet(
+        forecast / "forecast_retail_2024-01-01.parquet"
+    )
+    unrelated = _run(client, headers["admin"], value=99.0, operation="backtest")
+    assert unrelated.status_code == 200
+    metrics = RunStore(roots["runs_dir"]).frame("retail", unrelated.json()["run_id"], "metrics")
+    assert metrics["actual"].unique().to_list() == [99.0]
+    captured = _capture_explanation_provider(monkeypatch)
+    response = client.post("/ai/explain", headers=headers["viewer"], json={
+        "lob": "retail", "series_id": "synthetic", "question": "Explain this forecast.", "legacy": True,
+    })
+    assert response.status_code == 200
+    assert captured["metrics"] is None
+    assert '"metrics"' not in captured["prompt"]
+    assert '"lineage"' in captured["prompt"] and '"unknown"' in captured["prompt"]
+    assert "metrics" not in response.json()["sources_used"]
+    assert {"history", "forecast"}.issubset(response.json()["sources_used"])
+
+
+def test_committed_ai_keeps_only_matching_run_accuracy(api, monkeypatch):
+    client, headers, _, _ = api
+    assert _run(client, headers["admin"], value=10.0, operation="backtest").status_code == 200
+    selected = _run(client, headers["admin"], value=10.0)
+    assert selected.status_code == 200
+    assert _run(client, headers["admin"], value=99.0, operation="backtest").status_code == 200
+    captured = _capture_explanation_provider(monkeypatch)
+    response = client.post("/ai/explain", headers=headers["viewer"], json={
+        "lob": "retail", "series_id": "synthetic", "question": "Explain this forecast.",
+        "run_id": selected.json()["run_id"],
+    })
+    assert response.status_code == 200
+    assert captured["metrics"]["actual"].unique().to_list() == [10.0]
+    assert "metrics" in response.json()["sources_used"]
