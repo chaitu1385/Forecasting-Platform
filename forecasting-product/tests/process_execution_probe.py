@@ -43,9 +43,10 @@ def main() -> None:
 
     scenario, output_dir = sys.argv[1:]
     output = Path(output_dir)
+    step = timedelta(weeks=1) if scenario == "backtest" else timedelta(days=1)
     data = pl.DataFrame({
         "series_id": [f"S{s}" for s in range(2) for _ in range(80)],
-        "week": [date(2022, 1, 2) + timedelta(weeks=w) for _ in range(2) for w in range(80)],
+        "week": [date(2022, 1, 2) + step * w for _ in range(2) for w in range(80)],
         "quantity": [float(30 + s * 10 + w % 13) for s in range(2) for w in range(80)],
     })
     # Initialize the native pool and file reader before creating any workers.
@@ -54,6 +55,7 @@ def main() -> None:
     data = pl.read_parquet(history)
     assert data.group_by("series_id").agg(pl.col("quantity").sum()).height == 2
     print(f"parent pid={os.getpid()} scenario={scenario} native_threads={pl.thread_pool_size()}", flush=True)
+    start_method = multiprocessing.get_start_method()
 
     if scenario == "backtest":
         from fastapi.testclient import TestClient
@@ -89,6 +91,41 @@ def main() -> None:
         assert {row["model_id"] for row in result["leaderboard"]} == {
             "naive_seasonal", "auto_ets",
         }, result
+    elif scenario == "backtest-payload":
+        from dataclasses import replace
+
+        from polars.testing import assert_frame_equal
+
+        from src.backtesting.engine import BacktestEngine
+        from src.config.schema import BacktestConfig, ForecastConfig, OutputConfig, ParallelismConfig, PlatformConfig
+        from src.forecasting.naive import SeasonalNaiveForecaster
+        from src.forecasting.statistical import AutoETSForecaster
+
+        config = PlatformConfig(
+            forecast=ForecastConfig(frequency="D", quantiles=[]),
+            backtest=BacktestConfig(n_folds=1, val_weeks=4),
+            parallelism=ParallelismConfig(n_workers=1),
+            output=OutputConfig(metrics_path=str(output / "sequential-metrics")),
+        )
+        models = [
+            SeasonalNaiveForecaster(season_length=3, frequency="D"),
+            AutoETSForecaster(season_length=7, frequency="D"),
+        ]
+        sequential = BacktestEngine(config)
+        expected = sequential.run(data, models)
+        parallel = BacktestEngine(replace(
+            config,
+            parallelism=ParallelismConfig(n_workers=2),
+            output=OutputConfig(metrics_path=str(output / "parallel-metrics")),
+        ))
+        result = parallel.run(data, models)
+        assert sequential.failures == parallel.failures == []
+        assert result.height == expected.height == 16
+        keys = ["model_id", "series_id", "target_week"]
+        assert_frame_equal(
+            result.drop("run_id").sort(keys),
+            expected.drop("run_id").sort(keys),
+        )
     elif scenario == "batch":
         from polars.testing import assert_frame_equal
 
@@ -96,10 +133,10 @@ def main() -> None:
         from src.pipeline.batch_runner import BatchInferenceRunner
 
         expected = BatchInferenceRunner(n_workers=1).run_forecast(
-            data, SeasonalNaiveForecaster(), horizon=4,
+            data, SeasonalNaiveForecaster(season_length=3, frequency="D"), horizon=4,
         )
         result = BatchInferenceRunner(n_workers=2, batch_size=1).run_forecast(
-            data, SeasonalNaiveForecaster(), horizon=4,
+            data, SeasonalNaiveForecaster(season_length=3, frequency="D"), horizon=4,
         )
         assert_frame_equal(
             result.sort(["series_id", "week"]),
@@ -107,6 +144,7 @@ def main() -> None:
         )
     else:
         raise ValueError(f"Unknown scenario: {scenario}")
+    assert multiprocessing.get_start_method() == start_method
     faulthandler.cancel_dump_traceback_later()
     print(json.dumps({"scenario": scenario, "status": "passed"}), flush=True)
 

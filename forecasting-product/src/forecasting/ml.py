@@ -417,7 +417,9 @@ class LGBMDirectForecaster(_DirectMLBase):
 
     def __init__(self, lgbm_params: Optional[Dict[str, Any]] = None, **kwargs):
         super().__init__(**kwargs)
-        self._lgbm_params = {**self.DEFAULT_PARAMS, **(lgbm_params or {})}
+        self._lgbm_params = {
+            **self.DEFAULT_PARAMS, "n_jobs": self.num_threads, **(lgbm_params or {}),
+        }
 
     def _get_learner(self) -> Any:
         import lightgbm as lgb
@@ -453,7 +455,9 @@ class XGBoostDirectForecaster(_DirectMLBase):
 
     def __init__(self, xgb_params: Optional[Dict[str, Any]] = None, **kwargs):
         super().__init__(**kwargs)
-        self._xgb_params = {**self.DEFAULT_PARAMS, **(xgb_params or {})}
+        self._xgb_params = {
+            **self.DEFAULT_PARAMS, "n_jobs": self.num_threads, **(xgb_params or {}),
+        }
 
     def _get_learner(self) -> Any:
         import xgboost as xgb

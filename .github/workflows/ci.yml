@@ -173,7 +173,15 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      POLARS_MAX_THREADS: "2"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMBA_NUM_THREADS: "1"
+      PYTHONUNBUFFERED: "1"
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
@@ -198,14 +206,22 @@ jobs:
             --timeout=180 --timeout-method=thread \
             --cov=src \
             --cov-report=xml \
-            --cov-report=term-missing
+            --cov-report=term-missing \
+            --junitxml=test-results.xml
 
       - name: Upload coverage
-        if: matrix.python-version == '3.11'
+        if: always() && matrix.python-version == '3.11'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: forecasting-product/coverage.xml
+
+      - name: Upload backend results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-results-python-${{ matrix.python-version }}
+          path: forecasting-product/test-results.xml
 
   build:
     name: Docker Build

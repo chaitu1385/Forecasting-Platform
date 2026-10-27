@@ -12,6 +12,7 @@ import logging
 import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date
+from multiprocessing import cpu_count, get_context
 from typing import List, Optional
 
 import polars as pl
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 def _run_model_in_process(
     train_bytes: bytes,
     val_bytes: bytes,
-    model_name: str,
+    forecaster: BaseForecaster,
     fold_index: int,
     run_id: str,
     run_date_iso: str,
@@ -53,14 +54,13 @@ def _run_model_in_process(
     import polars as pl
 
     from ..config.schema import get_frequency_profile
-    from ..forecasting.registry import registry
     from ..metrics.definitions import compute_all_metrics
 
     train = pl.read_ipc(io.BytesIO(train_bytes))
     val = pl.read_ipc(io.BytesIO(val_bytes))
     run_date = date.fromisoformat(run_date_iso)
 
-    forecaster = registry.build(model_name, frequency=frequency)
+    model_name = forecaster.name
     forecaster.fit(train, target_col=target_col, time_col=time_col, id_col=id_col)
 
     predictions = forecaster.predict(horizon=val_weeks, id_col=id_col, time_col=time_col)
@@ -389,10 +389,17 @@ class BacktestEngine:
         calibration_enabled = (
             quantiles and hasattr(fc, "calibration") and fc.calibration.enabled
         )
-        max_workers = None if n_workers == -1 else max(1, n_workers)
+        task_count = sum(
+            len(models) for train, val, models in partitions
+            if not train.is_empty() and not val.is_empty()
+        )
+        if not task_count:
+            return
+        max_workers = min(task_count, cpu_count() if n_workers == -1 else max(1, n_workers))
 
         futures = {}
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Fork inherits Polars/native-library locks from the already active parent.
+        with ProcessPoolExecutor(max_workers=max_workers, mp_context=get_context("spawn")) as executor:
             for train, val, models in partitions:
                 if train.is_empty() or val.is_empty():
                     continue
@@ -412,7 +419,7 @@ class BacktestEngine:
                         _run_model_in_process,
                         train_bytes=train_bytes,
                         val_bytes=val_bytes,
-                        model_name=forecaster.name,
+                        forecaster=forecaster,
                         fold_index=fold.fold_index,
                         run_id=run_id,
                         run_date_iso=run_date.isoformat(),

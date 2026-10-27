@@ -22,6 +22,28 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
+@pytest.mark.parametrize("model_name", ["lgbm_direct", "xgboost_direct"])
+@pytest.mark.parametrize("num_threads", [1, 2])
+def test_native_learners_respect_forecaster_thread_budget(model_name, num_threads):
+    from src.forecasting.registry import registry
+
+    model = registry.build(model_name, num_threads=num_threads)
+    assert model._get_learner().get_params()["n_jobs"] == num_threads
+    assert model._get_quantile_learner(0.1).get_params()["n_jobs"] == num_threads
+
+
+@pytest.mark.parametrize(
+    "model_name,params_name",
+    [("lgbm_direct", "lgbm_params"), ("xgboost_direct", "xgb_params")],
+)
+def test_explicit_native_thread_budget_is_preserved(model_name, params_name):
+    from src.forecasting.registry import registry
+
+    model = registry.build(model_name, num_threads=1, **{params_name: {"n_jobs": 2}})
+    assert model._get_learner().get_params()["n_jobs"] == 2
+    assert model._get_quantile_learner(0.1).get_params()["n_jobs"] == 2
+
+
 # --------------------------------------------------------------------------- #
 #  LightGBM
 # --------------------------------------------------------------------------- #
