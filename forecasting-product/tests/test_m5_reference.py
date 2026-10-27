@@ -77,7 +77,9 @@ def test_checked_in_m5_reference_is_non_skippable_and_exact():
         assert observed == expected
 
 
-def test_observed_runtime_metadata_is_not_automatically_an_approved_baseline():
+def test_observed_runtime_metadata_is_not_automatically_an_approved_baseline(monkeypatch):
+    for name in ("M5_PROFILE_LOCK", "M5_PROFILE_INSTALL_REPORT", "M5_PROFILE_QUALIFICATION"):
+        monkeypatch.delenv(name, raising=False)
     provenance = candidate_provenance(FIXTURE, CONFIG)
     assert provenance["approved_baseline"] is False
     assert provenance["profile_lock_sha256"] is None

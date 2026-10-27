@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 from packaging.markers import default_environment
 from packaging.requirements import Requirement
 
@@ -79,6 +80,56 @@ def test_generated_profiles_match_manifest_and_recorded_content():
         [sys.executable, str(ROOT / "scripts" / "lock_dependencies.py"), "--check"],
         cwd=ROOT, check=True, capture_output=True, text=True,
     )
+
+
+def test_full_native_matrix_captures_unapproved_m5_evidence_without_hiding_failures():
+    workflow = yaml.safe_load((ROOT.parent / ".github" / "workflows" / "ci.yml").read_text())
+    job = workflow["jobs"]["test"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["strategy"]["matrix"]["include"] == [
+        {"python-version": "3.11.18", "profile": "py311"},
+        {"python-version": "3.12.16", "profile": "py312"},
+        {"python-version": "3.13.18", "profile": "py313"},
+    ]
+    env = job["env"]
+    steps = {step["name"]: step for step in job["steps"] if "name" in step}
+    preparation = steps["Prepare fresh native M5 evidence"]
+    evidence = preparation["env"]["M5_EVIDENCE_DIR"]
+    assert all(value in evidence for value in (
+        "${{ github.run_id }}", "${{ github.run_attempt }}", "${{ matrix.profile }}",
+    ))
+    assert 'mkdir "$M5_EVIDENCE_DIR"' in preparation["run"]
+    assert all(value in preparation["run"] for value in (
+        "M5_EVIDENCE_DIR=$M5_EVIDENCE_DIR",
+        "M5_PROFILE_INSTALL_REPORT=$M5_EVIDENCE_DIR/install.json",
+        "M5_PROFILE_QUALIFICATION=$M5_EVIDENCE_DIR/native-profiles/dev.json",
+        "M5_CANDIDATE_OUTPUT=$M5_EVIDENCE_DIR/candidate.json",
+        '>> "$GITHUB_ENV"',
+    ))
+    assert env["M5_PROFILE_LOCK"].endswith("/requirements/${{ matrix.profile }}/dev.txt")
+    assert not {"GITHUB_RUN_ID", "GITHUB_SHA", "RUNNER_ARCH"} & env.keys()
+    restore = steps["Install dependencies"]["run"]
+    assert all(value in restore for value in (
+        "set -euo pipefail", "--require-hashes", "--only-binary=:all:", "--force-reinstall",
+        '--report "$M5_PROFILE_INSTALL_REPORT"', '-r "$M5_PROFILE_LOCK"', "python -m pip check",
+    ))
+    qualifier = steps["Verify clean native Linux profiles and model intervals"]["run"]
+    assert qualifier == (
+        'python scripts/check_dependency_profile.py --all --output "$M5_EVIDENCE_DIR/native-profiles"'
+    )
+    tests = steps["Run tests"]["run"]
+    assert "python -m pytest" in tests and "--junitxml=test-results.xml" in tests
+    arguments = tests.split("python -m pytest", 1)[1]
+    assert not any(flag in arguments for flag in ("--ignore", "--deselect", " -k ", " -m ", "|| true"))
+    assert not job.get("continue-on-error", False)
+    assert not any(step.get("continue-on-error", False) for step in job["steps"])
+    assert steps["Upload backend results"]["if"] == "always()"
+    capture = steps["Upload unapproved native M5 candidate and raw predictions"]
+    assert capture["if"] == "always()"
+    assert capture["with"]["path"] == evidence + "/"
+    assert steps["Upload native Linux profile evidence"]["with"]["path"] == evidence + "/native-profiles/"
+    assert capture["with"]["if-no-files-found"] == "error"
+    assert all("bless_m5_baseline" not in step.get("run", "") for step in job["steps"])
 
 
 @pytest.fixture

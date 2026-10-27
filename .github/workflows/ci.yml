@@ -314,6 +314,7 @@ jobs:
       NUMBA_NUM_THREADS: "1"
       PYTHONUNBUFFERED: "1"
       PYTHONFAULTHANDLER: "1"
+      M5_PROFILE_LOCK: ${{ github.workspace }}/forecasting-product/requirements/${{ matrix.profile }}/dev.txt
     strategy:
       fail-fast: false
       matrix:
@@ -332,15 +333,33 @@ jobs:
           cache: pip
           cache-dependency-path: forecasting-product/requirements/**/*.txt
 
-      - name: Install dependencies
+      - name: Prepare fresh native M5 evidence
+        shell: bash
+        env:
+          M5_EVIDENCE_DIR: ${{ runner.temp }}/m5-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.profile }}
         run: |
-          python -m pip install --require-hashes --only-binary=:all: \
-            -r forecasting-product/requirements/${{ matrix.profile }}/dev.txt
-          python -m pip check
+          set -euo pipefail
+          mkdir "$M5_EVIDENCE_DIR"
+          cp "$M5_PROFILE_LOCK" "$M5_EVIDENCE_DIR/dev.txt"
+          cp forecasting-product/requirements/manifest.json "$M5_EVIDENCE_DIR/manifest.json"
+          printf '%s\n' \
+            "M5_EVIDENCE_DIR=$M5_EVIDENCE_DIR" \
+            "M5_PROFILE_INSTALL_REPORT=$M5_EVIDENCE_DIR/install.json" \
+            "M5_PROFILE_QUALIFICATION=$M5_EVIDENCE_DIR/native-profiles/dev.json" \
+            "M5_CANDIDATE_OUTPUT=$M5_EVIDENCE_DIR/candidate.json" >> "$GITHUB_ENV"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --require-hashes --only-binary=:all: --force-reinstall \
+            --report "$M5_PROFILE_INSTALL_REPORT" -r "$M5_PROFILE_LOCK" \
+            2>&1 | tee "$M5_EVIDENCE_DIR/install.log"
+          python -m pip check 2>&1 | tee "$M5_EVIDENCE_DIR/pip-check.log"
 
       - name: Verify clean native Linux profiles and model intervals
         working-directory: forecasting-product
-        run: python scripts/check_dependency_profile.py --all --output "${{ runner.temp }}/native-profiles"
+        run: python scripts/check_dependency_profile.py --all --output "$M5_EVIDENCE_DIR/native-profiles"
 
       - name: Run tests
         working-directory: forecasting-product
@@ -373,7 +392,15 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
         with:
           name: native-profiles-linux-${{ matrix.profile }}
-          path: ${{ runner.temp }}/native-profiles/
+          path: ${{ runner.temp }}/m5-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.profile }}/native-profiles/
+
+      - name: Upload unapproved native M5 candidate and raw predictions
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
+        with:
+          name: m5-native-candidate-${{ matrix.profile }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/m5-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.profile }}/
+          if-no-files-found: error
 
   run-artifacts:
     name: Run artifacts (${{ matrix.os }}, Python ${{ matrix.runtime.python }})

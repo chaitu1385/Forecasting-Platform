@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import subprocess
+import sys
 import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -140,3 +141,44 @@ def test_readiness_closes_http_response(seeder, monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen", MagicMock(return_value=response))
     assert seeder.wait_for_api(timeout=1)
     response.__exit__.assert_called_once()
+
+
+@pytest.mark.parametrize("fault", [None, "crossed", "missing", "null", "infinite", "point_mismatch"])
+def test_docker_smoke_checks_actual_interval_invariants(tmp_path, fault):
+    source = Path(__file__).resolve().parents[2] / ".github" / "scripts" / "docker-smoke.sh"
+    validation = source.read_text().split("<<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    forecast_id, backtest_id = "a" * 32, "b" * 32
+    points = [{
+        "series_id": f"series-{series}", "week": f"2026-01-{period + 1:02d}",
+        "forecast": 10.0, "forecast_p10": 9.0, "forecast_p50": 10.0,
+        "forecast_p90": 11.0, "model": "naive_seasonal",
+    } for series in range(10) for period in range(12)]
+    if fault == "crossed":
+        points[0].update(forecast=6.0, forecast_p50=6.0, forecast_p10=11.0, forecast_p90=11.0)
+    elif fault == "missing":
+        points[0].pop("forecast_p50")
+    elif fault == "null":
+        points[0]["forecast_p50"] = None
+    elif fault == "infinite":
+        points[0]["forecast_p90"] = float("inf")
+    elif fault == "point_mismatch":
+        points[0]["forecast_p50"] = 10.5
+    documents = {
+        "health": {"status": "ok", "checks": {"storage": True}},
+        "forecast": {"series_count": 10, "points": points, "artifact_source": "committed", "run_id": forecast_id},
+        "leaderboard": {"entries": [{"model_id": "naive_seasonal"}], "artifact_source": "committed", "run_id": backtest_id},
+        "runs": {"runs": [
+            {"run_type": "forecast", "run_id": forecast_id},
+            {"run_type": "backtest", "run_id": backtest_id},
+        ]},
+    }
+    for name, document in documents.items():
+        (tmp_path / f"cold-{name}.json").write_text(json.dumps(document))
+    result = subprocess.run(
+        [sys.executable, "-", str(tmp_path), "cold"], input=validation,
+        text=True, capture_output=True, timeout=30,
+    )
+    if fault is None:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode != 0, "Invalid intervals must fail the actual Docker smoke assertion"

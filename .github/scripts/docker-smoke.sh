@@ -70,6 +70,14 @@ assert health["status"] == "ok" and all(health["checks"].values()), health
 forecast = json.loads((root / f"{label}-forecast.json").read_text())
 assert forecast["series_count"] == 10 and len(forecast["points"]) == 120, forecast
 assert all(math.isfinite(point["forecast"]) for point in forecast["points"])
+assert len({point["series_id"] for point in forecast["points"]}) == 10
+assert len({(point["series_id"], point["week"]) for point in forecast["points"]}) == 120
+for point in forecast["points"]:
+    quantiles = [point[f"forecast_p{level}"] for level in (10, 50, 90)]
+    assert all(isinstance(value, (int, float)) and math.isfinite(value) for value in quantiles), point
+    assert quantiles[0] <= quantiles[1] <= quantiles[2], point
+    if point["model"] == "naive_seasonal":
+        assert quantiles[1] == point["forecast"], point
 leaderboard = json.loads((root / f"{label}-leaderboard.json").read_text())
 assert leaderboard["entries"], leaderboard
 assert forecast["artifact_source"] == leaderboard["artifact_source"] == "committed"
@@ -77,7 +85,7 @@ runs = json.loads((root / f"{label}-runs.json").read_text())["runs"]
 assert len(runs) == 2 and {run["run_type"] for run in runs} == {"forecast", "backtest"}
 assert forecast["run_id"] == next(run["run_id"] for run in runs if run["run_type"] == "forecast")
 assert leaderboard["run_id"] == next(run["run_id"] for run in runs if run["run_type"] == "backtest")
-print(f"{label}: healthy, 10 series / 120 forecasts, persisted leaderboard retrieved")
+print(f"{label}: healthy, 10 series / 120 finite ordered forecasts, persisted leaderboard retrieved")
 PY
       return 0
     fi
