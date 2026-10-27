@@ -246,7 +246,11 @@ uploaded even when the two unapproved-reference gates fail; JUnit is retained
 separately. Capture does not turn those failures into success or approve a
 reference. The Docker cold/restart smoke also checks all 120 real demo forecast
 rows for finite ordered P10/P50/P90, and preserves the seasonal-naive point/P50
-contract when that model is selected.
+contract when that model is selected. After the unchanged default two-run flow,
+it explicitly requests a new seasonal-naive run using the same weekly input and
+configuration with a 12-period horizon. All 120 rows must identify that model
+and match the independent last-season point oracle. A further restart must
+preserve its exact forecast/configuration/artifacts and both previous runs.
 
 ## Historical rankings are immutable evidence
 
