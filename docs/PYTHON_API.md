@@ -107,12 +107,13 @@ The `champion_model` parameter accepts:
 
 **Module:** `src.metrics.store`
 
-Append-only Parquet store for backtest and live accuracy metrics, with Hive-style partitioning (`run_type=.../lob=.../`).
+Immutable committed-run retrieval plus explicit standalone Parquet metric
+partitions (`run_type=.../lob=.../`). Use the same run authority as the producer.
 
 ```python
-from forecasting_product.src.metrics.store import MetricStore
+from src.metrics.store import MetricStore
 
-store = MetricStore(base_path="data/metrics/")
+store = MetricStore(base_path="data/metrics/", runs_path="data/runs/")
 
 # Write backtest metrics
 store.write(records=metrics_df, run_type="backtest", lob="retail")
@@ -120,13 +121,17 @@ store.write(records=metrics_df, run_type="backtest", lob="retail")
 # Read with filters
 all_metrics = store.read(run_type="backtest", lob="retail")
 
-# Model leaderboard
+# Exact saved ranking; run_id comes from the pipeline response
 lb = store.leaderboard(
     run_type="backtest",
     lob="retail",
-    primary_metric="wmape",
-    secondary_metric="normalized_bias",
+    run_id=results["run_id"],
 )
+
+# Or select latest within this LOB, preserving its stored criteria and order
+latest = store.leaderboard(lob="retail", latest=True)
+board, manifest = store.leaderboard_result(lob="retail", run_id=results["run_id"])
+scoring = manifest.execution.get("scoring_contract")  # None means unknown, not today's policy
 
 # Accuracy over time for monitoring
 trend = store.accuracy_over_time(
@@ -137,7 +142,21 @@ trend = store.accuracy_over_time(
 )
 ```
 
-**Metric schema** (18 columns): `run_id`, `run_type`, `run_date`, `lob`, `model_id`, `fold`, `grain_level`, `series_id`, `channel`, `target_week`, `forecast_step`, `actual`, `forecast`, `wmape`, `normalized_bias`, `mape`, `mae`, `rmse`, `mase`.
+Stored leaderboard reads never rescore metric rows. Multiple committed runs
+without an exact/latest selection raise an actionable scope error, and criteria
+overrides cannot re-rank immutable history. Notebook `model_leaderboard` accepts
+the same `run_id`/`latest` selectors. BI leaderboard exports preserve the selected
+rows and add export/source identities without changing their scores or order.
+
+For an explicitly separate current analysis of unbundled raw metrics, select
+`store.read(..., run_id=legacy_id)` and pass those rows to
+`MetricStore.leaderboard_from_records(...)`. Its `scoring_policy` labels the
+computation; it does not invent an original historical ranking.
+
+**Metric schema:** `run_id`, `run_type`, `run_date`, `lob`, `model_id`, `fold`,
+`grain_level`, `series_id`, `channel`, `target_week`, `forecast_step`, `actual`,
+`forecast`, observation metric columns, nullable training-only `mase_scale`, and
+the producer's `competition_scope`. See [DATA_FORMAT.md](DATA_FORMAT.md).
 
 ---
 

@@ -70,17 +70,23 @@ def _make_metrics(metrics_dir: Path, lob="retail", n_series=5, n_weeks=30):
     rng = np.random.RandomState(42)
     rows = []
     base = date(2023, 6, 1)
+    actuals = {
+        (series, fold, step): float(max(1, rng.normal(100, 20)))
+        for series in range(n_series) for fold in range(2) for step in range(n_weeks)
+    }
     for model in ("auto_arima", "lgbm_direct", "seasonal_naive"):
         for i in range(n_series):
             for fold in range(2):
                 for w in range(n_weeks):
-                    actual = float(max(1, rng.normal(100, 20)))
+                    actual = actuals[i, fold, w]
                     forecast = actual * (1 + rng.normal(0, 0.15))
                     rows.append({
                         "series_id": f"sku_{i}",
                         "model_id": model,
                         "fold": fold,
-                        "target_week": base + timedelta(weeks=w),
+                        "run_id": f"metrics-{lob}",
+                        "forecast_step": w + 1,
+                        "target_week": base + timedelta(weeks=fold * n_weeks + w),
                         "actual": actual,
                         "forecast": forecast,
                         "wmape": abs(actual - forecast) / max(abs(actual), 1e-9),

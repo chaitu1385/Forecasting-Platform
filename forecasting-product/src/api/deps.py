@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import re
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
 from fastapi import HTTPException, Request, UploadFile
+
+if TYPE_CHECKING:
+    import polars as pl
+
+    from ..pipeline.manifest import PipelineManifest
+    from .schemas import ScoringProvenance
 
 # Regex for safe path-segment identifiers (LOB names, series IDs, model names).
 # Allows alphanumeric, hyphens, underscores, and dots (no slashes, no ..).
@@ -87,6 +93,54 @@ def metric_records(
         return frame, selected
     except (RunIntegrityError, RunNotFoundError, ValueError, OSError, KeyError) as exc:
         raise_run_error(exc)
+
+
+def leaderboard_records(
+    request: Request, lob: str, run_type: str, run_id: str | None = None,
+) -> tuple[pl.DataFrame, PipelineManifest | None]:
+    """Resolve a saved leaderboard and its provenance in one selection."""
+    from ..pipeline.run_store import (
+        RunIntegrityError,
+        RunNotFoundError,
+        validate_lob,
+        validate_run_id,
+    )
+
+    try:
+        validate_lob(lob)
+        if run_type not in {"backtest", "live"}:
+            raise ValueError("Unsupported metric run type")
+        if run_id is not None:
+            validate_run_id(run_id)
+            authority = run_reader(request).store
+            selected = authority.get(lob, run_id, run_type)
+            return authority.frame(lob, run_id, "leaderboard"), selected
+        frame, selected = metric_store(request).leaderboard_result(
+            lob=lob, run_type=run_type, run_id=run_id, latest=True,
+        )
+        return frame, selected
+    except (RunIntegrityError, RunNotFoundError, ValueError, OSError, KeyError) as exc:
+        raise_run_error(exc)
+
+
+def scoring_provenance(frame: pl.DataFrame, selected: PipelineManifest | None) -> ScoringProvenance:
+    """Expose recorded meaning without assigning today's policy to old runs."""
+    from ..metrics.aggregation import SCORING_POLICY
+    from ..pipeline.manifest import read_scoring_contract
+    from .schemas import ScoringProvenance
+
+    if selected is not None:
+        contract = read_scoring_contract(selected.execution)
+        return ScoringProvenance(
+            source="stored", status="recorded" if contract is not None else "unknown",
+            **(contract or {}),
+        )
+    scopes = frame["competition_scope"].unique().to_list() if "competition_scope" in frame.columns else []
+    return ScoringProvenance(
+        source="computed", status="recorded", version=1, policy=SCORING_POLICY,
+        primary_metric="wmape", secondary_metric="normalized_bias",
+        competition_scope=scopes[0] if len(scopes) == 1 else None,
+    )
 
 
 def run_links(lob: str, run_id: str, run_type: str):

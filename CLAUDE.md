@@ -116,7 +116,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 1758 cases (pytest)
+├── tests/                  # 1889 cases (pytest)
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 └── notebooks/              # Jupyter notebooks for exploration
@@ -172,6 +172,14 @@ run after an error, or use stale output from the previous invocation.
 `RunPublicationError` distinguishes `not_committed`, `committed` and `uncertain`.
 Latest is attempt-start UTC plus ID within LOB/type; retry means a new attempt.
 
+Exact backtest history must return stored `leaderboard.parquet` unchanged.
+`MetricStore.leaderboard_result` resolves its frame and manifest together;
+`leaderboard_from_records` is the explicit current scorer, not a read adapter.
+New runs persist `execution.scoring_contract` (policy/version, criteria, scope)
+in the manifest and canonical config. Old missing policy stays unknown. Preserve
+stored row order/rank, cohort identity, auth/path checks and config hashes through
+API/notebook/BI/UI consumers; never re-rank history by today's WMAPE.
+
 Readers verify identities, fixed member names, checksums and typed schemas;
 corruption/unknown versions must be explicit, not healthy empty/fallback.
 Pass the same explicit root to MetricStore/notebook readers. Legacy reads are
@@ -194,7 +202,19 @@ backtest:
   val_periods: 3          # alias for val_weeks (backward-compat)
 ```
 
-Helper functions: `get_frequency_profile(freq)` returns the profile dict; `freq_timedelta(freq, periods)` returns a `timedelta` for date arithmetic. All models, backtesting, validation, and data processing use these instead of hardcoded weekly values.
+`get_frequency_profile(freq)` returns defaults. `utils.calendar.PeriodCalendar`
+validates the explicitly configured frequency and preserves observed weekday,
+month-start/end and quarter-start/end anchors. It drives model, feature, gap-fill
+and CV dates. `freq_timedelta` is only valid for fixed D/W periods; M/Q raise
+instead of approximating months as 30 days. Explicit seasonal parameters are
+never replaced by frequency defaults.
+
+New selection and newly computed leaderboards use `metrics.aggregation` on complete raw observation
+keys, not means of cached metric columns. Default `wmape` is volume-weighted;
+`macro_wmape` explicitly requests equal series/fold weighting. Bias is positive
+for over-forecasting and ranks by absolute magnitude. See
+[the numerical contract](docs/NUMERICAL_RELIABILITY.md), including undefined
+scores, gap lead times, preprocessing restrictions and historical-run migration.
 
 ## Authentication contract
 
@@ -222,7 +242,7 @@ Only explicit demo renders role simulation; production seeding is disabled.
 - Framework: pytest
 - Test files mirror source structure with `test_` prefix
 - Helper fixtures use `_make_*` factory functions (e.g., `_make_weekly_actuals`)
-- 1758 cases across 68 test modules; run the full suite without module exclusions
+- 1889 cases across 73 test modules; run the full suite without module exclusions
 - Key test modules: `test_platform.py` (85 tests), `test_sku_mapping.py` (81), `test_ai_*.py` (73), `test_forecast_explainability.py` (59), `test_intermittent_demand.py` (55), `test_observability.py` (41), `test_file_classifier.py` (26), `test_file_merger.py` (20)
 - Focused forecast-intent coverage: `test_forecast_intent.py` (108 real ASGI cases),
   plus frontend `e2e/pipeline-execution.test.tsx` and `e2e/data-onboarding-state.test.tsx`

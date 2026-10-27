@@ -26,7 +26,7 @@ _logger = logging.getLogger(__name__)
 #   default_val_periods — default backtest validation window (periods)
 #   default_horizon    — default forecast horizon (periods)
 #   statsforecast_freq — freq string accepted by statsforecast / neuralforecast
-#   timedelta_kwargs   — kwargs for datetime.timedelta representing one period
+#   timedelta_kwargs   — fixed-duration kwargs for D/W; None for calendar M/Q
 # ---------------------------------------------------------------------------
 FREQUENCY_PROFILES: Dict[str, Dict[str, Any]] = {
     "D": {
@@ -60,7 +60,7 @@ FREQUENCY_PROFILES: Dict[str, Dict[str, Any]] = {
         "default_val_periods": 3,
         "default_horizon": 12,
         "statsforecast_freq": "MS",
-        "timedelta_kwargs": {"days": 30},
+        "timedelta_kwargs": None,
     },
     "Q": {
         "season_length": 4,
@@ -71,7 +71,7 @@ FREQUENCY_PROFILES: Dict[str, Dict[str, Any]] = {
         "default_val_periods": 2,
         "default_horizon": 8,
         "statsforecast_freq": "QS",
-        "timedelta_kwargs": {"days": 91},
+        "timedelta_kwargs": None,
     },
 }
 
@@ -98,16 +98,18 @@ def get_frequency_profile(freq: str) -> Dict[str, Any]:
 
 
 def freq_timedelta(freq: str, periods: int = 1) -> timedelta:
-    """Return a ``timedelta`` for *periods* steps at the given frequency.
+    """Return a fixed duration for D/W; calendar M/Q require an anchored date.
 
     Parameters
     ----------
     freq : str
-        One of ``"D"``, ``"W"``, ``"M"``, ``"Q"``.
+        One of ``"D"`` or ``"W"``. For M/Q use ``utils.calendar.PeriodCalendar``.
     periods : int
         Number of periods (default 1).
     """
     kwargs = get_frequency_profile(freq)["timedelta_kwargs"]
+    if kwargs is None:
+        raise ValueError(f"Frequency {freq!r} is a calendar period, not a fixed timedelta")
     return timedelta(**{k: v * periods for k, v in kwargs.items()})
 
 

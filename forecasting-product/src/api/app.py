@@ -68,9 +68,6 @@ from .deps import (
     validate_path_param,
     validate_upload_size,
 )
-from .deps import (
-    metric_store as request_metric_store,
-)
 from .schemas import (
     AnalysisResponse,
     CommentaryRequest,
@@ -382,26 +379,13 @@ def create_app(
         run_id: Optional[str] = Query(None),
         user: User = Depends(get_current_user),
     ):
-        """
-        Return the model leaderboard for a LOB from the metric store.
-
-        Models are ranked by WMAPE (ascending).
-        """
+        """Return the selected stored ranking and its recorded scoring meaning."""
         validate_path_param(lob, "lob")
-        from ..pipeline.run_store import RunIntegrityError, RunNotFoundError
+        from ..metrics.definitions import METRIC_DIRECTIONS
+        from .deps import leaderboard_records, scoring_provenance
 
-        store = request_metric_store(request)
-        try:
-            authority = run_reader(request).store
-            selected = authority.get(lob, run_id, run_type) if run_id is not None else (
-                authority.latest(lob, "backtest") if run_type == "backtest" else None
-            )
-            df = store.leaderboard(
-                lob=lob, run_type=run_type,
-                run_id=selected.run_id if selected else None, latest=True,
-            )
-        except (RunIntegrityError, RunNotFoundError, ValueError, OSError, KeyError) as exc:
-            raise_run_error(exc)
+        df, selected = leaderboard_records(request, lob, run_type, run_id)
+        provenance = scoring_provenance(df, selected)
 
         if df.is_empty():
             raise HTTPException(
@@ -412,10 +396,14 @@ def create_app(
         entries = [
             LeaderboardEntry(
                 model=row["model_id"],
-                wmape=_finite_number(row["wmape"]),
+                wmape=_finite_number(row.get("wmape")),
                 normalized_bias=_finite_number(row.get("normalized_bias")),
                 rank=int(row.get("rank", i + 1)),
                 n_series=int(row.get("n_series", 0) or 0),
+                scores={name: _finite_number(row[name]) for name in METRIC_DIRECTIONS if name in row},
+                primary_score=_finite_number(row.get(provenance.primary_metric)) if provenance.primary_metric else None,
+                group_key=str(row["group_key"]) if row.get("group_key") is not None else None,
+                competition_scope=row.get("competition_scope"),
             )
             for i, row in enumerate(df.iter_rows(named=True))
         ]
@@ -424,6 +412,7 @@ def create_app(
             lob=lob, run_type=run_type, entries=entries,
             run_id=selected.run_id if selected else None,
             artifact_source="committed" if selected else "legacy",
+            scoring_provenance=provenance,
         )
 
     @app.get(

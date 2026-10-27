@@ -99,9 +99,17 @@ class BIExporter:
         run_id: Optional[str] = None,
     ) -> Path:
         """Export model leaderboard for BI."""
-        board = metric_store.leaderboard(run_type=run_type, lob=lob, run_id=run_id, latest=True)
-        path = self._write_export(board, "model_leaderboard", lob, run_date, run_id)
+        board, selected = metric_store.leaderboard_result(run_type=run_type, lob=lob, run_id=run_id, latest=True)
+        return self.export_leaderboard_frame(
+            board, lob, run_date, selected.run_id if selected is not None else run_id,
+        )
 
+    def export_leaderboard_frame(
+        self, board: pl.DataFrame, lob: str, run_date: Optional[str] = None,
+        run_id: Optional[str] = None,
+    ) -> Path:
+        """Write an already selected ranking without a second query or re-sort."""
+        path = self._write_export(board, "model_leaderboard", lob, run_date, run_id)
         logger.info("BI export: model_leaderboard → %s", path)
         return path
 
@@ -117,13 +125,14 @@ class BIExporter:
         """Export per-series bias report for BI."""
         df = metric_store.read(run_type=run_type, lob=lob, model_id=model_id, run_id=run_id, latest=True)
         if not df.is_empty():
+            from ..metrics.aggregation import observation_metrics
+
             bias = (
-                df.group_by("series_id")
-                .agg([
-                    pl.col("normalized_bias").mean().alias("avg_bias"),
-                    pl.col("wmape").mean().alias("avg_wmape"),
-                    pl.col("actual").sum().alias("total_volume"),
-                ])
+                observation_metrics(df, ["wmape", "normalized_bias"], ["series_id"])
+                .with_columns(
+                    pl.col("normalized_bias").alias("avg_bias"),
+                    pl.col("wmape").alias("avg_wmape"),
+                )
                 .sort("avg_bias")
             )
         else:

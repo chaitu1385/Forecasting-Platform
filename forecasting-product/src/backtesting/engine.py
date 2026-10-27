@@ -16,12 +16,12 @@ from typing import List, Optional
 
 import polars as pl
 
-from ..config.schema import PlatformConfig, get_frequency_profile
+from ..config.schema import PlatformConfig
 from ..forecasting.base import BaseForecaster
-from ..metrics.definitions import compute_all_metrics
 from ..metrics.store import METRIC_SCHEMA, MetricStore
 from ..observability.context import new_run_id
 from .cross_validator import WalkForwardCV
+from .scoring import evaluate_model_fold, require_fold_local_preprocessing
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,7 @@ def _run_model_in_process(
     frequency: str,
     quantiles: List[float],
     calibration_enabled: bool,
+    gap_weeks: int = 0,
 ) -> bytes:
     """
     Fit and evaluate a single model on a single fold.
@@ -53,66 +54,15 @@ def _run_model_in_process(
 
     import polars as pl
 
-    from ..config.schema import get_frequency_profile
-    from ..metrics.definitions import compute_all_metrics
-
     train = pl.read_ipc(io.BytesIO(train_bytes))
     val = pl.read_ipc(io.BytesIO(val_bytes))
-    run_date = date.fromisoformat(run_date_iso)
-
-    model_name = forecaster.name
-    forecaster.fit(train, target_col=target_col, time_col=time_col, id_col=id_col)
-
-    predictions = forecaster.predict(horizon=val_weeks, id_col=id_col, time_col=time_col)
-
-    # Quantile predictions
-    if quantiles and calibration_enabled:
-        qdf = forecaster.predict_quantiles(
-            horizon=val_weeks, quantiles=quantiles, id_col=id_col, time_col=time_col,
-        )
-        q_cols = [c for c in qdf.columns if c.startswith("forecast_p")]
-        predictions = predictions.join(
-            qdf.select([id_col, time_col] + q_cols), on=[id_col, time_col], how="left",
-        )
-
-    merged = val.join(predictions, on=[id_col, time_col], how="inner")
-    if merged.is_empty():
-        empty = pl.DataFrame()
-        buf = io.BytesIO()
-        empty.write_ipc(buf)
-        return buf.getvalue()
-
-    val_start = val[time_col].min()
-    results = []
-    for sid in merged[id_col].unique().to_list():
-        s = merged.filter(pl.col(id_col) == sid)
-        actual = s[target_col]
-        forecast = s["forecast"]
-
-        insample = train.filter(pl.col(id_col) == sid)[target_col]
-        context = {"insample": insample}
-        metrics = compute_all_metrics(actual, forecast, metric_names=metrics_list, context=context)
-
-        q_cols = [c for c in s.columns if c.startswith("forecast_p")]
-        for row in s.iter_rows(named=True):
-            step_days = get_frequency_profile(frequency)["timedelta_kwargs"]
-            period_days = sum(v * (7 if k == "weeks" else 1) for k, v in step_days.items())
-            forecast_step = (row[time_col] - val_start).days // period_days + 1
-
-            record = {
-                "run_id": run_id, "run_type": "backtest", "run_date": run_date,
-                "lob": lob, "model_id": model_name, "fold": fold_index,
-                "grain_level": "series", "series_id": sid, "channel": "",
-                "target_week": row[time_col], "forecast_step": forecast_step,
-                "actual": float(row[target_col]), "forecast": float(row["forecast"]),
-            }
-            record.update(metrics)
-            for qc in q_cols:
-                if row[qc] is not None:
-                    record[qc] = float(row[qc])
-            results.append(record)
-
-    result_df = pl.DataFrame(results)
+    result_df = evaluate_model_fold(
+        train, val, forecaster,
+        fold_index=fold_index, run_id=run_id, run_date=date.fromisoformat(run_date_iso),
+        lob=lob, target_col=target_col, time_col=time_col, id_col=id_col,
+        metrics_list=metrics_list, val_periods=val_weeks, gap_periods=gap_weeks,
+        frequency=frequency, quantiles=quantiles, calibration_enabled=calibration_enabled,
+    )
     buf = io.BytesIO()
     result_df.write_ipc(buf)
     return buf.getvalue()
@@ -169,18 +119,30 @@ class BacktestEngine:
             Optional list of forecasters for intermittent/sparse series.
             When provided, series are split by the SparseDetector and each
             partition is evaluated with its dedicated model list.
+        run_id:
+            Optional shared pipeline identity, preserved in every observation.
+        persist:
+            False lets the caller validate/select and publish a complete run
+            bundle atomically; the engine does not write metrics in that mode.
 
         Returns
         -------
         DataFrame of per-(model, fold, series, week) metrics.
         """
         fc = self.config.forecast
+        if run_id is not None and (not isinstance(run_id, str) or not run_id):
+            raise ValueError("run_id must be a nonempty string")
         self.run_id = run_id or new_run_id()
         self._failures = []
         self._neural_notes = []
+        require_fold_local_preprocessing(self.config)
         target_col = target_col or fc.target_column
         time_col = time_col or fc.time_column
         id_col = id_col or fc.series_id_column
+        for models in (forecasters, sparse_forecasters or []):
+            names = [model.name for model in models]
+            if len(names) != len(set(names)):
+                raise ValueError("Backtest models must have distinct model_id values")
 
         # Sparse routing: split series into dense and sparse partitions
         if sparse_forecasters:
@@ -205,17 +167,15 @@ class BacktestEngine:
 
         splits = self._cv.split_data(series, time_col)
         if not splits:
-            logger.warning("No valid CV folds. Check data date range.")
-            return pl.DataFrame()
+            raise ValueError("Insufficient data: no valid CV folds")
 
         # Warn early if ML models are unlikely to have enough training data
         # for their lag features (they'll fail silently otherwise).
-        self._warn_insufficient_data(splits, forecasters, time_col)
+        self._warn_insufficient_data(splits, forecasters, time_col, id_col)
 
         run_id = self.run_id
         run_date = date.today()
         all_results: List[pl.DataFrame] = []
-        self._failures = []
 
         for fold, _train_full, _val_full in splits:
             logger.info(
@@ -256,6 +216,7 @@ class BacktestEngine:
             else:
                 for train, val, models in partitions:
                     if train.is_empty() or val.is_empty():
+                        self._record_empty_partition(models, fold.fold_index)
                         continue
                     for forecaster in models:
                         logger.info(
@@ -308,12 +269,22 @@ class BacktestEngine:
                     )
 
         if not all_results:
-            return pl.DataFrame()
+            raise ValueError("No model completed the requested backtest; inspect the failure summary")
 
         all_results = [self._normalize_result_schema(r) for r in all_results]
         combined = pl.concat(all_results, how="diagonal")
+        incomplete = {failure["model_id"] for failure in self._failures}
+        if incomplete:
+            logger.warning("Excluding incomplete models from comparable scores: %s", sorted(incomplete))
+            combined = combined.filter(~pl.col("model_id").is_in(sorted(incomplete)))
+        if combined.is_empty():
+            raise ValueError("No model completed all requested CV folds; inspect the failure summary")
+        combined = combined.sort(["fold", "model_id", "series_id", "forecast_step"])
+        scope = {"lob": "lob", "series": "series_id", "product_group": "product_group"}[
+            self.bt_config.champion_granularity
+        ]
+        combined = combined.with_columns(pl.lit(scope).alias("competition_scope"))
 
-        # Write to metric store
         if persist:
             self.metric_store.write(
                 combined,
@@ -321,7 +292,7 @@ class BacktestEngine:
                 lob=self.config.lob,
             )
         logger.info(
-            "Backtest complete: run_id=%s rows=%d persisted=%s",
+            "Backtest complete: run_id=%s comparable_rows=%d persisted=%s",
             run_id, len(combined), persist,
         )
 
@@ -358,11 +329,16 @@ class BacktestEngine:
         splits: list,
         forecasters: List[BaseForecaster],
         time_col: str,
+        id_col: Optional[str] = None,
     ) -> None:
         """Emit a warning when ML models' max lag exceeds the shortest training fold."""
         from ..forecasting.ml import _DirectMLBase
 
-        min_train_periods = min(len(train) for _fold, train, _val in splits)
+        id_col = id_col or self.config.forecast.series_id_column
+        min_train_periods = min(
+            train.group_by(id_col).agg(pl.col(time_col).n_unique().alias("_periods"))["_periods"].min()
+            for _fold, train, _val in splits
+        )
         for forecaster in forecasters:
             if not isinstance(forecaster, _DirectMLBase):
                 continue
@@ -375,6 +351,14 @@ class BacktestEngine:
                     "n_folds/val_periods.",
                     forecaster.name, max_lag, min_train_periods,
                 )
+
+    def _record_empty_partition(self, models: List[BaseForecaster], fold_index: int) -> None:
+        for model in models:
+            self._failures.append({
+                "model_id": model.name, "fold": fold_index,
+                "error_type": "InsufficientData",
+                "error_message": "Empty training or validation partition; model is ineligible for selection",
+            })
 
     def _run_fold_parallel(
         self,
@@ -400,6 +384,9 @@ class BacktestEngine:
             len(models) for train, val, models in partitions
             if not train.is_empty() and not val.is_empty()
         )
+        for train, val, models in partitions:
+            if train.is_empty() or val.is_empty():
+                self._record_empty_partition(models, fold.fold_index)
         if not task_count:
             return
         max_workers = min(task_count, cpu_count() if n_workers == -1 else max(1, n_workers))
@@ -439,6 +426,7 @@ class BacktestEngine:
                         frequency=fc.frequency,
                         quantiles=quantiles or [],
                         calibration_enabled=bool(calibration_enabled),
+                        gap_weeks=self.bt_config.gap_weeks,
                     )
                     futures[fut] = forecaster.name
 
@@ -484,86 +472,12 @@ class BacktestEngine:
         id_col: str,
     ) -> pl.DataFrame:
         """Run one (model, fold) combination."""
-        # Fit
-        forecaster.fit(train, target_col=target_col, time_col=time_col, id_col=id_col)
-
-        # Predict
-        horizon = self.bt_config.val_weeks
-        predictions = forecaster.predict(horizon, id_col=id_col, time_col=time_col)
-
-        # Quantile predictions (if calibration enabled)
-        quantiles = self.config.forecast.quantiles
-        if quantiles and self.config.forecast.calibration.enabled:
-            qdf = forecaster.predict_quantiles(
-                horizon=horizon, quantiles=quantiles,
-                id_col=id_col, time_col=time_col,
-            )
-            # Drop point forecast column from quantile df to avoid join conflict
-            q_cols = [c for c in qdf.columns if c.startswith("forecast_p")]
-            predictions = predictions.join(
-                qdf.select([id_col, time_col] + q_cols),
-                on=[id_col, time_col],
-                how="left",
-            )
-
-        # Join predictions with actuals
-        merged = val.join(
-            predictions,
-            on=[id_col, time_col],
-            how="inner",
+        return evaluate_model_fold(
+            train, val, forecaster,
+            fold_index=fold_index, run_id=run_id, run_date=run_date, lob=self.config.lob,
+            target_col=target_col, time_col=time_col, id_col=id_col,
+            metrics_list=self.config.metrics, val_periods=self.bt_config.val_periods,
+            gap_periods=self.bt_config.gap_periods, frequency=self.config.forecast.frequency,
+            quantiles=self.config.forecast.quantiles,
+            calibration_enabled=self.config.forecast.calibration.enabled,
         )
-
-        if merged.is_empty():
-            return pl.DataFrame()
-
-        # Compute per-series metrics
-        val_start = val[time_col].min()
-        results = []
-        for sid in merged[id_col].unique().to_list():
-            s = merged.filter(pl.col(id_col) == sid)
-            actual = s[target_col]
-            forecast = s["forecast"]
-
-            # Build context for context-dependent metrics (e.g. MASE)
-            insample = train.filter(pl.col(id_col) == sid)[target_col]
-            context = {"insample": insample}
-
-            metrics = compute_all_metrics(
-                actual, forecast,
-                metric_names=self.config.metrics,
-                context=context,
-            )
-
-            # Detect quantile columns present in merged data
-            q_cols = [c for c in s.columns if c.startswith("forecast_p")]
-
-            for row in s.iter_rows(named=True):
-                # forecast_step: 1-indexed week offset from validation start
-                step_days = get_frequency_profile(self.config.forecast.frequency)["timedelta_kwargs"]
-                period_days = sum(
-                    v * (7 if k == "weeks" else 1) for k, v in step_days.items()
-                )
-                forecast_step = (row[time_col] - val_start).days // period_days + 1
-
-                record = {
-                    "run_id": run_id,
-                    "run_type": "backtest",
-                    "run_date": run_date,
-                    "lob": self.config.lob,
-                    "model_id": forecaster.name,
-                    "fold": fold_index,
-                    "grain_level": "series",
-                    "series_id": sid,
-                    "channel": "",
-                    "target_week": row[time_col],
-                    "forecast_step": forecast_step,
-                    "actual": float(row[target_col]),
-                    "forecast": float(row["forecast"]),
-                }
-                record.update(metrics)
-                for qc in q_cols:
-                    if row[qc] is not None:
-                        record[qc] = float(row[qc])
-                results.append(record)
-
-        return pl.DataFrame(results)

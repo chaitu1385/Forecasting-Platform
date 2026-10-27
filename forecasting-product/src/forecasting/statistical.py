@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 import polars as pl
 
 from ..config.schema import get_frequency_profile
+from ..utils.calendar import PeriodCalendar
 from .base import BaseForecaster
 from .registry import registry
 
@@ -37,11 +38,13 @@ class _StatsforecastBase(BaseForecaster):
     and maps columns to the expected ``unique_id / ds / y`` schema.
     """
 
-    def __init__(self, season_length: int = 52, frequency: str = "W", n_jobs: int = 1):
+    def __init__(self, season_length: Optional[int] = None, frequency: str = "W", n_jobs: int = 1):
         self.frequency = frequency
         profile = get_frequency_profile(frequency)
-        if season_length == 52 and frequency != "W":
+        if season_length is None:
             season_length = profile["season_length"]
+        if season_length < 1:
+            raise ValueError("season_length must be positive")
         self.season_length = season_length
         self.n_jobs = n_jobs
         self._sf: Optional[Any] = None
@@ -77,10 +80,11 @@ class _StatsforecastBase(BaseForecaster):
         )
         pdf["ds"] = pdf["ds"].astype("datetime64[ns]")
 
+        calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), self.frequency)
         model = self._get_model()
         self._sf = StatsForecast(
             models=[model],
-            freq=get_frequency_profile(self.frequency)["statsforecast_freq"],
+            freq=calendar.pandas_frequency,
             n_jobs=self.n_jobs,
         )
         self._sf.fit(pdf)
@@ -186,7 +190,7 @@ class AutoARIMAForecaster(_StatsforecastBase):
         return _AutoARIMA(season_length=self.season_length)
 
     def get_params(self) -> Dict[str, Any]:
-        return {"model": "AutoARIMA", "season_length": self.season_length}
+        return {"model": "AutoARIMA", "season_length": self.season_length, "frequency": self.frequency}
 
 
 @registry.register("auto_ets")
@@ -199,7 +203,7 @@ class AutoETSForecaster(_StatsforecastBase):
         return _AutoETS(season_length=self.season_length)
 
     def get_params(self) -> Dict[str, Any]:
-        return {"model": "AutoETS", "season_length": self.season_length}
+        return {"model": "AutoETS", "season_length": self.season_length, "frequency": self.frequency}
 
 
 @registry.register("auto_theta")
@@ -224,7 +228,7 @@ class AutoThetaForecaster(_StatsforecastBase):
 
     def __init__(
         self,
-        season_length: int = 52,
+        season_length: Optional[int] = None,
         decomposition_type: str = "multiplicative",
         frequency: str = "W",
     ):
@@ -242,6 +246,7 @@ class AutoThetaForecaster(_StatsforecastBase):
             "model": "AutoTheta",
             "season_length": self.season_length,
             "decomposition_type": self.decomposition_type,
+            "frequency": self.frequency,
         }
 
 
@@ -270,7 +275,7 @@ class MSTLForecaster(_StatsforecastBase):
 
     def __init__(
         self,
-        season_length: int = 52,
+        season_length: Optional[int] = None,
         secondary_season_length: Optional[int] = None,
         frequency: str = "W",
     ):
@@ -288,4 +293,5 @@ class MSTLForecaster(_StatsforecastBase):
             "model": "MSTL",
             "season_length": self.season_length,
             "secondary_season_length": self.secondary_season_length,
+            "frequency": self.frequency,
         }

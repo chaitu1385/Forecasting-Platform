@@ -13,7 +13,7 @@ import { ChartSkeleton } from "@/components/shared/loading-skeleton";
 import { DataTable } from "@/components/data/data-table";
 import { useLeaderboard } from "@/hooks/use-leaderboard";
 import { api } from "@/lib/api-client";
-import { formatPct, hasFiniteWmape } from "@/lib/utils";
+import { formatPct, formatMetric, leaderboardScore, metricLabel } from "@/lib/utils";
 import { WorkflowNav } from "@/components/shared/workflow-nav";
 import type { FVAResponse, CalibrationResponse, ShapResponse } from "@/lib/types";
 
@@ -26,35 +26,48 @@ export default function BacktestPage() {
   const [fvaData, setFvaData] = useState<FVAResponse | null>(null);
   const [fvaLoading, setFvaLoading] = useState(false);
   const [fvaError, setFvaError] = useState<string | null>(null);
+  const [fvaReload, setFvaReload] = useState(0);
 
   // Calibration state
   const [calData, setCalData] = useState<CalibrationResponse | null>(null);
   const [calLoading, setCalLoading] = useState(false);
   const [calError, setCalError] = useState<string | null>(null);
+  const [calReload, setCalReload] = useState(0);
 
   // SHAP state
   const [shapData, setShapData] = useState<ShapResponse | null>(null);
   const [shapLoading, setShapLoading] = useState(false);
   const [shapError, setShapError] = useState<string | null>(null);
 
-  // Fetch FVA and Calibration when lob/runType changes
   useEffect(() => {
+    let active = true;
+    setFvaData(null);
+    setFvaLoading(false);
+    setFvaError(null);
+    if (!data) return;
     setFvaLoading(true);
     setFvaError(null);
-    api.getFVA(lob, runType)
-      .then(setFvaData)
-      .catch((err) => setFvaError(err instanceof Error ? err.message : "Failed to load FVA data"))
-      .finally(() => setFvaLoading(false));
-  }, [lob, runType]);
+    api.getFVA(lob, runType, data.run_id ?? undefined)
+      .then(result => { if (active) setFvaData(result); })
+      .catch((err) => { if (active) setFvaError(err instanceof Error ? err.message : "Failed to load FVA data"); })
+      .finally(() => { if (active) setFvaLoading(false); });
+    return () => { active = false; };
+  }, [lob, runType, data, fvaReload]);
 
   useEffect(() => {
+    let active = true;
+    setCalData(null);
+    setCalLoading(false);
+    setCalError(null);
+    if (!data) return;
     setCalLoading(true);
     setCalError(null);
-    api.getCalibration(lob, runType)
-      .then(setCalData)
-      .catch((err) => setCalError(err instanceof Error ? err.message : "Failed to load calibration data"))
-      .finally(() => setCalLoading(false));
-  }, [lob, runType]);
+    api.getCalibration(lob, runType, data.run_id ?? undefined)
+      .then(result => { if (active) setCalData(result); })
+      .catch((err) => { if (active) setCalError(err instanceof Error ? err.message : "Failed to load calibration data"); })
+      .finally(() => { if (active) setCalLoading(false); });
+    return () => { active = false; };
+  }, [lob, runType, data, calReload]);
 
   // Fetch SHAP on demand
   const loadShap = () => {
@@ -82,7 +95,14 @@ export default function BacktestPage() {
     }
   }
 
-  const rankedEntries = data?.entries.filter(hasFiniteWmape).sort((a, b) => a.wmape - b.wmape) ?? [];
+  const provenance = data?.scoring_provenance;
+  const primaryMetric = provenance?.primary_metric ?? "wmape";
+  const scoreLabel = metricLabel(primaryMetric, provenance?.policy);
+  const groups = new Set(data?.entries.map(entry =>
+    `${entry.competition_scope ?? provenance?.competition_scope ?? "unknown"}:${entry.group_key ?? lob}`));
+  const knownScope = provenance?.status === "recorded" && !!provenance.competition_scope;
+  const singleCompetition = knownScope && groups.size === 1;
+  const leading = singleCompetition ? data?.entries.find(entry => entry.rank === 1) : undefined;
 
   return (
     <div className="mx-auto max-w-6xl space-y-8">
@@ -134,42 +154,48 @@ export default function BacktestPage() {
         ))}
         {data && (
           <>
+            <p className="text-sm text-muted-foreground" data-testid="scoring-provenance">
+              {provenance?.status === "recorded"
+                ? `${provenance.source === "stored" ? "Stored ranking" : "Computed from raw observations"} | ${provenance.policy} | ${scoreLabel} | Scope: ${provenance.competition_scope ?? "unknown"}`
+                : "Scoring policy unknown: historical values and ordering are shown unchanged."}
+            </p>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-              <MetricCard label="Models" value={data.entries.length} />
+              <MetricCard label="Models" value={new Set(data.entries.map(entry => entry.model)).size} />
               <MetricCard
-                label="Best WMAPE"
-                value={rankedEntries.length > 0 ? formatPct(rankedEntries[0].wmape) : "N/A"}
+                label={knownScope ? `Best ${scoreLabel}` : "Stored primary score"}
+                value={leading ? formatMetric(primaryMetric, leaderboardScore(leading, primaryMetric)) : "N/A"}
               />
               <MetricCard
                 label="Best Model"
-                value={rankedEntries[0]?.model ?? "N/A"}
+                value={!knownScope ? "Unknown scope" : groups.size > 1 ? "Per competition" : leading?.model ?? "N/A"}
               />
               <MetricCard label="Run Type" value={data.run_type} />
             </div>
             <div className="rounded-lg border p-4">
-              <LeaderboardBar entries={data.entries} />
+              <LeaderboardBar entries={data.entries} primaryMetric={primaryMetric} scoringPolicy={provenance?.policy} />
             </div>
 
             {/* Leaderboard table */}
             <div className="overflow-x-auto rounded-md border">
-              <table className="w-full text-sm">
+              <table className="w-full text-sm" aria-label="Stored model leaderboard">
                 <thead>
                   <tr className="border-b bg-muted/50 text-left text-xs text-muted-foreground">
                     <th className="px-3 py-2">Rank</th>
+                    <th className="px-3 py-2">Competition</th>
                     <th className="px-3 py-2">Model</th>
-                    <th className="px-3 py-2">WMAPE</th>
+                    <th className="px-3 py-2">{scoreLabel}</th>
                     <th className="px-3 py-2">Bias</th>
                     <th className="px-3 py-2">Series</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {[...data.entries]
-                    .sort((a, b) => a.rank - b.rank)
-                    .map((e) => (
-                      <tr key={e.model} className="border-b last:border-0">
+                  {data.entries.map((e) => (
+                      <tr key={`${e.competition_scope ?? "unknown"}:${e.group_key ?? "unknown"}:${e.model}`}
+                        data-model={e.model} data-group={e.group_key ?? "unknown"} className="border-b last:border-0">
                         <td className="px-3 py-2 font-medium">{e.rank}</td>
+                        <td className="px-3 py-2">{e.group_key ?? "Unknown"}</td>
                         <td className="px-3 py-2">{e.model}</td>
-                        <td className="px-3 py-2">{formatPct(e.wmape)}</td>
+                        <td className="px-3 py-2">{formatMetric(primaryMetric, leaderboardScore(e, primaryMetric))}</td>
                         <td className="px-3 py-2">{formatPct(e.normalized_bias)}</td>
                         <td className="px-3 py-2">{e.n_series}</td>
                       </tr>
@@ -184,12 +210,9 @@ export default function BacktestPage() {
       {/* FVA Cascade (live) */}
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Forecast Value Added (FVA)</h2>
+        <p className="text-xs text-muted-foreground">Current raw-observation analysis for this run, separate from its stored ranking.</p>
         {fvaLoading && <ChartSkeleton />}
-        {fvaError && <ErrorDisplay message={fvaError} onRetry={() => {
-          setFvaLoading(true);
-          setFvaError(null);
-          api.getFVA(lob, runType).then(setFvaData).catch((err) => setFvaError(err instanceof Error ? err.message : "Failed")).finally(() => setFvaLoading(false));
-        }} />}
+        {fvaError && <ErrorDisplay message={fvaError} onRetry={() => setFvaReload(value => value + 1)} />}
         {fvaData && (
           <div className="rounded-lg border p-4">
             {fvaChartData.length > 0 ? (
@@ -215,11 +238,7 @@ export default function BacktestPage() {
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Prediction Interval Calibration</h2>
         {calLoading && <ChartSkeleton />}
-        {calError && <ErrorDisplay message={calError} onRetry={() => {
-          setCalLoading(true);
-          setCalError(null);
-          api.getCalibration(lob, runType).then(setCalData).catch((err) => setCalError(err instanceof Error ? err.message : "Failed")).finally(() => setCalLoading(false));
-        }} />}
+        {calError && <ErrorDisplay message={calError} onRetry={() => setCalReload(value => value + 1)} />}
         {calData && (
           <div className="rounded-lg border p-4">
             {calChartData.length > 0 ? (

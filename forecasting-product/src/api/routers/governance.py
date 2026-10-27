@@ -138,17 +138,19 @@ def bi_export(
     exporter = BIExporter(base_path=base_path)
 
     if report_type == "leaderboard":
-        _, selected = metric_records(request, lob, run_type, run_id, latest=True)
-        store = metric_store(request)
+        from ..deps import leaderboard_records, scoring_provenance
+
+        board, selected = leaderboard_records(request, lob, run_type, run_id)
         try:
-            path = exporter.export_leaderboard(
-                metric_store=store, lob=lob, run_type=run_type, run_id=selected.run_id if selected else None,
+            path = exporter.export_leaderboard_frame(
+                board, lob=lob, run_id=selected.run_id if selected else None,
             )
         except (FileNotFoundError, OSError, ValueError, RuntimeError) as exc:
             raise HTTPException(status_code=500, detail="BI export could not be confirmed") from exc
         return {
             "report_type": report_type, "export_path": str(path.relative_to(exporter.base_path)), "status": "exported",
             "run_id": selected.run_id if selected else None, "artifact_source": "committed" if selected else "legacy",
+            "scoring_provenance": scoring_provenance(board, selected),
         }
 
     elif report_type == "bias-report":

@@ -235,7 +235,11 @@ async def run_backtest(
             # Best WMAPE from first leaderboard entry (sorted ascending).
             # Column can be entirely null when WMAPE is undefined for every
             # model (e.g. all validation windows had zero actuals).
-            if "wmape" in leaderboard.columns:
+            if "group_key" in leaderboard.columns and leaderboard["group_key"].n_unique() > 1:
+                # Separate series/cohort competitions have no single global
+                # best score; the per-group leaderboard remains authoritative.
+                summary["best_wmape"] = None
+            elif "wmape" in leaderboard.columns:
                 min_val = leaderboard["wmape"].min()
                 if min_val is None:
                     summary["best_wmape"] = None

@@ -7,27 +7,14 @@ and completeness before any processing occurs in the pipeline.
 
 import logging
 from dataclasses import dataclass, field
-from datetime import timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import polars as pl
 
-from ..config.schema import ValidationConfig, freq_timedelta
+from ..config.schema import ValidationConfig
+from ..utils.calendar import PeriodCalendar
 
 logger = logging.getLogger(__name__)
-
-# Acceptable gap ranges for variable-length calendar periods.
-# Monthly gaps span 28–31 days; quarterly gaps span 89–92 days.
-_VARIABLE_GAP_RANGES = {
-    "M": (timedelta(days=28), timedelta(days=31)),
-    "Q": (timedelta(days=89), timedelta(days=92)),
-}
-
-
-def _frequency_gap_range(freq: str) -> Optional[Tuple[timedelta, timedelta]]:
-    """Return (min_gap, max_gap) for variable-length frequencies, else None."""
-    return _VARIABLE_GAP_RANGES.get(freq)
-
 
 @dataclass
 class ValidationIssue:
@@ -249,48 +236,30 @@ class DataValidator:
         """
         issues: List[ValidationIssue] = []
 
-        sorted_df = df.sort([id_col, time_col])
-        gaps = sorted_df.with_columns(
-            (pl.col(time_col).diff().over(id_col)).alias("_gap")
-        ).filter(pl.col("_gap").is_not_null())
-
-        if gaps.is_empty():
+        violating_series = []
+        for group in df.partition_by(id_col):
+            dates = group[time_col].sort().to_list()
+            try:
+                calendar = PeriodCalendar.from_dates(dates, frequency)
+                regular = dates == calendar.date_range(dates[0], dates[-1])
+            except ValueError:
+                regular = False
+            if not regular:
+                violating_series.append(group[id_col][0])
+        if not violating_series:
             return issues, 0
 
-        # For monthly/quarterly data, calendar periods have variable lengths
-        # (28-31 days per month, 89-92 days per quarter), so we use a
-        # tolerance range instead of an exact timedelta match.
-        gap_range = _frequency_gap_range(frequency)
-        if gap_range is not None:
-            min_gap, max_gap = gap_range
-            non_matching = gaps.filter(
-                (pl.col("_gap") < min_gap) | (pl.col("_gap") > max_gap)
-            )
-        else:
-            expected_gap = freq_timedelta(frequency)
-            non_matching = gaps.filter(pl.col("_gap") != expected_gap)
-
-        if non_matching.is_empty():
-            return issues, 0
-
-        violating_series = non_matching[id_col].unique()
-        violation_count = violating_series.len()
-
-        expected_label = (
-            f"{gap_range[0].days}–{gap_range[1].days} days"
-            if gap_range
-            else str(freq_timedelta(frequency))
-        )
+        violation_count = len(violating_series)
         issues.append(ValidationIssue(
             level="warning",
             check="frequency",
             message=(
                 f"{violation_count} series have inconsistent gaps "
-                f"(expected {expected_label} intervals for frequency={frequency!r})"
+                f"(expected an exact anchored calendar grid for frequency={frequency!r})"
             ),
             details={
                 "violation_count": violation_count,
-                "example_series": violating_series.head(5).to_list(),
+                "example_series": violating_series[:5],
             },
         ))
 

@@ -12,7 +12,8 @@ from typing import Literal
 
 import polars as pl
 
-_INTERVAL_MAP = {"D": "1d", "W": "1w", "M": "1mo", "Q": "1q"}
+from ..config.schema import get_frequency_profile
+from .calendar import PeriodCalendar
 
 
 def fill_gaps(
@@ -52,6 +53,7 @@ def fill_gaps(
         DataFrame with one row per (id, period) combination, sorted by
         ``[id_col, time_col]``.
     """
+    get_frequency_profile(freq)
     if df.is_empty():
         return df
 
@@ -60,11 +62,11 @@ def fill_gaps(
     if min_date is None or max_date is None:
         return df
 
-    interval = _INTERVAL_MAP.get(freq, "1w")
-    all_periods = pl.date_range(
-        min_date, max_date, interval=interval, eager=True
-    ).alias(time_col)
-    periods_df = pl.DataFrame({time_col: all_periods})
+    calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), freq)
+    if df.select([id_col, time_col]).is_duplicated().any():
+        raise ValueError("Cannot fill gaps with duplicate series/date keys")
+    all_periods = calendar.date_range(min_date, max_date)
+    periods_df = pl.DataFrame({time_col: pl.Series(time_col, all_periods, dtype=df[time_col].dtype)})
 
     series_ids = df.select(id_col).unique()
     complete_grid = series_ids.join(periods_df, how="cross")

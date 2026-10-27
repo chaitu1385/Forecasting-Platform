@@ -443,6 +443,38 @@ def _model_metadata(
     return result
 
 
+def scoring_metadata(config: PlatformConfig, records: pl.DataFrame) -> Dict[str, Any]:
+    """Describe the authoritative scorer used for this new backtest result."""
+    from ..metrics.aggregation import SCORING_POLICY
+
+    scopes = records["competition_scope"].unique().to_list()
+    if len(scopes) != 1 or not isinstance(scopes[0], str) or not scopes[0]:
+        raise ValueError("A backtest must declare one competition scope")
+    return {
+        "version": 1, "policy": SCORING_POLICY,
+        "primary_metric": config.backtest.primary_metric,
+        "secondary_metric": config.backtest.secondary_metric,
+        "competition_scope": scopes[0],
+    }
+
+
+def read_scoring_contract(execution: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """Read recorded scoring provenance; absence never implies today's policy."""
+    contract = execution.get("scoring_contract")
+    if contract is None:
+        return None
+    fields = {"version", "policy", "primary_metric", "secondary_metric", "competition_scope"}
+    if (
+        not isinstance(contract, dict) or set(contract) != fields
+        or type(contract["version"]) is not int or contract["version"] != 1
+        or any(not isinstance(contract[key], str) or not contract[key]
+               or len(contract[key]) > 128 or _private_string(contract[key])
+               for key in fields - {"version"})
+    ):
+        raise ValueError("Unsupported or malformed stored scoring contract")
+    return dict(contract)
+
+
 def runtime_metadata() -> Dict[str, Any]:
     """Record installed runtime versions; absent optional backends remain explicit."""
     versions: Dict[str, Optional[str]] = {
@@ -460,7 +492,11 @@ def runtime_metadata() -> Dict[str, Any]:
     source_files = (
         ("pipeline", "forecast.py"), ("pipeline", "backtest.py"),
         ("pipeline", "run_store.py"), ("pipeline", "manifest.py"),
+        ("pipeline", "validation_step.py"), ("validation", "confidence_scoring.py"),
         ("series", "builder.py"), ("config", "schema.py"),
+        ("backtesting", "engine.py"), ("backtesting", "scoring.py"),
+        ("metrics", "definitions.py"), ("metrics", "aggregation.py"),
+        ("utils", "calendar.py"),
     )
     hashes = {
         ".".join((*parts[:-1], Path(parts[-1]).stem)): hashlib.sha256(

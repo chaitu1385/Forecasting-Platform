@@ -370,3 +370,24 @@ Unknown versions, checksum mismatch or corrupt metadata are explicit integrity
 errors, never a healthy empty list or silent old-run fallback. Use the documented
 offline backup/restore procedure and the supported local hard-link filesystem
 profile; Windows power-loss and managed Delta atomicity are not certified here.
+
+---
+
+## 31. Undefined or Incomparable Validation Arms
+
+**What happens:** Backtests contain different candidate sets in separate declared
+competitions, or complete comparison arms have zero actual volume. Observation
+WMAPE cells may also be null even when their pooled population score is defined.
+
+**How the product handles it:** Post-validation compares eligible models only
+within the same competition and common observation population. It aggregates
+raw errors at the actual comparison grain before judging applicability, retaining
+zero-actual errors. Single candidates and genuinely undefined complete arms are
+reported as unavailable with reasons, counts and a WARNING; the existing neutral
+confidence contribution is explicitly labelled unmeasured, not PASS/100.
+
+**What to watch for:** Missing or malformed eligible observations are still
+actionable failures. Unexpected checker errors and configured blockers still
+prevent publication. No rows are silently dropped, no formula is changed and no
+historical artifact is rewritten. A previously saved leaderboard is always read
+as stored, not recomputed to make old and new rankings agree.

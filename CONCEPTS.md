@@ -174,7 +174,14 @@ Automated forecasts can't know about next month's product launch, the competitor
 
 A weekly-only platform can't serve a monthly S&OP process or daily replenishment cycle. But frequency changes everything: season length (52 for weekly, 12 for monthly), default lags, minimum series length, and date arithmetic all depend on the data frequency. Rather than scattering frequency-specific logic across 20+ modules, the platform uses `FREQUENCY_PROFILES` as a single source of truth — a dict mapping `"D"`, `"W"`, `"M"`, `"Q"` to all frequency-dependent parameters. Every model, backtester, validator, and data processor reads from this profile, so switching frequency is a single YAML config change.
 
-*Implementation: `src/config/schema.py` — `FREQUENCY_PROFILES`, `get_frequency_profile()`, `freq_timedelta()`*
+`PeriodCalendar` validates the configured grid and preserves the observed weekday
+or month/quarter start/end anchor. Calendar periods are not fixed-day durations:
+January 31 advances to February 29 and March 31 in a leap year. Irregular labels
+are rejected rather than guessed. CV gaps count complete calendar periods.
+
+*Implementation: `src/config/schema.py` — frequency defaults;
+`src/utils/calendar.py` — `PeriodCalendar`, `advance_date()`. See also the
+[numerical scoring contract](docs/NUMERICAL_RELIABILITY.md).*
 
 ---
 

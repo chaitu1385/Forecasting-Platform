@@ -100,12 +100,15 @@ not zero; stored artifact bytes and scientific metric formulas are unchanged.
 
 ### `GET /metrics/leaderboard/{lob}`
 
-Model leaderboard from the metric store, ranked by WMAPE (ascending).
+Return a committed run's stored ranking and scoring provenance, or a separately
+labelled current analysis of unbundled raw metrics. Stored history is never
+re-scored or re-sorted using current formulas.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `lob` | path, required | LOB name |
 | `run_type` | query, default `"backtest"` | `"backtest"` or `"live"` |
+| `run_id` | query, optional | Exact committed backtest UUID32; otherwise latest committed run for the LOB |
 
 **Response:** `LeaderboardResponse`
 
@@ -124,6 +127,15 @@ Model leaderboard from the metric store, ranked by WMAPE (ascending).
   ]
 }
 ```
+
+Responses additionally include `run_id`, `artifact_source` and
+`scoring_provenance`: `source` (`stored`/`computed`), `status`
+(`recorded`/`unknown`), metadata version, policy, primary/secondary metric and
+competition scope. Missing historical metadata stays unknown. Entries retain
+stored `rank`, add `scores`, `primary_score`, `group_key` and `competition_scope`,
+and keep `wmape`/`normalized_bias` compatibility fields nullable. For a stored
+macro-WMAPE ranking, an absent volume-WMAPE value is null, never substituted with
+the macro score. Multi-cohort results have no inferred global winner.
 
 ### `GET /metrics/drift/{lob}`
 

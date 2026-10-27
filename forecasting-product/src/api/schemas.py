@@ -46,8 +46,22 @@ class LeaderboardEntry(BaseModel):
     normalized_bias: Optional[float]
     rank: int
     n_series: int
+    scores: Dict[str, Optional[float]] = Field(default_factory=dict)
+    primary_score: Optional[float] = None
+    group_key: Optional[str] = None
+    competition_scope: Optional[str] = None
     validation_grade: Optional[str] = Field(None, description="Post-validation confidence grade (A-F)")
     validation_score: Optional[int] = Field(None, description="Post-validation confidence score (0-100)")
+
+
+class ScoringProvenance(BaseModel):
+    source: Literal["stored", "computed"] = "stored"
+    status: Literal["recorded", "unknown"] = "unknown"
+    version: Optional[int] = None
+    policy: Optional[str] = None
+    primary_metric: Optional[str] = None
+    secondary_metric: Optional[str] = None
+    competition_scope: Optional[str] = None
 
 
 class LeaderboardResponse(BaseModel):
@@ -56,6 +70,7 @@ class LeaderboardResponse(BaseModel):
     entries: List[LeaderboardEntry]
     run_id: Optional[str] = None
     artifact_source: Literal["committed", "legacy"] = "legacy"
+    scoring_provenance: ScoringProvenance = Field(default_factory=ScoringProvenance)
 
 
 class ValidationLayerResult(BaseModel):

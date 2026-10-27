@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 import subprocess
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -100,7 +100,7 @@ def test_real_ensemble_component_parameters_are_recorded_without_mutating_predic
 
     actuals = pl.DataFrame({
         "series_id": ["synthetic"] * 8,
-        "week": [date(2024, 1, index + 1) for index in range(8)],
+        "week": [date(2024, 1, 1) + timedelta(weeks=index) for index in range(8)],
         "quantity": [float(index + 1) for index in range(8)],
     })
     snapshots = []

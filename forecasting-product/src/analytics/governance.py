@@ -199,6 +199,9 @@ class ModelCard:
     n_observations: int = 0
     backtest_wmape: Optional[float] = None
     backtest_bias: Optional[float] = None
+    scoring_policy: str = "unspecified"
+    metric_population: str = ""
+    n_runs: Optional[int] = None
     champion_since: Optional[date] = None
     features: List[str] = field(default_factory=list)
     config_hash: str = ""
@@ -230,16 +233,15 @@ class ModelCard:
             else backtest_results
         )
 
-        wmape = (
-            float(model_rows["wmape"].drop_nulls().mean())
-            if not model_rows.is_empty() and "wmape" in model_rows.columns
-            else None
+        from ..metrics.aggregation import observation_metrics
+
+        scores = (
+            observation_metrics(model_rows, ["wmape", "normalized_bias"], preserve_context=False)
+            .row(0, named=True)
+            if not model_rows.is_empty() else {}
         )
-        bias = (
-            float(model_rows["normalized_bias"].drop_nulls().mean())
-            if not model_rows.is_empty() and "normalized_bias" in model_rows.columns
-            else None
-        )
+        wmape = scores.get("wmape")
+        bias = scores.get("normalized_bias")
         n_series = (
             model_rows["series_id"].n_unique()
             if "series_id" in model_rows.columns
@@ -263,6 +265,9 @@ class ModelCard:
             n_observations=len(model_rows),
             backtest_wmape=wmape,
             backtest_bias=bias,
+            scoring_policy=scores.get("scoring_policy", "unavailable"),
+            metric_population=scores.get("metric_population", ""),
+            n_runs=scores.get("n_runs"),
             champion_since=champion_since or date.today(),
             features=features or [],
             config_hash=config_hash,

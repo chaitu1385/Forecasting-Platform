@@ -276,6 +276,12 @@ sequenceDiagram
 
 ### Deep Dive: Walk-Forward Cross-Validation
 
+The bundle's leaderboard is an immutable result, not a query to the current
+scorer. Its `execution.scoring_contract` is captured in the manifest and canonical
+configuration before publication. Exact/latest readers select a saved frame and
+manifest together, retain row order/rank and competition scope, and label absent
+historical policy unknown. Current raw-observation analytics remain separate.
+
 The training window expands (or slides) and the validation window moves forward in time. Each fold evaluates all models on the same held-out period.
 
 ```mermaid

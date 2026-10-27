@@ -152,7 +152,7 @@ class SeriesBuilder:
         # Step 3-cleanse: Demand cleansing (after gap-fill, before filtering)
         if dq.cleansing.enabled:
             from ..data.cleanser import DemandCleanser
-            cleanser = DemandCleanser(dq.cleansing)
+            cleanser = DemandCleanser(dq.cleansing, frequency=fc.frequency)
             result = cleanser.cleanse(df, time_col, value_col, sid_col)
             df = result.df
             self._last_cleansing_report = result.report

@@ -18,12 +18,14 @@ Run
 from __future__ import annotations
 
 import io
+import json
 import shutil
 import tempfile
 import unittest
 from copy import deepcopy
 from datetime import date, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import polars as pl
 import pytest
@@ -81,8 +83,18 @@ def _make_app(data_dir: str, metrics_dir: str):
 
 
 @pytest.fixture(scope="module")
-def _daily_backtest(tmp_path_factory):
+def _daily_backtest(tmp_path_factory, record_testsuite_property):
     """Run the complete checked-in sample, three models and two folds once."""
+    from src.backtesting.engine import BacktestEngine
+    from tests.integration.m5_reference import (
+        candidate_provenance,
+        canonical_text_sha256,
+        daily_naive_reference,
+        exact_totals,
+        read_daily_panel,
+        score_complete_predictions,
+    )
+
     data_dir = tmp_path_factory.mktemp("m5-backtest") / "data"
     metrics_dir = data_dir / "metrics"
     metrics_dir.mkdir(parents=True)
@@ -90,7 +102,17 @@ def _daily_backtest(tmp_path_factory):
     history.mkdir(parents=True)
     _load_sample().write_parquet(history / "actuals.parquet")
     app = _make_app(str(data_dir), str(metrics_dir))
-    with TestClient(app) as client:
+    raw_records = []
+    original_run = BacktestEngine.run
+
+    def capture_run(engine, *args, **kwargs):
+        records = original_run(engine, *args, **kwargs)
+        raw_records.append(records.clone())
+        return records
+
+    # Capture the actual shared run, not a second fit or a smaller benchmark.
+    # Forward identity/persistence kwargs unchanged through Phase III integration.
+    with patch.object(BacktestEngine, "run", capture_run), TestClient(app) as client:
         response = client.post(
             "/pipeline/backtest?lob=walmart_m5_daily",
             files={
@@ -105,6 +127,36 @@ def _daily_backtest(tmp_path_factory):
         }, result
         persisted = client.get("/metrics/leaderboard/walmart_m5_daily")
         assert persisted.status_code == 200, persisted.text
+    assert len(raw_records) == 1
+    expected_reference = json.loads(
+        (FIXTURES.parent / "baselines" / "m5_daily_reference.json").read_text(encoding="utf-8")
+    )
+    assert canonical_text_sha256(SAMPLE_CSV) == expected_reference["fixture_sha256"]
+    assert canonical_text_sha256(CONFIG_YAML) == expected_reference["config_sha256"]
+    panel = read_daily_panel(SAMPLE_CSV)
+    series_count, input_rows = len(panel), sum(map(len, panel.values()))
+    assert series_count == expected_reference["series_count"] == 105
+    assert input_rows == expected_reference["input_rows"] == 76755
+    reference = daily_naive_reference(panel)
+    assert exact_totals(reference) == expected_reference["totals"]
+    expected_models = {"naive_seasonal", "auto_arima", "lgbm_direct"}
+    scores = score_complete_predictions(raw_records[0].iter_rows(named=True), reference, expected_models)
+    for entry in result["leaderboard"]:
+        for metric in ("wmape", "normalized_bias"):
+            assert entry[metric] == pytest.approx(scores[entry["model_id"]][metric], rel=1e-12, abs=1e-12)
+    expected_champion = min(
+        scores, key=lambda model: (scores[model]["wmape"], abs(scores[model]["normalized_bias"]), model),
+    )
+    assert result["champion_model"] == expected_champion
+    snapshot = {
+        **candidate_provenance(SAMPLE_CSV, CONFIG_YAML),
+        "scoring_policy": "raw-observations-v1",
+        "scalar_reference_scores": scores,
+        "champion_model": expected_champion,
+        "input_rows": input_rows, "series_count": series_count, "models": sorted(expected_models),
+        "folds": 2, "validation_periods": 28, "scored_observations_per_model": len(reference),
+    }
+    record_testsuite_property("m5_daily_unapproved_candidate", json.dumps(snapshot, sort_keys=True))
     return data_dir, result
 
 
@@ -236,10 +288,11 @@ class TestSeriesExploration(unittest.TestCase):
         resp = self.client.post(
             "/series/cleansing-audit?lob=walmart_m5_daily"
             "&outlier_method=iqr&iqr_multiplier=1.5&outlier_action=clip"
-            "&stockout_detection=true&min_zero_run=3",
+            "&stockout_detection=true&min_zero_run=3&frequency=D",
         )
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
+        self.assertEqual(data["frequency"], "D")
         self.assertIn("total_series", data)
         self.assertIn("total_outliers", data)
         self.assertIn("rows_modified", data)

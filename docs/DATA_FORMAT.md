@@ -248,6 +248,31 @@ members when used. Internal candidate/attempt/failure files are not commit marke
 | `reproducibility` | Snapshot stages, supplied optional inputs, omitted/external state and retraining limitations |
 | Validation/cleansing fields | Per-attempt reports, including configured opt-out and post-validation grade/score |
 
+For scoped backtests, `validation.json` also retains paradox-comparison
+applicability: `evaluated`, `status`, `comparisons_run`, performed comparisons and
+an `unavailable` list with reasons/population counts. Unavailable evidence is a
+WARNING with an explicitly neutral confidence component, not a clean comparison
+or a substituted zero. Raw metric observations remain unchanged.
+
+New backtests also record this typed `execution.scoring_contract` in the
+manifest and hashed configuration:
+
+```json
+{
+  "version": 1,
+  "policy": "raw-observations-v1",
+  "primary_metric": "wmape",
+  "secondary_metric": "normalized_bias",
+  "competition_scope": "lob"
+}
+```
+
+An absent historical contract stays unknown. It is not filled from current
+defaults. `leaderboard.parquet` is a result artifact: exact-run reads and exports
+preserve its values/order/rank rather than running the current scorer on old
+metric rows. New rankings retain `(competition_scope, group_key, model_id)` and
+within-competition `rank`; no comparison across distinct competitions is implied.
+
 Normalized raw input is not the original CSV/Parquet upload byte stream. Prepared
 data is SeriesBuilder output; forecasters may do additional internal preparation.
 Fitted models/pickles, remote provider responses and external model weights are
@@ -317,7 +342,9 @@ start a pipeline or replace existing output.
 
 ## Output: Metric Store (Parquet)
 
-Backtest results are stored in a date-partitioned Parquet metric store.
+Pipeline backtests store metric records inside their committed run bundle.
+Standalone appends retain explicit legacy partitions and unique atomic filenames.
+Raw observations, not cached metric-column means, drive new scoring.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -326,10 +353,20 @@ Backtest results are stored in a date-partitioned Parquet metric store.
 | `model_id` | String | Model name (e.g., `"lgbm_direct"`) |
 | `fold` | Int | Walk-forward fold number |
 | `series_id` | String | Series identifier |
-| `wmape` | Float | Weighted Mean Absolute Percentage Error |
-| `normalized_bias` | Float | Normalized bias (positive = over-forecast) |
+| `target_week` | Date | Actual target period label |
+| `forecast_step` | Int | Actual lead from training end, including any gap |
+| `actual`, `forecast` | Float | Paired finite observations used by the scorer |
+| `mase_scale` | Float / null | Training-only seasonal-naive error scale |
+| `competition_scope` | String | Declared comparison scope; equal coverage is required within it |
+| `wmape` | Float / null | Per-observation ratio; do not average to reconstruct volume WMAPE |
+| `normalized_bias` | Float / null | Per-observation signed ratio; aggregate from raw values |
 | `mae` | Float | Mean Absolute Error |
 | `rmse` | Float | Root Mean Squared Error |
+
+New leaderboard `wmape` is pooled absolute error divided by pooled absolute
+actual volume. Explicit `macro_wmape` instead equally weights series/fold ratios.
+Undefined denominators remain null. See
+[numerical reliability](NUMERICAL_RELIABILITY.md) for formulas and policy limits.
 
 ---
 

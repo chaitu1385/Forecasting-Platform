@@ -63,6 +63,20 @@ export interface LeaderboardEntry {
   normalized_bias: number | null;
   rank: number;
   n_series: number;
+  scores?: Record<string, number | null>;
+  primary_score?: number | null;
+  group_key?: string | null;
+  competition_scope?: string | null;
+}
+
+export interface ScoringProvenance {
+  source: "stored" | "computed";
+  status: "recorded" | "unknown";
+  version?: number | null;
+  policy?: string | null;
+  primary_metric?: string | null;
+  secondary_metric?: string | null;
+  competition_scope?: string | null;
 }
 
 export interface LeaderboardResponse {
@@ -71,6 +85,7 @@ export interface LeaderboardResponse {
   entries: LeaderboardEntry[];
   run_id?: string | null;
   artifact_source?: "committed" | "legacy";
+  scoring_provenance?: ScoringProvenance;
 }
 
 // ── Drift ────────────────────────────────────────────────────────────────────

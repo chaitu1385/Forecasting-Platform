@@ -43,9 +43,12 @@ def get_fva(
         raise HTTPException(status_code=404, detail=f"No metric data for LOB '{lob}'.")
 
     analyzer = FVAAnalyzer()
-    fva_detail = analyzer.compute_fva_detail(df)
-    fva_summary = analyzer.summarize(fva_detail)
-    layer_lb = analyzer.layer_leaderboard(fva_detail)
+    try:
+        fva_detail = analyzer.compute_fva_detail(df)
+        fva_summary = analyzer.summarize(fva_detail)
+        layer_lb = analyzer.layer_leaderboard(fva_detail)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=f"FVA requires complete comparable observations: {exc}")
 
     return {
         "lob": lob,

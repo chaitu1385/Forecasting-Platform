@@ -24,7 +24,12 @@ import polars as pl
 
 from ..config.schema import PlatformConfig
 from ..observability.context import new_run_id
-from .manifest import PipelineManifest, canonical_json, configuration_snapshot
+from .manifest import (
+    PipelineManifest,
+    canonical_json,
+    configuration_snapshot,
+    read_scoring_contract,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -442,6 +447,13 @@ class RunStore:
                 raise RunIntegrityError("configuration_or_validation_mismatch", manifest.run_id)
             if settings.get("execution") != json.loads(canonical_json(manifest.execution)):
                 raise RunIntegrityError("execution_identity_mismatch", manifest.run_id)
+            scoring = read_scoring_contract(manifest.execution)
+            if scoring is not None and (
+                manifest.run_type != "backtest"
+                or any(scoring[field] != configured["backtest"][field]
+                       for field in ("primary_metric", "secondary_metric"))
+            ):
+                raise RunIntegrityError("scoring_configuration_mismatch", manifest.run_id)
             if enabled and (
                 validation.get("grade") not in {"A", "B", "C", "D", "F"}
                 or type(validation.get("score")) is not int
@@ -479,6 +491,10 @@ class RunStore:
         for field in ("execution", "source", "reproducibility"):
             if not isinstance(data.get(field), dict):
                 raise RunIntegrityError("invalid_provenance_fields", run_id)
+        try:
+            read_scoring_contract(data["execution"])
+        except ValueError as exc:
+            raise RunIntegrityError("invalid_scoring_contract", run_id) from exc
         models = data.get("models")
 
         def valid_models(items: Any, depth: int = 0) -> bool:

@@ -17,6 +17,28 @@ export function hasFiniteWmape(entry: LeaderboardEntry): entry is LeaderboardEnt
   return entry.wmape != null && Number.isFinite(entry.wmape);
 }
 
+export function leaderboardScore(entry: LeaderboardEntry, metric: string): number | null {
+  const value = entry.scores && metric in entry.scores
+    ? entry.scores[metric]
+    : metric === "wmape" ? entry.wmape
+    : metric === "normalized_bias" ? entry.normalized_bias
+    : entry.primary_score;
+  return value != null && Number.isFinite(value) ? value : null;
+}
+
+export function metricLabel(metric: string, policy?: string | null): string {
+  if (metric === "wmape") return policy === "raw-observations-v1" ? "Volume WMAPE" : "Stored WMAPE";
+  if (metric === "macro_wmape") return "Macro WMAPE";
+  if (metric === "normalized_bias") return "Normalized bias";
+  return metric.toUpperCase();
+}
+
+export function formatMetric(metric: string, value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return "N/A";
+  return ["wmape", "macro_wmape", "normalized_bias", "mape"].includes(metric)
+    ? formatPct(value) : formatNumber(value, 2);
+}
+
 /** Format a number with locale-aware separators */
 export function formatNumber(value: number, decimals: number = 0): string {
   return value.toLocaleString("en-US", {

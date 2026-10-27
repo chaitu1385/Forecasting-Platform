@@ -300,6 +300,7 @@ class DeploymentOrchestrator:
         leaderboard_sdf = pipeline.select_champion(
             backtest_sdf,
             primary_metric=self.config.backtest.primary_metric,
+            secondary_metric=self.config.backtest.secondary_metric,
         )
 
         # Write leaderboard if in Fabric mode
@@ -413,13 +414,17 @@ class DeploymentOrchestrator:
 
         from src.fabric.config import FabricConfig
         from src.fabric.delta_writer import DeltaWriter
+        from src.spark.pipeline import (
+            backtest_metrics_for_legacy_storage,
+            leaderboard_for_legacy_storage,
+        )
 
         run_date = date.today().isoformat()
         fabric_cfg = FabricConfig(workspace=self.dc.workspace, lakehouse=self.dc.lakehouse)
         writer = DeltaWriter(self.spark, fabric_cfg)
 
         out_backtest = (
-            backtest_sdf
+            backtest_metrics_for_legacy_storage(backtest_sdf, self.config.forecast.series_id_column)
             .withColumn("lob", F.lit(self.dc.lob))
             .withColumn("run_date", F.lit(run_date))
         )
@@ -434,7 +439,7 @@ class DeploymentOrchestrator:
             .collect()[0]["model"]
         )
         lb_out = (
-            leaderboard_sdf
+            leaderboard_for_legacy_storage(leaderboard_sdf)
             .withColumn("lob", F.lit(self.dc.lob))
             .withColumn("run_date", F.lit(run_date))
             .withColumn("champion_model", F.lit(champion))

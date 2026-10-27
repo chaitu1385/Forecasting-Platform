@@ -143,7 +143,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 1758 unit + integration cases
+├── tests/                  # 1889 unit + integration cases
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 ├── notebooks/              # Jupyter notebooks for exploration
@@ -391,16 +391,16 @@ Tikhonov regularisation (lambda = 1e-6) applied for numerical stability.
 
 | Class | Description |
 |-------|-------------|
-| `BacktestEngine` | Orchestrates walk-forward folds; pipeline callers defer persistence until validation and bundle commit |
+| `BacktestEngine` | Validates complete series/date/lead coverage and excludes incomplete models; pipeline persistence is deferred until validation and atomic bundle commit |
 | `WalkForwardCV` | Expanding-window fold generator; configurable `n_folds`, `horizon_weeks`, `step_weeks` |
 | `CVFold` | Dataclass for one fold: train indices, test indices, fold number |
-| `ChampionSelector` | Ranks models by WMAPE; promotes lowest-error model; `compute_ensemble_weights()` |
+| `ChampionSelector` | Recomputes volume WMAPE (or an explicit alternative) over comparable raw rows and horizon buckets; `compute_ensemble_weights()` |
 
 ### `src/metrics/` — Metric Store & Drift
 
 | Class/Function | Description |
 |----------------|-------------|
-| `MetricStore` | Unique atomic standalone appends, committed-bundle metrics and explicit legacy adapters; run-scoped reads |
+| `MetricStore` | Unique atomic appends, committed/legacy raw reads, and immutable stored leaderboard retrieval; explicit current scoring from records |
 | `ForecastDriftDetector` | Detects accuracy drift, bias drift, and volume anomalies per series |
 | `DriftAlert` | `series_id`, `metric`, `severity` (warning/critical), `current_value`, `baseline_value` |
 | `DriftConfig` | `baseline_weeks`, `recent_weeks` configuration |
@@ -420,7 +420,7 @@ Tikhonov regularisation (lambda = 1e-6) applied for numerical stability.
 
 #### `ForecastAnalytics` (notebook API)
 Notebook-ready queries over the MetricStore:
-- `model_leaderboard(lob, run_type, primary_metric)` — rank models by WMAPE
+- `model_leaderboard(lob, run_id=...)` — retrieve stored rank, values and competition scope without rescoring; use `latest=True` within one LOB
 - `model_comparison_by_fold(lob)` — per-fold performance breakdown
 - `accuracy_over_time(model, channel)` — trend of accuracy metrics
 - `accuracy_by_grain(lob)` — performance by hierarchy level
@@ -557,7 +557,7 @@ require verified JWTs by default; only an explicit unauthenticated demo opts out
 | `/auth/me` | GET | Verified identity, role, permissions and expiry; never a token | Yes |
 | `/forecast/{lob}` | GET | Latest forecasts for a LOB (optional `series_id`, `horizon` query params) | Yes |
 | `/forecast/{lob}/{series_id}` | GET | Latest forecast for a single series | Yes |
-| `/metrics/leaderboard/{lob}` | GET | Model leaderboard ranked by WMAPE | Yes |
+| `/metrics/leaderboard/{lob}` | GET | Stored exact/latest ranking with criteria, competition scope and scoring provenance | Yes |
 | `/metrics/drift/{lob}` | GET | Drift alerts (`baseline_weeks`, `recent_weeks` params) | Yes |
 | `/audit` | GET | Query audit log (`action`, `resource_type`, `limit` params) | Yes (`VIEW_AUDIT_LOG`) |
 | `/series/{lob}` | GET | List series with SBC classification (ADI, CV², demand class) | Yes |
@@ -646,7 +646,12 @@ YAML-driven config system with dataclass schema validation. `FREQUENCY_PROFILES`
 | `load_config(path)` | Load and parse YAML config into `PlatformConfig` |
 | `load_config_with_overrides(path, overrides)` | Load config with LOB-level overrides merged |
 | `get_frequency_profile(freq)` | Get temporal properties for `"D"` / `"W"` / `"M"` / `"Q"` |
-| `freq_timedelta(freq, periods)` | Convert frequency + periods to `timedelta` |
+| `freq_timedelta(freq, periods)` | Fixed D/W durations only; M/Q require an anchored calendar |
+| `utils.calendar.PeriodCalendar` | Exact D/W/M/Q grids, preserving weekday and calendar start/end labels |
+
+See [Numerical reliability and score migration](docs/NUMERICAL_RELIABILITY.md)
+for scoring definitions, explicit macro weighting, missing-prediction failures,
+gap semantics, fold-local preprocessing restrictions, and historical rankings.
 
 Pipeline upload precedence is explicit model/horizon override, then valid YAML,
 then platform defaults. The UI carries the current backtest winner into forecasting
@@ -994,7 +999,7 @@ POLARS_MAX_THREADS=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1 \
   python -m pytest -v --timeout=180 --timeout-method=thread \
     -o faulthandler_timeout=60
-# 1758 cases across 68 test modules; no test module exclusions
+# 1889 cases across 73 test modules; no test module exclusions
 ```
 
 On Windows, set the same process environment variables with PowerShell

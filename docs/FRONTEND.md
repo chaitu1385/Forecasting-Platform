@@ -182,6 +182,17 @@ stale requests, mismatched identities and write retry behavior. The private
 production Playwright flow selects real earlier values (10 rather than latest
 20) and saved config after token verification, with credential capture disabled.
 
+### Stored Leaderboards
+
+The Backtest Results page also treats leaderboard order, rank and scoring
+provenance as server-owned. It displays the stored primary criterion (including
+explicit macro WMAPE), keeps competition identity in table/chart keys, and
+suppresses a global winner for multiple or unknown scopes. Historical missing
+policy is labelled unknown, not volume WMAPE. FVA/calibration requests are pinned
+to the returned run ID; changing LOB/run invalidates stale derived responses,
+including retries. Derived FVA is labelled separately from the stored ranking.
+`e2e/leaderboard-provenance.test.tsx` covers these display and state boundaries.
+
 ### Isolated Real-API Regression
 
 `playwright/integration/forecast-intent.spec.ts` exercises real analysis, a

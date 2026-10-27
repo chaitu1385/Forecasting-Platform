@@ -18,6 +18,7 @@ import polars as pl
 
 from ..backtesting.champion import ChampionSelector
 from ..backtesting.engine import BacktestEngine
+from ..backtesting.scoring import require_fold_local_preprocessing
 from ..config.schema import PlatformConfig
 from ..forecasting.ensemble import WeightedEnsembleForecaster
 from ..forecasting.registry import registry
@@ -25,7 +26,13 @@ from ..metrics.store import MetricStore
 from ..observability.context import PipelineContext
 from ..observability.metrics import MetricsEmitter
 from ..series.builder import SeriesBuilder
-from .manifest import PipelineManifest, build_manifest, model_metadata, runtime_metadata
+from .manifest import (
+    PipelineManifest,
+    build_manifest,
+    model_metadata,
+    runtime_metadata,
+    scoring_metadata,
+)
 from .run_store import RunStore, resolve_run_root, utc_timestamp
 from .validation_step import run_post_validation
 
@@ -125,6 +132,7 @@ class BacktestPipeline:
           - "leaderboard": aggregated model ranking
         """
         fc = self.config.forecast
+        require_fold_local_preprocessing(self.config)
 
         run_id = self.context.run_id
 
@@ -190,15 +198,15 @@ class BacktestPipeline:
             logger.info("Building weighted ensemble from backtest results...")
             weights = self._champion_selector.compute_ensemble_weights(results)
             ensemble = WeightedEnsembleForecaster(
-                forecasters=forecasters,
+                forecasters=[model for model in forecasters if weights.get(model.name, 0) > 0],
                 weights=weights,
             )
             # Create a synthetic champion row describing the ensemble
             champions = pl.DataFrame({
                 "group_key": [self.config.lob],
                 "model_id": ["weighted_ensemble"],
-                self.config.backtest.primary_metric: [0.0],
-                self.config.backtest.secondary_metric: [0.0],
+                self.config.backtest.primary_metric: [None],
+                self.config.backtest.secondary_metric: [None],
             })
             logger.info("Ensemble: %s", ensemble)
         elif self.config.backtest.horizon_buckets:
@@ -273,7 +281,7 @@ class BacktestPipeline:
         manifest.execution = {
             "run_type": "backtest", "frequency": fc.frequency,
             "horizon_periods": fc.horizon_periods, "validation_periods": self.config.backtest.val_periods,
-            "models": manifest.models,
+            "models": manifest.models, "scoring_contract": scoring_metadata(self.config, results),
         }
         manifest.source = {**runtime_metadata(), "entrypoint": self._source_kind}
         optional_inputs = {

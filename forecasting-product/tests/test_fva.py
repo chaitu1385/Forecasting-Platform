@@ -101,6 +101,7 @@ class TestFVAAnalyzer:
                 # Naive model (worst)
                 rows.append({
                     "model_id": "naive_seasonal",
+                    "run_id": "fva-test", "lob": "test", "forecast_step": 1,
                     "fold": fold,
                     "series_id": sid,
                     "target_week": "2024-06-01",
@@ -112,6 +113,7 @@ class TestFVAAnalyzer:
                 # Statistical model (middle)
                 rows.append({
                     "model_id": "auto_arima",
+                    "run_id": "fva-test", "lob": "test", "forecast_step": 1,
                     "fold": fold,
                     "series_id": sid,
                     "target_week": "2024-06-01",
@@ -123,6 +125,7 @@ class TestFVAAnalyzer:
                 # ML model (best)
                 rows.append({
                     "model_id": "lgbm_direct",
+                    "run_id": "fva-test", "lob": "test", "forecast_step": 1,
                     "fold": fold,
                     "series_id": sid,
                     "target_week": "2024-06-01",
@@ -171,6 +174,7 @@ class TestFVAAnalyzer:
     def test_model_layer_classification(self):
         analyzer = FVAAnalyzer()
         assert analyzer.classify_model_layer("naive_seasonal") == "naive"
+        assert analyzer.classify_model_layer("seasonal_naive") == "naive"
         assert analyzer.classify_model_layer("auto_arima") == "statistical"
         assert analyzer.classify_model_layer("lgbm_direct") == "ml"
         assert analyzer.classify_model_layer("unknown_model") == "ml"

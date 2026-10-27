@@ -10,6 +10,7 @@ from typing import List, Optional
 
 import polars as pl
 
+from ..metrics.aggregation import aggregate_metrics, rank_metrics, validate_comparable_records
 from ..metrics.fva import classify_fva
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ class FVAAnalyzer:
 
     LAYER_NAMES = {
         "naive_seasonal": "naive",
+        "seasonal_naive": "naive",  # Historical metric ID, not a new forecasting plugin.
         "auto_arima": "statistical",
         "auto_ets": "statistical",
         "croston": "statistical",
@@ -64,65 +66,69 @@ class FVAAnalyzer:
         if missing:
             raise ValueError(f"Missing columns for FVA: {missing}")
 
-        # Add layer classification
-        df = backtest_results.with_columns(
-            pl.col("model_id")
-            .map_elements(self.classify_model_layer, return_dtype=pl.Utf8)
-            .alias("forecast_layer")
-        )
-
-        # For each layer, pick the best model (lowest WMAPE) per series per fold
-        best_per_layer = (
-            df.group_by([id_col, "fold", "forecast_layer"])
-            .agg([
-                pl.col("actual").mean().alias("actual_mean"),
-                # Pick model with lowest WMAPE within layer
-                pl.col("wmape").min().alias("layer_wmape"),
-                pl.col("model_id").first().alias("layer_model"),
-                pl.col("forecast").mean().alias("layer_forecast"),
-                pl.col("actual").sum().alias("total_volume"),
-            ])
-        )
-
-        # Pivot: for each (series, fold) get wmape per layer
+        aliases = {source: canonical for source, canonical in
+                   ((id_col, "series_id"), (time_col, "target_week")) if source != canonical}
+        df = backtest_results.rename(aliases)
+        if "run_id" not in df.columns:
+            raise ValueError("FVA requires raw run-scoped observations; re-run summary-only backtests")
+        competition = ["lob", "series_id"] + [
+            column for column in ("grain_level", "channel") if column in df.columns
+        ]
+        unit = ["run_id"] + competition + ["fold"]
         results = []
-        for (sid, fold), group in best_per_layer.group_by([id_col, "fold"]):
-            layer_data = {}
-            for row in group.iter_rows(named=True):
-                layer = row["forecast_layer"]
-                layer_data[layer] = {
-                    "wmape": row["layer_wmape"],
-                    "model": row["layer_model"],
-                    "volume": row["total_volume"],
-                }
-
-            # Compute FVA cascade
-            layer_order = ["naive", "statistical", "ml"]
-            available = [lyr for lyr in layer_order if lyr in layer_data]
-
-            for i, layer in enumerate(available):
-                parent_layer = available[i - 1] if i > 0 else None
-                parent_wmape = layer_data[parent_layer]["wmape"] if parent_layer else None
-                layer_wmape = layer_data[layer]["wmape"]
-                fva = (parent_wmape - layer_wmape) if parent_wmape is not None else 0.0
-
-                results.append({
-                    id_col: sid,
-                    "fold": fold,
-                    "forecast_layer": layer,
-                    "parent_layer": parent_layer,
-                    "model_id": layer_data[layer]["model"],
-                    "wmape": layer_wmape,
-                    "parent_wmape": parent_wmape,
-                    "fva_wmape": fva,
-                    "fva_class": "BASELINE" if parent_layer is None else classify_fva(fva),
-                    "total_volume": layer_data[layer]["volume"],
-                })
+        for run in df.partition_by("run_id"):
+            # Validate entire model populations before selecting within a layer.
+            # A missing hard period/fold cannot become the best "statistical" score.
+            validate_comparable_records(run, competition)
+            models = aggregate_metrics(run, ["wmape", "normalized_bias"], unit)
+            volumes = run.group_by(unit + ["model_id"]).agg(
+                pl.col("actual").abs().sum().alias("total_volume")
+            )
+            models = models.join(volumes, on=unit + ["model_id"]).with_columns(
+                pl.col("model_id").map_elements(
+                    self.classify_model_layer, return_dtype=pl.String,
+                ).alias("forecast_layer")
+            )
+            best = rank_metrics(models, "wmape", "normalized_bias", unit + ["forecast_layer"])
+            best = best.group_by(unit + ["forecast_layer"], maintain_order=True).first()
+            for identity, group in best.group_by(unit, maintain_order=True):
+                common = dict(zip(unit, identity))
+                layers = {row["forecast_layer"]: row for row in group.iter_rows(named=True)}
+                available = [name for name in ("naive", "statistical", "ml") if name in layers]
+                for index, layer in enumerate(available):
+                    row = layers[layer]
+                    parent = available[index - 1] if index else None
+                    parent_wmape = layers[parent]["wmape"] if parent else None
+                    value = row["wmape"]
+                    if value is None or (parent is not None and parent_wmape is None):
+                        fva, classification = None, "UNDEFINED"
+                    elif parent is None:
+                        fva, classification = 0.0, "BASELINE"
+                    else:
+                        fva = parent_wmape - value
+                        classification = classify_fva(fva)
+                    results.append({
+                        **common, "forecast_layer": layer, "parent_layer": parent,
+                        "model_id": row["model_id"] if value is not None else None,
+                        "wmape": value, "parent_wmape": parent_wmape,
+                        "normalized_bias": row["normalized_bias"],
+                        "fva_wmape": fva, "fva_class": classification,
+                        "total_volume": row["total_volume"],
+                        "n_observations": row["n_observations"],
+                        "scoring_policy": row["scoring_policy"],
+                    })
 
         if not results:
             return pl.DataFrame()
 
-        return pl.DataFrame(results)
+        detail = pl.DataFrame(results, schema_overrides={
+            "wmape": pl.Float64, "parent_wmape": pl.Float64,
+            "normalized_bias": pl.Float64, "fva_wmape": pl.Float64,
+            "model_id": pl.String, "parent_layer": pl.String,
+        })
+        if id_col != "series_id":
+            detail = detail.with_columns(pl.col("series_id").alias(id_col))
+        return detail
 
     def summarize(
         self,
@@ -143,18 +149,24 @@ class FVAAnalyzer:
         if fva_detail.is_empty():
             return pl.DataFrame()
 
-        group_cols = ["forecast_layer"]
-        if group_by:
-            group_cols = group_by + group_cols
+        group_cols = list(dict.fromkeys(
+            [column for column in ("run_id", "lob") if column in fva_detail.columns]
+            + (group_by or []) + ["forecast_layer"]
+        ))
 
         summary = (
             fva_detail
             .group_by(group_cols)
             .agg([
-                pl.len().alias("n_series"),
-                pl.col("wmape").mean().alias("mean_wmape"),
-                pl.col("fva_wmape").mean().alias("mean_fva_wmape"),
-                pl.col("fva_wmape").sum().alias("total_fva_wmape"),
+                pl.col("series_id").n_unique().alias("n_series"),
+                pl.col("forecast_layer").count().alias("n_evaluations"),
+                (pl.col("fva_class") == "UNDEFINED").sum().alias("n_undefined"),
+                pl.when(pl.col("wmape").is_not_null().all())
+                    .then(pl.col("wmape").mean()).otherwise(None).alias("mean_wmape"),
+                pl.when(pl.col("fva_wmape").is_not_null().all())
+                    .then(pl.col("fva_wmape").mean()).otherwise(None).alias("mean_fva_wmape"),
+                pl.when(pl.col("fva_wmape").is_not_null().all())
+                    .then(pl.col("fva_wmape").sum()).otherwise(None).alias("total_fva_wmape"),
                 (pl.col("fva_class") == "ADDS_VALUE")
                     .sum().alias("n_adds_value"),
                 (pl.col("fva_class") == "NEUTRAL")
@@ -167,11 +179,11 @@ class FVAAnalyzer:
 
         # Compute percentages
         summary = summary.with_columns([
-            (pl.col("n_adds_value") / pl.col("n_series") * 100)
+            (pl.col("n_adds_value") / pl.col("n_evaluations") * 100)
                 .round(1).alias("pct_adds_value"),
-            (pl.col("n_neutral") / pl.col("n_series") * 100)
+            (pl.col("n_neutral") / pl.col("n_evaluations") * 100)
                 .round(1).alias("pct_neutral"),
-            (pl.col("n_destroys_value") / pl.col("n_series") * 100)
+            (pl.col("n_destroys_value") / pl.col("n_evaluations") * 100)
                 .round(1).alias("pct_destroys_value"),
         ])
 
@@ -193,33 +205,44 @@ class FVAAnalyzer:
             return pl.DataFrame()
 
         # Skip baseline layer for ranking
-        ranked_data = fva_detail.filter(pl.col("fva_class") != "BASELINE")
+        ranked_data = fva_detail.filter(pl.col("parent_layer").is_not_null())
 
         if ranked_data.is_empty():
             return pl.DataFrame()
 
+        population = [column for column in ("run_id", "lob") if column in fva_detail.columns]
         board = (
             ranked_data
-            .group_by("forecast_layer")
+            .group_by(population + ["forecast_layer"])
             .agg([
-                pl.col("fva_wmape").mean().alias("mean_fva_wmape"),
-                pl.col("fva_wmape").sum().alias("cumulative_wmape_reduction"),
-                pl.len().alias("n_series"),
+                pl.when(pl.col("fva_wmape").is_not_null().all())
+                    .then(pl.col("fva_wmape").mean()).otherwise(None).alias("mean_fva_wmape"),
+                pl.when(pl.col("fva_wmape").is_not_null().all())
+                    .then(pl.col("fva_wmape").sum()).otherwise(None).alias("cumulative_wmape_reduction"),
+                pl.col("series_id").n_unique().alias("n_series"),
+                pl.col("forecast_layer").count().alias("n_evaluations"),
+                (pl.col("fva_class") == "UNDEFINED").sum().alias("n_undefined"),
                 (pl.col("fva_class") == "ADDS_VALUE")
                     .sum().alias("n_improved"),
             ])
             .with_columns([
-                (pl.col("n_improved") / pl.col("n_series") * 100)
+                (pl.col("n_improved") / pl.col("n_evaluations") * 100)
                     .round(1).alias("robustness_score"),
             ])
-            .sort("mean_fva_wmape", descending=True)
+            .sort(population + ["mean_fva_wmape", "forecast_layer"],
+                  descending=[False] * len(population) + [True, False], nulls_last=True)
         )
 
         # Add rank and recommendation
-        board = board.with_row_index("rank", offset=1)
+        board = (
+            board.with_columns(pl.col("forecast_layer").cum_count().over(population).alias("rank"))
+            if population else board.with_row_index("rank", offset=1)
+        )
 
         board = board.with_columns(
-            pl.when(pl.col("robustness_score") >= 60)
+            pl.when(pl.col("n_undefined") > 0)
+            .then(pl.lit("Insufficient data"))
+            .when(pl.col("robustness_score") >= 60)
             .then(pl.lit("Keep"))
             .when(pl.col("robustness_score") >= 30)
             .then(pl.lit("Review"))
