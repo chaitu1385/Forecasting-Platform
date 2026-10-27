@@ -263,19 +263,36 @@ def _assert_private(path):
         return
     environment = {**os.environ, "CHECK_PRIVATE_FILE": str(path)}
     script = r"""
-$file = Get-Acl -LiteralPath $env:CHECK_PRIVATE_FILE
+$ErrorActionPreference = 'Stop'
+$file = [System.IO.File]::GetAccessControl($env:CHECK_PRIVATE_FILE)
 $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$owner = $file.GetOwner([System.Security.Principal.SecurityIdentifier])
 $rules = @($file.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+[Console]::WriteLine(('current_sid={0}; owner_sid={1}; protected={2}; count={3}' -f $sid.Value,$owner.Value,$file.AreAccessRulesProtected,$rules.Count))
+foreach ($rule in $rules) {
+    [Console]::WriteLine(('rule_sid={0}; rights={1}; type={2}; inherited={3}' -f $rule.IdentityReference.Value,$rule.FileSystemRights,$rule.AccessControlType,$rule.IsInherited))
+}
 if (-not $file.AreAccessRulesProtected -or $rules.Count -ne 1 -or
+    $owner.Value -ne $sid.Value -or
     $rules[0].IdentityReference.Value -ne $sid.Value -or $rules[0].IsInherited -or
+    $rules[0].FileSystemRights -ne [System.Security.AccessControl.FileSystemRights]::FullControl -or
     $rules[0].AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) { exit 1 }
+# Diagnostic only: cmdlet availability is not the native descriptor assertion above.
+try {
+    $null = Get-Acl -LiteralPath $env:CHECK_PRIVATE_FILE
+    [Console]::WriteLine('Get-Acl diagnostic: available')
+} catch {
+    [Console]::WriteLine(('Get-Acl diagnostic: {0}' -f $_.Exception.Message))
+}
+exit 0
 """
     powershell = Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
     result = subprocess.run(
         [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script],
-        env=environment, capture_output=True, timeout=15,
+        env=environment, capture_output=True, text=True, timeout=15,
     )
-    assert result.returncode == 0, "Output does not have a protected current-user-only Windows ACL"
+    print(result.stdout)
+    assert result.returncode == 0, "Native Windows ACL verification failed: " + result.stdout + result.stderr
 
 
 def test_private_output_is_new_owner_only_and_cannot_overwrite(tmp_path):
@@ -285,6 +302,32 @@ def test_private_output_is_new_owner_only_and_cannot_overwrite(tmp_path):
     with pytest.raises(FileExistsError):
         write_private_token(output, "replacement")
     assert output.read_text().strip() == "synthetic-not-an-actual-credential"
+
+
+def test_private_output_verifier_rejects_a_broader_read_rule(tmp_path):
+    output = tmp_path / "noncredential-acl-check.txt"
+    write_private_token(output, "synthetic-not-an-actual-credential")
+    if os.name == "nt":
+        powershell = Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        script = r"""
+$ErrorActionPreference = 'Stop'
+$file = [System.IO.File]::GetAccessControl($env:CHECK_PRIVATE_FILE)
+$file.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+    [System.Security.Principal.SecurityIdentifier]::new('S-1-1-0'),
+    [System.Security.AccessControl.FileSystemRights]::Read,
+    [System.Security.AccessControl.AccessControlType]::Allow))
+[System.IO.File]::SetAccessControl($env:CHECK_PRIVATE_FILE, $file)
+"""
+        result = subprocess.run(
+            [str(powershell), "-NoProfile", "-NonInteractive", "-Command", script],
+            env={**os.environ, "CHECK_PRIVATE_FILE": str(output)},
+            capture_output=True, text=True, timeout=15,
+        )
+        assert result.returncode == 0, "Could not install the deliberately unsafe test-only ACL"
+    else:
+        output.chmod(0o644)
+    with pytest.raises(AssertionError):
+        _assert_private(output)
 
 
 def test_insecure_file_permissions_fail_before_credential_write(tmp_path, monkeypatch):

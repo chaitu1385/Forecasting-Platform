@@ -181,8 +181,6 @@ def create_app(
     metrics_path = Path(
         metrics_dir if metrics_dir is not None else os.environ.get("API_METRICS_DIR", str(data_path / "metrics"))
     ).resolve()
-    data_path.mkdir(parents=True, exist_ok=True)
-    metrics_path.mkdir(parents=True, exist_ok=True)
     if auth_settings.dev_mode:
         logger.warning("DEMO MODE: identities and roles are simulated; this API is not production-authenticated")
 

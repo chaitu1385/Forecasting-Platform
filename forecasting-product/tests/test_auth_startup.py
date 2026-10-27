@@ -61,7 +61,6 @@ def _stop(process):
 def _process(tmp_path, settings, *, extra_args=(), entrypoint="serve.py"):
     data = tmp_path / "data"
     metrics = data / "metrics"
-    metrics.mkdir(parents=True)
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
@@ -160,14 +159,14 @@ def test_invalid_production_configuration_exits_without_opening_api(tmp_path, se
         except subprocess.TimeoutExpired:
             pytest.fail("Invalid authentication configuration did not stop the launcher")
         assert result != 0
-        assert not list(data.glob("overrides*"))
-        assert not (data / ".seeded").exists()
+        assert not data.exists()
 
 
 @pytest.mark.parametrize("extra_args", [(), ("--workers", "2"), ("--reload",)])
 def test_default_production_and_worker_launches_use_verified_identity(tmp_path, extra_args):
     key = secrets.token_urlsafe(48)
     with _server(tmp_path, {"JWT_SECRET_KEY": key}, extra_args=extra_args) as (base, _data):
+        assert _request(base, "/health")[1]["status"] == "ok"
         assert _request(base, "/auth/status") == (200, {"mode": "production", "auth_required": True})
         assert _request(base, "/auth/me")[0] == 401
         admin = create_token("synthetic-admin", "", "admin", key, expiry_hours=1)

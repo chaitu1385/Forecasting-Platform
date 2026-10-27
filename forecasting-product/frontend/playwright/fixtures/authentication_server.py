@@ -43,6 +43,7 @@ def main() -> None:
     os.environ["AUTH_ENABLED"] = "true"
     os.environ["API_DEV_MODE"] = "false"
     os.environ["JWT_SECRET_KEY"] = key
+    (data / "metrics").mkdir()
     app = create_app(
         data_dir=str(data), metrics_dir=str(data / "metrics"),
         title="Authentication integration test fixture",

@@ -76,6 +76,8 @@ def main():
     if args.demo:
         os.environ["AUTH_ENABLED"] = "false"
         os.environ["API_DEV_MODE"] = "true"
+    Path(os.environ["API_DATA_DIR"]).mkdir(parents=True, exist_ok=True)
+    Path(os.environ["API_METRICS_DIR"]).mkdir(parents=True, exist_ok=True)
 
     import uvicorn
 
