@@ -349,7 +349,7 @@ def _run_competition_simpsons(
         if requested and (set(requested) - set(population.columns) or "model_id" in requested):
             raise ValueError("Simpson segment columns must exist and cannot be the model comparison arm")
         candidates = requested or [column for column in (id_col, "channel", "grain_level") if column in population.columns]
-        segments = [column for column in candidates if 2 <= population[column].n_unique() <= 50]
+        segments = requested or [column for column in candidates if 2 <= population[column].n_unique() <= 50]
         if not segments:
             unavailable.append({**context, "reason": "insufficient_segments"})
             continue

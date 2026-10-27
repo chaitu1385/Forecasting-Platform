@@ -139,6 +139,8 @@ non-learned series preparation, not retrospectively cleansed demand.
 Backtest Simpson diagnostics use the declared competition scope, not arbitrary
 row halves or models from different cohorts. Eligible models must have the same
 complete observation population within the competition and each segment.
+Explicit `simpsons_segment_columns` are honored after input/coverage validation;
+the 2-to-50-cardinality heuristic applies only to automatic discovery.
 The adapter first uses the authoritative raw-observation aggregator at the
 model/segment comparison grain, then applies the existing volume-weighted
 comparison/directional-reversal check. Zero-actual errors remain in the numerator:

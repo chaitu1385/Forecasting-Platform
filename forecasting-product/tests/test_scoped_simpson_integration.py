@@ -97,6 +97,39 @@ def test_genuine_comparable_paradox_preserves_blocking_policy():
         run_post_validation(records, _config(), "retail")
 
 
+def _many_segment_records(small_count):
+    actuals = {"large": [1000], **{f"small_{index}": [10] for index in range(small_count)}}
+    return _records(actuals, {
+        "model_a": {"large": [1900], **{f"small_{index}": [11] for index in range(small_count)}},
+        "model_b": {"large": [1100], **{f"small_{index}": [12] for index in range(small_count)}},
+    })
+
+
+@pytest.mark.parametrize("small_count", [49, 50])
+def test_explicit_segments_are_not_limited_by_automatic_cardinality(small_count):
+    records = _many_segment_records(small_count)
+    result = _run_simpsons_check(records, _config())
+    assert result["evaluated"] is True and result["comparisons_run"] == 1
+    assert result["any_paradox"] is True and result["severity"] == "BLOCKER"
+    comparison = result["comparisons"][0]["result"]
+    assert comparison["aggregate_a"] == pytest.approx(round((900 + small_count) / (1000 + 10 * small_count), 4))
+    assert comparison["aggregate_b"] == pytest.approx(round((100 + 2 * small_count) / (1000 + 10 * small_count), 4))
+    assert len(comparison["reversal_segments"]) == small_count
+    assert len(comparison["segment_directions"]) == small_count + 1
+    assert score_confidence(paradox=result)["factors"]["paradox"]["score"] == 20
+    with pytest.raises(ValidationError, match="BLOCKER"):
+        run_post_validation(records, _config(), "retail")
+
+
+def test_automatic_segment_discovery_retains_its_cardinality_limit():
+    config = _config()
+    config.simpsons_segment_columns = []
+    result = _run_simpsons_check(_many_segment_records(50), config)
+    assert result["evaluated"] is False and result["comparisons_run"] == 0
+    assert result["status"] == "not_applicable" and result["severity"] == "WARNING"
+    assert result["unavailable"][0]["reason"] == "insufficient_segments"
+
+
 @pytest.mark.parametrize("damage", ["missing", "null", "duplicate"])
 def test_malformed_eligible_comparisons_remain_actionable_failures(damage):
     records = _records(
