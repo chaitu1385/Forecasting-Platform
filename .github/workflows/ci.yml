@@ -132,11 +132,15 @@ jobs:
           path: forecasting-product/forecast-intent-results.xml
 
   process-safety:
-    name: Process safety
+    name: Process safety (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
     env:
       POLARS_MAX_THREADS: "2"
       OMP_NUM_THREADS: "1"
@@ -149,7 +153,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: forecasting-product/requirements.txt
       - name: Install dependencies
@@ -165,7 +169,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: process-results
+          name: process-results-python-${{ matrix.python-version }}
           path: forecasting-product/process-results.xml
 
   test:
@@ -205,6 +209,7 @@ jobs:
         run: |
           python -m pytest \
             -v \
+            --log-cli-level=WARNING \
             -o faulthandler_timeout=60 \
             --timeout=180 --timeout-method=thread \
             --cov=src \

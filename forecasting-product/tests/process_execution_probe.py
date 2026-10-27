@@ -10,6 +10,7 @@ import signal
 import sys
 from datetime import date, timedelta
 from pathlib import Path
+from pickle import PicklingError
 
 import polars as pl
 
@@ -155,7 +156,8 @@ def main() -> None:
             BatchInferenceRunner(n_workers=2, batch_size=1).run_forecast(data, model, horizon=4)
         except RuntimeError as error:
             assert "Forecast batch" in str(error)
-            assert "pickle" in str(error.__cause__).lower()
+            assert isinstance(error.__cause__, (AttributeError, PicklingError))
+            assert "<lambda>" in str(error.__cause__)
         else:
             raise AssertionError("Serialization failure was hidden as a successful partial forecast")
 
@@ -171,7 +173,8 @@ def main() -> None:
         assert result["model_id"].unique().to_list() == ["auto_ets"]
         assert len(engine.failures) == 1
         assert engine.failures[0]["model_id"] == "naive_seasonal"
-        assert "pickle" in engine.failures[0]["error_message"].lower()
+        assert engine.failures[0]["error_type"] in {"AttributeError", "PicklingError"}
+        assert "<lambda>" in engine.failures[0]["error_message"]
     else:
         raise ValueError(f"Unknown scenario: {scenario}")
     assert multiprocessing.get_start_method() == start_method
