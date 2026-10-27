@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import logging
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from copy import deepcopy
+from multiprocessing import get_context
 from typing import List
 
 import polars as pl
@@ -33,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 def _fit_predict_batch(
     batch_data: bytes,
-    model_name: str,
+    forecaster: BaseForecaster,
     horizon: int,
     target_col: str,
     time_col: str,
@@ -47,8 +49,6 @@ def _fit_predict_batch(
     """
     batch = pl.read_ipc(batch_data)
 
-    from ..forecasting.registry import registry
-    forecaster = registry.build(model_name)
     forecaster.fit(batch, target_col=target_col, time_col=time_col, id_col=id_col)
     result = forecaster.predict(horizon=horizon, id_col=id_col, time_col=time_col)
 
@@ -128,7 +128,7 @@ class BatchInferenceRunner:
 
         if self.backend == "local":
             results = self._run_local(
-                batches, model_name, horizon, target_col, time_col, id_col
+                batches, forecaster, horizon, target_col, time_col, id_col
             )
         else:
             raise ValueError(f"Unsupported backend: {self.backend!r}")
@@ -163,7 +163,7 @@ class BatchInferenceRunner:
     def _run_local(
         self,
         batches: List[pl.DataFrame],
-        model_name: str,
+        forecaster: BaseForecaster,
         horizon: int,
         target_col: str,
         time_col: str,
@@ -175,12 +175,11 @@ class BatchInferenceRunner:
         if self.n_workers <= 1 or len(batches) == 1:
             # Sequential fallback
             for batch in batches:
-                from ..forecasting.registry import registry
-                forecaster = registry.build(model_name)
-                forecaster.fit(batch, target_col=target_col,
-                               time_col=time_col, id_col=id_col)
-                result = forecaster.predict(horizon=horizon, id_col=id_col,
-                                            time_col=time_col)
+                batch_model = deepcopy(forecaster)
+                batch_model.fit(batch, target_col=target_col,
+                                time_col=time_col, id_col=id_col)
+                result = batch_model.predict(horizon=horizon, id_col=id_col,
+                                             time_col=time_col)
                 results.append(result)
             return results
 
@@ -190,11 +189,15 @@ class BatchInferenceRunner:
             buf = batch.write_ipc(None)
             batch_bytes.append(buf.getvalue() if hasattr(buf, "getvalue") else buf)
 
-        with ProcessPoolExecutor(max_workers=self.n_workers) as executor:
+        # Never fork a process after Polars has initialized its native thread pool.
+        with ProcessPoolExecutor(
+            max_workers=min(self.n_workers, len(batches)),
+            mp_context=get_context("spawn"),
+        ) as executor:
             futures = {
                 executor.submit(
                     _fit_predict_batch,
-                    data, model_name, horizon, target_col, time_col, id_col,
+                    data, forecaster, horizon, target_col, time_col, id_col,
                 ): i
                 for i, data in enumerate(batch_bytes)
             }
@@ -209,5 +212,6 @@ class BatchInferenceRunner:
                     logger.error(
                         "Batch %d failed: %s", batch_idx, exc
                     )
+                    raise RuntimeError(f"Forecast batch {batch_idx} failed") from exc
 
         return results

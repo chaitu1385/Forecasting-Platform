@@ -43,6 +43,9 @@ Environment variables
 API_DATA_DIR      Path to local data directory (default: data/).
 API_METRICS_DIR   Path to metrics store (default: data/metrics/).
 API_VERSION       Version string embedded in /health (default: "1.0.0").
+AUTH_ENABLED      Strict boolean; defaults to true.
+JWT_SECRET_KEY    Dedicated production signing key (required outside demo).
+API_DEV_MODE      Strict boolean; defaults to false. Explicit demo also requires AUTH_ENABLED=false.
 """
 
 from __future__ import annotations
@@ -122,9 +125,19 @@ class _RateLimitMiddleware(BaseHTTPMiddleware):
 
 def _register_routers(app: FastAPI) -> None:
     """Include all domain routers."""
-    from .routers import analytics, governance, hierarchy, overrides, pipeline, series, sku_mapping
+    from .routers import (
+        analytics,
+        auth,
+        governance,
+        hierarchy,
+        overrides,
+        pipeline,
+        series,
+        sku_mapping,
+    )
 
     for r in (
+        auth.router,
         series.router,
         hierarchy.router,
         sku_mapping.router,
@@ -137,13 +150,14 @@ def _register_routers(app: FastAPI) -> None:
 
 
 def create_app(
-    data_dir: str = "data/",
-    metrics_dir: str = "data/metrics/",
+    data_dir: Optional[str] = None,
+    metrics_dir: Optional[str] = None,
     title: str = "Forecasting Product API",
-    auth_enabled: bool = False,
-    jwt_secret: str = "",
-    audit_log_path: str = "data/audit_log/",
+    auth_enabled: Optional[bool] = None,
+    jwt_secret: Optional[str] = None,
+    audit_log_path: Optional[str] = None,
     cors_origins: list[str] | None = None,
+    dev_mode: Optional[bool] = None,
 ) -> FastAPI:
     """
     Factory function — returns a configured FastAPI application.
@@ -158,8 +172,17 @@ def create_app(
     title:
         Application title (appears in /docs).
     """
-    if auth_enabled and len(jwt_secret) < 32:
-        raise ValueError("auth_enabled requires a JWT secret of at least 32 characters")
+    from ..auth.settings import AuthSettings
+
+    auth_settings = AuthSettings.from_env(
+        auth_enabled=auth_enabled, dev_mode=dev_mode, jwt_secret=jwt_secret,
+    )
+    data_path = Path(data_dir if data_dir is not None else os.environ.get("API_DATA_DIR", "data")).resolve()
+    metrics_path = Path(
+        metrics_dir if metrics_dir is not None else os.environ.get("API_METRICS_DIR", str(data_path / "metrics"))
+    ).resolve()
+    if auth_settings.dev_mode:
+        logger.warning("DEMO MODE: identities and roles are simulated; this API is not production-authenticated")
 
     app = FastAPI(
         title=title,
@@ -195,13 +218,14 @@ def create_app(
     )
 
     # ── Shared state (attached to app for testability) ─────────────────────
-    app.state.data_dir    = Path(data_dir)
-    app.state.metrics_dir = Path(metrics_dir)
-    app.state.auth_enabled = auth_enabled
-    app.state.jwt_secret = jwt_secret
+    app.state.data_dir = data_path
+    app.state.metrics_dir = metrics_path
+    app.state.auth_settings = auth_settings
+    app.state.auth_enabled = auth_settings.auth_enabled
+    app.state.jwt_secret = auth_settings.jwt_secret
 
     from ..audit.logger import AuditLogger
-    app.state.audit_logger = AuditLogger(audit_log_path)
+    app.state.audit_logger = AuditLogger(audit_log_path or str(data_path / "audit_log"))
 
     from ..auth.models import Permission, User
     from ..auth.rbac import get_current_user, require_permission
@@ -220,25 +244,6 @@ def create_app(
         }
         status = "ok" if all(checks.values()) else "degraded"
         return HealthResponse(status=status, version=_API_VERSION, checks=checks)
-
-    # Dev token endpoint — only registered when API_DEV_MODE=1
-    if os.environ.get("API_DEV_MODE", "1" if not auth_enabled else "0") == "1":
-        @app.post("/auth/token", tags=["auth"])
-        def create_auth_token(
-            username: str = Query(..., description="Username"),
-            role: str = Query("viewer", description="Role"),
-        ):
-            """Issue a JWT token (development only — set API_DEV_MODE=0 to disable)."""
-            if not auth_enabled:
-                return {"detail": "Auth is disabled. All endpoints are open."}
-            from ..auth.token import create_token
-            token = create_token(
-                user_id=username,
-                email=f"{username}@example.com",
-                role=role,
-                secret_key=jwt_secret,
-            )
-            return {"access_token": token, "token_type": "bearer"}
 
     @app.get("/audit", tags=["audit"])
     def get_audit_log(

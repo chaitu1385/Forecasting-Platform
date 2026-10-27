@@ -14,6 +14,7 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
     steps:
@@ -111,7 +112,7 @@ jobs:
             "fastapi>=0.100.0,<0.116.0" \
             "httpx>=0.24.0" \
             "python-multipart>=0.0.7" \
-            "pyjwt>=2.0.0"
+            "pyjwt>=2.0.0,<3.0"
 
       - name: Run forecast intent regressions
         working-directory: forecasting-product
@@ -130,13 +131,127 @@ jobs:
           name: forecast-intent-results
           path: forecasting-product/forecast-intent-results.xml
 
-  test:
-    name: Test (Python ${{ matrix.python-version }})
+  process-safety:
+    name: Process safety (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    needs: lint
+    timeout-minutes: 10
     permissions:
       contents: read
     strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    env:
+      POLARS_MAX_THREADS: "2"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMBA_NUM_THREADS: "1"
+      PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: forecasting-product/requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r forecasting-product/requirements.txt pytest-cov pytest-timeout
+      - name: Run bounded process regressions
+        working-directory: forecasting-product
+        run: |
+          python -m pytest tests/test_process_execution.py -v \
+            -o addopts="" -o faulthandler_timeout=60 \
+            --timeout=120 --timeout-method=thread \
+            --junitxml=process-results.xml
+      - name: Upload process diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: process-results-python-${{ matrix.python-version }}
+          path: forecasting-product/process-results.xml
+
+  authentication:
+    name: Authentication (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      POLARS_MAX_THREADS: "2"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMBA_NUM_THREADS: "1"
+      PYTHONUTF8: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: forecasting-product/requirements.txt
+      - name: Install authentication test dependencies
+        run: python -m pip install -r forecasting-product/requirements.txt pytest-timeout
+      - name: Verify real launcher, JWT/RBAC and private operator output
+        working-directory: forecasting-product
+        run: >
+          python -m pytest tests/test_authentication.py tests/test_auth_startup.py
+          tests/test_docker_seed.py -q --capture=tee-sys -o addopts="" -o faulthandler_timeout=60
+          --timeout=120 --timeout-method=thread --junitxml=authentication-results.xml
+      - uses: actions/setup-node@v4
+        if: runner.os == 'Linux'
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: forecasting-product/frontend/package-lock.json
+      - name: Install frontend test dependencies
+        if: runner.os == 'Linux'
+        working-directory: forecasting-product/frontend
+        run: npm ci
+      - name: Verify production token login with a real isolated API and browser
+        if: runner.os == 'Linux'
+        working-directory: forecasting-product/frontend
+        env:
+          AUTH_E2E_ROOT: ${{ runner.temp }}/forecast-auth-browser
+          PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
+        run: npm run test:auth-browser
+      - name: Verify explicit-demo browser login
+        if: runner.os == 'Linux'
+        working-directory: forecasting-product/frontend
+        env:
+          PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
+        run: npx playwright test login-flow.spec.ts --project=chromium --workers=1 --retries=0 --reporter=line
+      - name: Upload authentication results (never credentials or browser traces)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: authentication-results-${{ matrix.os }}
+          path: forecasting-product/authentication-results.xml
+
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    needs: [lint, process-safety]
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      POLARS_MAX_THREADS: "2"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMBA_NUM_THREADS: "1"
+      PYTHONUNBUFFERED: "1"
+      PYTHONFAULTHANDLER: "1"
+    strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
     steps:
@@ -150,28 +265,40 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r forecasting-product/requirements.txt
-          pip install pytest pytest-cov httpx rapidfuzz
+          pip install pytest pytest-cov pytest-timeout httpx rapidfuzz
 
       - name: Run tests
         working-directory: forecasting-product
         run: |
           python -m pytest \
             -v \
+            --log-cli-level=WARNING \
+            -o faulthandler_timeout=60 \
+            --timeout=180 --timeout-method=thread \
             --cov=src \
             --cov-report=xml \
-            --cov-report=term-missing
+            --cov-report=term-missing \
+            --junitxml=test-results.xml
 
       - name: Upload coverage
-        if: matrix.python-version == '3.11'
+        if: always() && matrix.python-version == '3.11'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
           path: forecasting-product/coverage.xml
 
+      - name: Upload backend results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-results-python-${{ matrix.python-version }}
+          path: forecasting-product/test-results.xml
+
   build:
     name: Docker Build
     runs-on: ubuntu-latest
-    needs: test
+    needs: [lint, process-safety]
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -184,19 +311,44 @@ jobs:
             -t forecasting-product:${{ github.sha }} \
             .
 
-      - name: Verify image runs
+      - name: Verify cold start and persistent restart
+        run: bash .github/scripts/docker-smoke.sh "forecasting-product:${{ github.sha }}"
+
+      - name: Verify Compose mode and volume isolation
         run: |
-          docker run --rm -d \
-            --name fp-smoke \
-            -p 8000:8000 \
-            forecasting-product:${{ github.sha }}
-          sleep 5
-          curl -sf http://localhost:8000/health || (docker logs fp-smoke && exit 1)
-          docker stop fp-smoke
+          docker compose config --format json | python3 -c '
+          import json, sys
+          config = json.load(sys.stdin)
+          api = config["services"]["api"]
+          assert api["environment"]["AUTH_ENABLED"] == "true"
+          assert api["environment"]["API_DEV_MODE"] == "false"
+          assert api["volumes"][0]["source"] == "api-data"
+          assert all(port["host_ip"] == "127.0.0.1" for service in config["services"].values() for port in service.get("ports", []))
+          print("Production Compose defaults and loopback bindings verified")
+          '
+          docker compose -f docker-compose.yml -f docker-compose.demo.yml config --format json | python3 -c '
+          import json, sys
+          api = json.load(sys.stdin)["services"]["api"]
+          assert api["environment"]["AUTH_ENABLED"] == "false"
+          assert api["environment"]["API_DEV_MODE"] == "true"
+          assert api["volumes"][0]["source"] == "api-demo-data"
+          print("Explicit demo uses a separate data volume")
+          '
+
+      - name: Verify production authentication and secure container startup
+        run: python3 .github/scripts/docker-auth-smoke.py "forecasting-product:${{ github.sha }}"
+
+      - name: Upload Docker smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-smoke-results
+          path: docker-smoke-results/
 
   frontend:
     name: Frontend checks
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     defaults:
@@ -213,3 +365,38 @@ jobs:
       - run: npm run typecheck
       - run: npm run test:e2e
       - run: npm run build
+
+  automation:
+    name: Automation safety
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: node --test .github/scripts/*.test.cjs
+
+  ci-gate:
+    name: CI gate
+    if: always()
+    needs: [lint, validation, forecast-intent, process-safety, test, build, frontend, automation, authentication]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Require every constituent job to succeed
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: node .github/scripts/ci-gate.cjs

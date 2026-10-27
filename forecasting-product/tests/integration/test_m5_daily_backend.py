@@ -18,8 +18,10 @@ Run
 from __future__ import annotations
 
 import io
+import shutil
 import tempfile
 import unittest
+from copy import deepcopy
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -72,7 +74,56 @@ def _make_app(data_dir: str, metrics_dir: str):
         data_dir=data_dir,
         metrics_dir=metrics_dir,
         auth_enabled=False,
+        dev_mode=True,
+        jwt_secret="",
+        audit_log_path=str(Path(data_dir) / "audit_log"),
     )
+
+
+@pytest.fixture(scope="module")
+def _daily_backtest(tmp_path_factory):
+    """Run the complete checked-in sample, three models and two folds once."""
+    data_dir = tmp_path_factory.mktemp("m5-backtest") / "data"
+    metrics_dir = data_dir / "metrics"
+    metrics_dir.mkdir(parents=True)
+    history = data_dir / "history" / "walmart_m5_daily"
+    history.mkdir(parents=True)
+    _load_sample().write_parquet(history / "actuals.parquet")
+    app = _make_app(str(data_dir), str(metrics_dir))
+    with TestClient(app) as client:
+        response = client.post(
+            "/pipeline/backtest?lob=walmart_m5_daily",
+            files={
+                "file": ("m5_daily.csv", _csv_bytes(SAMPLE_CSV), "text/csv"),
+                "config_file": ("config.yaml", _yaml_bytes(CONFIG_YAML), "application/x-yaml"),
+            },
+        )
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert {entry["model_id"] for entry in result["leaderboard"]} == {
+            "naive_seasonal", "auto_arima", "lgbm_direct",
+        }, result
+        persisted = client.get("/metrics/leaderboard/walmart_m5_daily")
+        assert persisted.status_code == 200, persisted.text
+    return data_dir, result
+
+
+@pytest.fixture(scope="class")
+def _daily_backtest_client(request, tmp_path_factory, _daily_backtest):
+    # Give every consumer its own files, response values and application state.
+    # In particular, forecasting must not mutate the shared backtest snapshot.
+    source, result = _daily_backtest
+    data_dir = tmp_path_factory.mktemp(request.cls.__name__) / "data"
+    shutil.copytree(source, data_dir)
+    metrics_dir = data_dir / "metrics"
+    app = _make_app(str(data_dir), str(metrics_dir))
+    with TestClient(app) as client:
+        request.cls.data_dir = data_dir
+        request.cls.metrics_dir = metrics_dir
+        request.cls.client = client
+        request.cls._backtest_result = deepcopy(result)
+        request.cls._backtest_data = deepcopy(result)
+        yield
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -198,39 +249,12 @@ class TestSeriesExploration(unittest.TestCase):
 #  3. Backtest Pipeline  (3 tests)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.timeout(1200)
+@pytest.mark.usefixtures("_daily_backtest_client")
 class TestBacktestPipeline(unittest.TestCase):
     """POST /pipeline/backtest with daily data and config."""
 
     _backtest_result: dict | None = None
-
-    @classmethod
-    def setUpClass(cls):
-        """Run backtest once, share results across tests in this class."""
-        cls.tmpdir = tempfile.mkdtemp()
-        cls.data_dir = Path(cls.tmpdir) / "data"
-        cls.metrics_dir = Path(cls.tmpdir) / "metrics"
-        cls.data_dir.mkdir(parents=True)
-        cls.metrics_dir.mkdir(parents=True)
-
-        # Pre-populate history
-        df = _load_sample()
-        hist_dir = cls.data_dir / "history" / "walmart_m5_daily"
-        hist_dir.mkdir(parents=True, exist_ok=True)
-        df.write_parquet(hist_dir / "actuals.parquet")
-
-        app = _make_app(str(cls.data_dir), str(cls.metrics_dir))
-        cls.client = TestClient(app)
-
-        # Run backtest
-        resp = cls.client.post(
-            "/pipeline/backtest?lob=walmart_m5_daily",
-            files={
-                "file": ("m5_daily.csv", _csv_bytes(SAMPLE_CSV), "text/csv"),
-                "config_file": ("config.yaml", _yaml_bytes(CONFIG_YAML), "application/x-yaml"),
-            },
-        )
-        assert resp.status_code == 200, f"Backtest failed: {resp.text}"
-        cls._backtest_result = resp.json()
 
     def test_run_backtest_daily(self):
         """Backtest completes with status='completed' and has a champion model."""
@@ -333,42 +357,16 @@ class TestBacktestPipeline(unittest.TestCase):
 #  4. Forecast Pipeline  (2 tests)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.timeout(1200)
 class TestForecastPipeline(unittest.TestCase):
     """POST /pipeline/forecast with daily data."""
 
     _forecast_result: dict | None = None
 
-    @classmethod
-    def setUpClass(cls):
-        """Run backtest + forecast once (forecast needs a champion from backtest)."""
-        cls.tmpdir = tempfile.mkdtemp()
-        cls.data_dir = Path(cls.tmpdir) / "data"
-        cls.metrics_dir = Path(cls.tmpdir) / "metrics"
-        cls.data_dir.mkdir(parents=True)
-        cls.metrics_dir.mkdir(parents=True)
-
-        # Pre-populate history
-        df = _load_sample()
-        hist_dir = cls.data_dir / "history" / "walmart_m5_daily"
-        hist_dir.mkdir(parents=True, exist_ok=True)
-        df.write_parquet(hist_dir / "actuals.parquet")
-
-        app = _make_app(str(cls.data_dir), str(cls.metrics_dir))
-        cls.client = TestClient(app)
-
-        # Run backtest first to establish champion
-        bt_resp = cls.client.post(
-            "/pipeline/backtest?lob=walmart_m5_daily",
-            files={
-                "file": ("m5_daily.csv", _csv_bytes(SAMPLE_CSV), "text/csv"),
-                "config_file": ("config.yaml", _yaml_bytes(CONFIG_YAML), "application/x-yaml"),
-            },
-        )
-        assert bt_resp.status_code == 200, f"Backtest failed: {bt_resp.text}"
-        cls._backtest_data = bt_resp.json()
-
-        # Run forecast
-        fc_resp = cls.client.post(
+    @pytest.fixture(scope="class", autouse=True)
+    def _run_forecast(self, _daily_backtest_client):
+        """Execute the real forecast against a private copy of backtest artifacts."""
+        fc_resp = self.client.post(
             "/pipeline/forecast?lob=walmart_m5_daily&horizon=28",
             files={
                 "file": ("m5_daily.csv", _csv_bytes(SAMPLE_CSV), "text/csv"),
@@ -376,7 +374,7 @@ class TestForecastPipeline(unittest.TestCase):
             },
         )
         assert fc_resp.status_code == 200, f"Forecast failed: {fc_resp.text}"
-        cls._forecast_result = fc_resp.json()
+        type(self)._forecast_result = fc_resp.json()
 
     def test_run_forecast_daily(self):
         """Forecast completes with expected row count and horizon."""
@@ -459,35 +457,10 @@ class TestHierarchy(unittest.TestCase):
 #  6. Validation & Governance  (3 tests)
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@pytest.mark.timeout(1200)
+@pytest.mark.usefixtures("_daily_backtest_client")
 class TestValidationGovernance(unittest.TestCase):
     """Post-pipeline validation, manifests, and model cards."""
-
-    @classmethod
-    def setUpClass(cls):
-        """Run backtest to populate manifests/model cards."""
-        cls.tmpdir = tempfile.mkdtemp()
-        cls.data_dir = Path(cls.tmpdir) / "data"
-        cls.metrics_dir = Path(cls.tmpdir) / "metrics"
-        cls.data_dir.mkdir(parents=True)
-        cls.metrics_dir.mkdir(parents=True)
-
-        df = _load_sample()
-        hist_dir = cls.data_dir / "history" / "walmart_m5_daily"
-        hist_dir.mkdir(parents=True, exist_ok=True)
-        df.write_parquet(hist_dir / "actuals.parquet")
-
-        app = _make_app(str(cls.data_dir), str(cls.metrics_dir))
-        cls.client = TestClient(app)
-
-        # Backtest to generate governance artifacts
-        resp = cls.client.post(
-            "/pipeline/backtest?lob=walmart_m5_daily",
-            files={
-                "file": ("m5_daily.csv", _csv_bytes(SAMPLE_CSV), "text/csv"),
-                "config_file": ("config.yaml", _yaml_bytes(CONFIG_YAML), "application/x-yaml"),
-            },
-        )
-        assert resp.status_code == 200
 
     def test_validation_endpoint(self):
         """GET /metrics/{lob}/validation should return a grade after backtest."""

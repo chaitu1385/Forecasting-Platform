@@ -46,6 +46,8 @@ def client(tmp_path, monkeypatch):
         metrics_dir=str(tmp_path / "data" / "metrics"),
         audit_log_path=str(tmp_path / "audit"),
         auth_enabled=False,
+        dev_mode=True,
+        jwt_secret="",
     )
     with TestClient(app, raise_server_exceptions=False) as test_client:
         yield test_client
@@ -324,6 +326,22 @@ def test_override_does_not_hide_invalid_uploaded_config(client, tmp_path):
     )
     assert response.status_code == 400, response.text
     assert not list((tmp_path / "data").rglob("*"))
+
+
+def test_invalid_config_preserves_existing_forecast_artifacts(client, tmp_path):
+    successful = _run(client, config=_config())
+    assert successful.status_code == 200, successful.text
+    before = _snapshot(tmp_path)
+    entries = sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*"))
+    assert any(name.endswith(".parquet") for name in before)
+    response = _run(
+        client,
+        raw_config=b"forecast:\n  horizon_periods: 0",
+        params={"model_id": "croston", "horizon": 5},
+    )
+    assert response.status_code == 400, response.text
+    assert _snapshot(tmp_path) == before
+    assert sorted(str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*")) == entries
 
 
 def test_execution_settings_are_allowlisted_not_raw_config(client, tmp_path):

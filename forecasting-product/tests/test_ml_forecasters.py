@@ -22,6 +22,60 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
+@pytest.mark.parametrize("model_name", ["lgbm_direct", "xgboost_direct"])
+@pytest.mark.parametrize("num_threads", [1, 2])
+def test_native_learners_respect_forecaster_thread_budget(model_name, num_threads):
+    from src.forecasting.registry import registry
+
+    model = registry.build(model_name, num_threads=num_threads)
+    assert model._get_learner().get_params()["n_jobs"] == num_threads
+    assert model._get_quantile_learner(0.1).get_params()["n_jobs"] == num_threads
+
+
+@pytest.mark.parametrize(
+    "model_name,params_name",
+    [("lgbm_direct", "lgbm_params"), ("xgboost_direct", "xgb_params")],
+)
+def test_explicit_native_thread_budget_is_preserved(model_name, params_name):
+    from src.forecasting.registry import registry
+
+    model = registry.build(model_name, num_threads=1, **{params_name: {"n_jobs": 2}})
+    assert model._get_learner().get_params()["n_jobs"] == 2
+    assert model._get_quantile_learner(0.1).get_params()["n_jobs"] == 2
+
+
+@pytest.mark.parametrize(
+    "model_name,params_name",
+    [("lgbm_direct", "lgbm_params"), ("xgboost_direct", "xgb_params")],
+)
+def test_refit_quantiles_match_fresh_fold_training(model_name, params_name):
+    from polars.testing import assert_frame_equal
+
+    from src.forecasting.registry import registry
+
+    params = {params_name: {"n_estimators": 12, "random_state": 17}, "lags": [1, 2]}
+    full = _make_weekly_series(n_weeks=80)
+    train = full.filter(pl.col("week") <= full["week"].max() - timedelta(weeks=4))
+    quantiles = [0.1, 0.5, 0.9]
+    model = registry.build(model_name, **params)
+    model.fit(full)
+    model.predict_quantiles(4, quantiles)
+    assert set(model._quantile_mlfs) == {0.1, 0.9}
+    previous_cache = dict(model._quantile_mlfs)
+
+    model.fit(train)
+    actual = model.predict_quantiles(4, quantiles)
+    assert actual.height == 8
+    for column in ("forecast_p10", "forecast_p50", "forecast_p90"):
+        assert actual[column].null_count() == 0
+    fresh = registry.build(model_name, **params)
+    fresh.fit(train)
+    expected = fresh.predict_quantiles(4, quantiles)
+    assert_frame_equal(actual, expected)
+    assert set(model._quantile_mlfs) == {0.1, 0.9}
+    assert all(model._quantile_mlfs[q] is not previous_cache[q] for q in previous_cache)
+
+
 # --------------------------------------------------------------------------- #
 #  LightGBM
 # --------------------------------------------------------------------------- #

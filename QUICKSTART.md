@@ -2,19 +2,28 @@
 
 Get the forecasting product running in your browser. Pick one path:
 
-## Path A — Docker (recommended)
+## Path A — Explicit local Docker demo
 
-No Python setup needed. Just Docker.
+No Python setup needed. Just Docker. Use a fresh shell with no production
+`JWT_SECRET_KEY`: this mode is unauthenticated and is only for synthetic data.
 
 ```bash
 git clone https://github.com/chaitu1385/Forecasting-Platform.git
 cd Forecasting-Platform
-docker compose up
+docker compose -f docker-compose.yml -f docker-compose.demo.yml up --build
 ```
 
-Open **http://localhost:3000** in your browser. That's it.
+Open **http://localhost:3000** and use the explicitly labelled demo username/role
+selector. Both ports are loopback-only. For production authentication and private
+operator-issued token login, use [Authentication Setup](docs/DEPLOYMENT.md#authentication-setup).
+Plain `docker compose up` is production mode and refuses startup without a valid key.
 
-## Path B — Local Python
+On the first boot, wait for the API log's **Seed complete** message before using
+the preloaded demo results. Restarts reuse the separate `api-demo-data` volume without
+retraining the demo. If seeding fails, inspect the container logs; do not delete
+the volume as a workaround.
+
+## Path B — Explicit local Python demo
 
 Requires Python 3.8+.
 
@@ -24,7 +33,7 @@ cd Forecasting-Platform
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r forecasting-product/requirements.txt
-python forecasting-product/scripts/serve.py --port 8000 --data-dir data/
+python forecasting-product/scripts/serve.py --demo --port 8000 --data-dir data/
 ```
 
 Then, in a separate terminal:
@@ -36,6 +45,11 @@ npm run dev
 ```
 
 Open **http://localhost:3000** in your browser.
+
+`--demo` binds loopback by default and rejects conflicting authentication
+environment settings or a supplied signing key. Without it, the API requires
+production signing configuration. Reloading the browser deliberately signs out;
+credentials and identities are never restored from localStorage.
 
 ## What to do next
 
@@ -67,7 +81,7 @@ After onboarding, run a backtest to evaluate model performance. The command depe
 
 **Docker (Path A):**
 ```bash
-docker compose exec api python forecasting-product/scripts/run_backtest.py \
+docker compose -f docker-compose.yml -f docker-compose.demo.yml exec api python forecasting-product/scripts/run_backtest.py \
   --config forecasting-product/configs/platform_config.yaml \
   --lob uploaded
 ```
@@ -89,7 +103,7 @@ Similarly, generate predictions:
 
 **Docker (Path A):**
 ```bash
-docker compose exec api python forecasting-product/scripts/run_forecast.py \
+docker compose -f docker-compose.yml -f docker-compose.demo.yml exec api python forecasting-product/scripts/run_forecast.py \
   --config forecasting-product/configs/platform_config.yaml \
   --lob uploaded
 ```

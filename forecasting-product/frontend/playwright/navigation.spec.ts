@@ -1,11 +1,11 @@
 import { test, expect } from "@playwright/test";
 import { mockApiRoutes } from "./helpers/mock-routes";
-import { seedAuth } from "./helpers/auth";
+import { loginDemo, navigateWithinApp } from "./helpers/auth";
 
 test.describe("Navigation — Sidebar & Persona Cards", () => {
   test.beforeEach(async ({ page }) => {
     await mockApiRoutes(page);
-    await seedAuth(page);
+    await loginDemo(page);
   });
 
   // ── Sidebar Navigation ──────────────────────────────────────────────────
@@ -23,7 +23,7 @@ test.describe("Navigation — Sidebar & Persona Cards", () => {
 
   for (const item of NAV_ITEMS) {
     test(`sidebar link "${item.title}" navigates to ${item.href}`, async ({ page }) => {
-      await page.goto("/");
+      await navigateWithinApp(page, "/");
       // Click the sidebar link by its text
       await page.locator("aside").locator(`a:has-text("${item.title}")`).click();
       await page.waitForURL(`**${item.href}`);
@@ -34,7 +34,7 @@ test.describe("Navigation — Sidebar & Persona Cards", () => {
   // ── Sidebar Collapse/Expand ──────────────────────────────────────────────
 
   test("sidebar can be collapsed and expanded", async ({ page }) => {
-    await page.goto("/");
+    await navigateWithinApp(page, "/");
     const sidebar = page.locator("aside");
 
     // Initially expanded — "Forecasting Product" text visible
@@ -56,7 +56,7 @@ test.describe("Navigation — Sidebar & Persona Cards", () => {
   // ── Persona Quick-Start Cards ────────────────────────────────────────────
 
   test("persona card links navigate to correct pages", async ({ page }) => {
-    await page.goto("/");
+    await navigateWithinApp(page, "/");
 
     // Click first link in Data Scientist persona card → /data-onboarding
     const dsCard = page.locator("text=Data Scientist").locator("..");

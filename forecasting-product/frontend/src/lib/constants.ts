@@ -70,17 +70,17 @@ export const TREND_ICONS: Record<string, string> = {
 // ── RBAC ─────────────────────────────────────────────────────────────────────
 
 export const PERMISSIONS = {
-  VIEW_FORECASTS: "VIEW_FORECASTS",
-  VIEW_METRICS: "VIEW_METRICS",
-  VIEW_AUDIT_LOG: "VIEW_AUDIT_LOG",
-  CREATE_OVERRIDE: "CREATE_OVERRIDE",
-  DELETE_OVERRIDE: "DELETE_OVERRIDE",
-  APPROVE_OVERRIDE: "APPROVE_OVERRIDE",
-  RUN_BACKTEST: "RUN_BACKTEST",
-  RUN_PIPELINE: "RUN_PIPELINE",
-  PROMOTE_MODEL: "PROMOTE_MODEL",
-  MODIFY_CONFIG: "MODIFY_CONFIG",
-  MANAGE_USERS: "MANAGE_USERS",
+  VIEW_FORECASTS: "view_forecasts",
+  VIEW_METRICS: "view_metrics",
+  VIEW_AUDIT_LOG: "view_audit_log",
+  CREATE_OVERRIDE: "create_override",
+  DELETE_OVERRIDE: "delete_override",
+  APPROVE_OVERRIDE: "approve_override",
+  RUN_BACKTEST: "run_backtest",
+  RUN_PIPELINE: "run_pipeline",
+  PROMOTE_MODEL: "promote_model",
+  MODIFY_CONFIG: "modify_config",
+  MANAGE_USERS: "manage_users",
 } as const;
 
 export const ROLE_PERMISSIONS: Record<Role, string[]> = {
@@ -89,6 +89,8 @@ export const ROLE_PERMISSIONS: Record<Role, string[]> = {
     PERMISSIONS.VIEW_FORECASTS,
     PERMISSIONS.VIEW_METRICS,
     PERMISSIONS.VIEW_AUDIT_LOG,
+    PERMISSIONS.CREATE_OVERRIDE,
+    PERMISSIONS.DELETE_OVERRIDE,
     PERMISSIONS.RUN_BACKTEST,
     PERMISSIONS.RUN_PIPELINE,
     PERMISSIONS.PROMOTE_MODEL,
@@ -98,7 +100,6 @@ export const ROLE_PERMISSIONS: Record<Role, string[]> = {
     PERMISSIONS.VIEW_FORECASTS,
     PERMISSIONS.VIEW_METRICS,
     PERMISSIONS.CREATE_OVERRIDE,
-    PERMISSIONS.DELETE_OVERRIDE,
   ],
   manager: [
     PERMISSIONS.VIEW_FORECASTS,

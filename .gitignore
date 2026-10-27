@@ -20,6 +20,8 @@ build/
 .pytest_cache/
 .coverage
 htmlcov/
+forecasting-product/frontend/test-results/
+forecasting-product/frontend/playwright-report/
 
 # IDEs
 .idea/

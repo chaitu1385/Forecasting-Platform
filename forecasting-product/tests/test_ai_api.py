@@ -143,6 +143,8 @@ class TestAIEndpointsBase(unittest.TestCase):
             data_dir=str(self.data_dir),
             metrics_dir=str(self.metrics_dir),
             auth_enabled=False,
+            dev_mode=True,
+            jwt_secret="",
         )
         self.client = TestClient(self.app)
 

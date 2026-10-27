@@ -1,12 +1,12 @@
 import { test, expect } from "@playwright/test";
 import { mockApiRoutes } from "../helpers/mock-routes";
-import { seedAuth } from "../helpers/auth";
+import { loginDemo, navigateWithinApp } from "../helpers/auth";
 
 test.describe("Backtest Flow", () => {
   test.beforeEach(async ({ page }) => {
     await mockApiRoutes(page);
-    await seedAuth(page);
-    await page.goto("/backtest");
+    await loginDemo(page);
+    await navigateWithinApp(page, "/backtest");
   });
 
   // ── Leaderboard ──────────────────────────────────────────────────────────

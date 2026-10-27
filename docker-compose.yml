@@ -6,11 +6,13 @@ services:
       context: .
       target: api
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       - API_DATA_DIR=forecasting-product/data/
       - API_METRICS_DIR=forecasting-product/data/metrics/
-      - DEMO_LOB=walmart_m5_weekly
+      - AUTH_ENABLED=true
+      - API_DEV_MODE=false
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-}
     volumes:
       - api-data:/app/forecasting-product/data
     healthcheck:
@@ -30,14 +32,13 @@ services:
   frontend:
     build:
       context: ./forecasting-product/frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
     ports:
-      - "3000:3000"
-    environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
-      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-docker-dev-secret}
-      - NEXTAUTH_URL=http://localhost:3000
+      - "127.0.0.1:3000:3000"
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     deploy:
       resources:
         limits:

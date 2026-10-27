@@ -122,6 +122,8 @@ class _DirectMLBase(BaseForecaster):
         self._id_col = id_col
         self._time_col = time_col
         self._target_col = target_col
+        # Quantile models belong to the previous training window, not this refit.
+        self._quantile_mlfs.clear()
 
         df = self.validate_and_prepare(df, target_col, time_col, id_col)
 
@@ -417,7 +419,9 @@ class LGBMDirectForecaster(_DirectMLBase):
 
     def __init__(self, lgbm_params: Optional[Dict[str, Any]] = None, **kwargs):
         super().__init__(**kwargs)
-        self._lgbm_params = {**self.DEFAULT_PARAMS, **(lgbm_params or {})}
+        self._lgbm_params = {
+            **self.DEFAULT_PARAMS, "n_jobs": self.num_threads, **(lgbm_params or {}),
+        }
 
     def _get_learner(self) -> Any:
         import lightgbm as lgb
@@ -453,7 +457,9 @@ class XGBoostDirectForecaster(_DirectMLBase):
 
     def __init__(self, xgb_params: Optional[Dict[str, Any]] = None, **kwargs):
         super().__init__(**kwargs)
-        self._xgb_params = {**self.DEFAULT_PARAMS, **(xgb_params or {})}
+        self._xgb_params = {
+            **self.DEFAULT_PARAMS, "n_jobs": self.num_threads, **(xgb_params or {}),
+        }
 
     def _get_learner(self) -> Any:
         import xgboost as xgb

@@ -5,6 +5,7 @@ import { Header } from "@/components/layout/header";
 import { QueryProvider } from "@/providers/query-provider";
 import { AuthProvider } from "@/providers/auth-provider";
 import { LobProvider } from "@/providers/lob-provider";
+import { AuthBoundary } from "@/components/layout/auth-boundary";
 
 export const metadata: Metadata = {
   title: "Forecasting Product",
@@ -22,13 +23,15 @@ export default function RootLayout({
         <QueryProvider>
           <AuthProvider>
             <LobProvider>
-              <div className="flex h-screen overflow-hidden">
-                <Sidebar />
-                <div className="flex flex-1 flex-col overflow-hidden">
-                  <Header />
-                  <main className="flex-1 overflow-y-auto p-6">{children}</main>
+              <AuthBoundary>
+                <div className="flex h-screen overflow-hidden">
+                  <Sidebar />
+                  <div className="flex flex-1 flex-col overflow-hidden">
+                    <Header />
+                    <main className="flex-1 overflow-y-auto p-6">{children}</main>
+                  </div>
                 </div>
-              </div>
+              </AuthBoundary>
             </LobProvider>
           </AuthProvider>
         </QueryProvider>

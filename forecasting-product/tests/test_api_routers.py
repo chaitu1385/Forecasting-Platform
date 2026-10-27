@@ -139,6 +139,8 @@ class TestSeriesRouter(unittest.TestCase):
             data_dir=str(self.data_dir),
             metrics_dir=str(self.metrics_dir),
             auth_enabled=False,
+            dev_mode=True,
+            jwt_secret="",
         )
         self.client = TestClient(app)
 
@@ -210,6 +212,8 @@ class TestOverridesRouter(unittest.TestCase):
             data_dir=str(self.data_dir),
             metrics_dir=str(self.data_dir / "metrics"),
             auth_enabled=False,
+            dev_mode=True,
+            jwt_secret="",
         )
         self.client = TestClient(app)
 
@@ -252,6 +256,8 @@ class TestHierarchyRouter(unittest.TestCase):
             data_dir=str(Path(self.tmpdir) / "data"),
             metrics_dir=str(Path(self.tmpdir) / "metrics"),
             auth_enabled=False,
+            dev_mode=True,
+            jwt_secret="",
         )
         self.client = TestClient(app)
 
@@ -317,6 +323,8 @@ class TestPipelineRouter(unittest.TestCase):
             data_dir=str(self.data_dir),
             metrics_dir=str(self.metrics_dir),
             auth_enabled=False,
+            dev_mode=True,
+            jwt_secret="",
         )
         self.client = TestClient(app)
 
@@ -378,6 +386,8 @@ class TestAnalyticsRouter(unittest.TestCase):
             data_dir=str(self.data_dir),
             metrics_dir=str(self.metrics_dir),
             auth_enabled=False,
+            dev_mode=True,
+            jwt_secret="",
         )
         self.client = TestClient(app)
 
@@ -446,6 +456,8 @@ class TestGovernanceRouter(unittest.TestCase):
             data_dir=str(self.data_dir),
             metrics_dir=str(self.data_dir / "metrics"),
             auth_enabled=False,
+            dev_mode=True,
+            jwt_secret="",
         )
         self.client = TestClient(app)
 
@@ -479,6 +491,8 @@ class TestRouterRegistration(unittest.TestCase):
             data_dir=str(Path(self.tmpdir) / "data"),
             metrics_dir=str(Path(self.tmpdir) / "metrics"),
             auth_enabled=False,
+            dev_mode=True,
+            jwt_secret="",
         )
         self.client = TestClient(app)
         self.routes = [r.path for r in app.routes]

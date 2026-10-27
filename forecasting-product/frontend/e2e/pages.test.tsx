@@ -48,7 +48,13 @@ function MockAuthProvider({ children }: { children: React.ReactNode }) {
       ],
     },
     isAuthenticated: true,
-    login: vi.fn(),
+    mode: "demo",
+    loading: false,
+    modeError: null,
+    sessionMessage: null,
+    loginDemo: vi.fn(),
+    loginWithToken: vi.fn(),
+    refreshMode: vi.fn(),
     logout: vi.fn(),
     hasPermission: () => true,
   };
@@ -79,7 +85,13 @@ vi.mock("@/providers/auth-provider", () => ({
       ],
     },
     isAuthenticated: true,
-    login: vi.fn().mockResolvedValue(undefined),
+    mode: "demo",
+    loading: false,
+    modeError: null,
+    sessionMessage: null,
+    loginDemo: vi.fn().mockResolvedValue(undefined),
+    loginWithToken: vi.fn().mockResolvedValue(undefined),
+    refreshMode: vi.fn(),
     logout: vi.fn(),
     hasPermission: () => true,
   }),
@@ -155,27 +167,6 @@ describe("E2E Page Rendering Tests", () => {
     };
     // Reset localStorage
     localStorage.clear();
-    localStorage.setItem("access_token", "mock-jwt-token");
-    localStorage.setItem(
-      "user",
-      JSON.stringify({
-        username: "test-admin",
-        role: "admin",
-        permissions: [
-          "view_forecasts",
-          "view_metrics",
-          "view_audit_log",
-          "create_override",
-          "delete_override",
-          "approve_override",
-          "run_backtest",
-          "run_pipeline",
-          "promote_model",
-          "modify_config",
-          "manage_users",
-        ],
-      }),
-    );
   });
 
   // ── 1. Landing Page (/) ─────────────────────────────────────────────────

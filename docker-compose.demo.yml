@@ -1,0 +1,13 @@
+# Local synthetic demonstration only. Never point this mode at production data.
+services:
+  api:
+    environment:
+      AUTH_ENABLED: "false"
+      API_DEV_MODE: "true"
+      API_HOST: "0.0.0.0"
+      DEMO_LOB: walmart_m5_weekly
+    volumes:
+      - api-demo-data:/app/forecasting-product/data
+
+volumes:
+  api-demo-data:

@@ -87,6 +87,8 @@ def _run_backtest(fixture: Path, config: Path, lob: str) -> dict:
         data_dir=str(data_dir),
         metrics_dir=str(metrics_dir),
         auth_enabled=False,
+        dev_mode=True,
+        jwt_secret="",
     )
     client = TestClient(app)
 

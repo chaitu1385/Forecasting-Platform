@@ -6,6 +6,19 @@ A "why this exists and when you'd use it" guide for the forecasting product. Eac
 
 ## Forecasting Fundamentals
 
+### Trusted Operator Authentication
+
+A production forecasting API must not give an anonymous caller administrator access
+just because signing configuration is missing. This platform instead fails startup
+and accepts short-lived JWTs issued by a trusted local operator who controls the
+signing key and role assignment; it is not SSO or a user directory. The browser
+verifies identity with the API and holds the token only in tab memory, while an
+explicitly separate demo can simulate roles with no production credentials.
+Stateless tokens cannot be revoked individually here: use expiry or coordinated
+key rotation, not client logout, when a copied token must stop working.
+
+*Implementation: `src/auth/settings.py`, `src/auth/issuer.py`, `scripts/issue_token.py`, `frontend/src/providers/auth-provider.tsx`*
+
 ### Walk-Forward Backtesting
 
 A random train/test split on time series leaks future information into training — the model sees patterns it shouldn't know yet. Walk-forward validation avoids this by using an expanding window: each fold trains on all data up to a cutoff, then predicts the next *n* periods forward. The platform's `WalkForwardCV` generates multiple folds walking backward from the most recent date, optionally inserting a gap to simulate production lag. This is the only honest way to estimate how a model will perform on genuinely unseen future data.

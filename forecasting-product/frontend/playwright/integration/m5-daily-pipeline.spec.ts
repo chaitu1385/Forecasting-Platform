@@ -1,11 +1,11 @@
 import { test, expect } from "@playwright/test";
-import { seedAuth } from "../helpers/auth";
+import { loginDemo, navigateWithinApp } from "../helpers/auth";
 
 /**
  * E2E integration tests for the Walmart M5 daily-frequency forecast pipeline.
  *
  * Requires:
- *   - Backend running at localhost:8000 (with M5 daily data loaded)
+ *   - Explicit-demo backend at localhost:8000 (with M5 daily data loaded)
  *   - Frontend running at localhost:3000
  *
  * Run:
@@ -23,7 +23,7 @@ const CONFIG_YAML = "tests/integration/fixtures/m5_daily_config.yaml";
 
 test.describe("M5 Daily Pipeline E2E @m5daily", () => {
   test.beforeEach(async ({ page }) => {
-    await seedAuth(page, { role: "admin" });
+    await loginDemo(page, { role: "admin" });
   });
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -33,7 +33,7 @@ test.describe("M5 Daily Pipeline E2E @m5daily", () => {
   test("data onboarding — upload daily CSV and detect frequency @m5daily", async ({
     page,
   }) => {
-    await page.goto("/data-onboarding");
+    await navigateWithinApp(page, "/data-onboarding");
     await expect(page.locator("main")).toBeVisible();
 
     // The page should have at minimum a file upload area
@@ -156,7 +156,7 @@ test.describe("M5 Daily Pipeline E2E @m5daily", () => {
   // ─────────────────────────────────────────────────────────────────────────
 
   test("backtest page renders leaderboard @m5daily", async ({ page }) => {
-    await page.goto("/backtest");
+    await navigateWithinApp(page, "/backtest");
     await expect(page.locator("main h1")).toContainText("Backtest");
 
     // Wait for content to load
@@ -172,7 +172,7 @@ test.describe("M5 Daily Pipeline E2E @m5daily", () => {
   // ─────────────────────────────────────────────────────────────────────────
 
   test("forecast page renders with daily data @m5daily", async ({ page }) => {
-    await page.goto("/forecast");
+    await navigateWithinApp(page, "/forecast");
     await expect(page.locator("main")).toBeVisible();
 
     // Wait for content
@@ -190,7 +190,7 @@ test.describe("M5 Daily Pipeline E2E @m5daily", () => {
   test("series explorer detects breaks on daily data @m5daily", async ({
     page,
   }) => {
-    await page.goto("/series-explorer");
+    await navigateWithinApp(page, "/series-explorer");
     await expect(page.locator("main")).toBeVisible();
 
     // Call break detection API directly
@@ -267,7 +267,7 @@ test.describe("M5 Daily Pipeline E2E @m5daily", () => {
     expect(healthData.status).toBe("ok");
 
     // Navigate to health page
-    await page.goto("/health");
+    await navigateWithinApp(page, "/health");
     await expect(page.locator("main h1")).toContainText("Health");
   });
 });

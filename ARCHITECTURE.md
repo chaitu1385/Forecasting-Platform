@@ -556,12 +556,17 @@ graph TD
     end
 
     subgraph Auth["Authentication"]
-        JWT["JWT Token Validation"]
+        SETTINGS["AuthSettings<br/><small>invalid production config fails startup</small>"]
+        JWT["Strict JWT Verification"]
+        ME["/auth/me<br/><small>verified identity and expiry</small>"]
         RBAC["RBAC<br/><small>5 roles, 11 permissions</small>"]
     end
 
+    OPERATOR["Trusted local operator<br/><small>signing key, role assignment</small>"]
+    ISSUE["issue_token.py<br/><small>new owner-only file, short expiry</small>"]
+    PUBLIC["Public /auth/status and /health<br/><small>no signing configuration</small>"]
+
     subgraph APILayer["FastAPI Endpoints"]
-        H["/health"]
         F2["/forecast/{lob}"]
         F3["/forecast/{lob}/{series_id}"]
         L["/metrics/leaderboard/{lob}"]
@@ -582,6 +587,10 @@ graph TD
 
     REST --> JWT --> RBAC --> APILayer
     BROWSER --> JWT
+    SETTINGS -.-> JWT
+    JWT --> ME
+    OPERATOR --> ISSUE --> BROWSER
+    BROWSER --> PUBLIC
 
     F2 & F3 --> FS2
     L & D --> MS2
@@ -592,16 +601,22 @@ graph TD
 
 | Method | Path | Auth | Data Source | Description |
 |--------|------|------|-------------|-------------|
-| `GET` | `/health` | None | — | Liveness probe |
-| `GET` | `/forecast/{lob}` | `read:forecast` | Forecast Parquet | Latest forecast for LOB |
-| `GET` | `/forecast/{lob}/{series_id}` | `read:forecast` | Forecast Parquet | Single series forecast |
-| `GET` | `/metrics/leaderboard/{lob}` | `read:metrics` | MetricStore | Model leaderboard |
-| `GET` | `/metrics/drift/{lob}` | `read:metrics` | MetricStore | Drift alerts |
-| `POST` | `/analyze` | `write:config` | Upload CSV | Auto-detect schema, recommend config |
-| `POST` | `/ai/explain` | `read:ai` | Claude API | NL query about forecasts |
-| `POST` | `/ai/triage` | `read:ai` | Claude API | Triage drift alerts by impact |
-| `POST` | `/ai/recommend-config` | `write:config` | Claude API | Config tuning recommendations |
-| `POST` | `/ai/commentary` | `read:ai` | Claude API | Executive forecast commentary |
+| `GET` | `/health` | Public | — | Bounded readiness status |
+| `GET` | `/auth/status` | Public | AuthSettings mode only | Fail-closed mode discovery |
+| `GET` | `/auth/me` | Verified JWT | Signed identity + server RBAC | Identity, role, permissions, expiry |
+| `GET` | `/forecast/{lob}` | Verified JWT | Forecast Parquet | Latest forecast for LOB |
+| `GET` | `/forecast/{lob}/{series_id}` | Verified JWT | Forecast Parquet | Single series forecast |
+| `GET` | `/metrics/leaderboard/{lob}` | Verified JWT | MetricStore | Model leaderboard |
+| `GET` | `/metrics/drift/{lob}` | Verified JWT | MetricStore | Drift alerts |
+| `POST` | `/analyze` | Verified JWT | Upload CSV | Auto-detect schema, recommend config |
+| `POST` | `/ai/explain` | Verified JWT | Claude API | NL query about forecasts |
+| `POST` | `/ai/triage` | Verified JWT | Claude API | Triage drift alerts by impact |
+| `POST` | `/ai/recommend-config` | Verified JWT | Claude API | Config tuning recommendations |
+| `POST` | `/ai/commentary` | Verified JWT | Claude API | Executive forecast commentary |
+
+This table describes production authentication. Individual endpoints additionally
+enforce their server-side permission dependencies. Explicit demo replaces identity
+verification with simulated roles and must never serve production data.
 
 ### Deep Dive: Next.js Frontend
 

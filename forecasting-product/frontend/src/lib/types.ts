@@ -6,15 +6,21 @@
 
 export type Role = "admin" | "data_scientist" | "planner" | "manager" | "viewer";
 
-export interface TokenResponse {
-  access_token: string;
-  token_type: string;
-}
-
 export interface User {
   username: string;
   role: Role;
   permissions: string[];
+}
+
+export interface AuthStatus {
+  mode: "production" | "demo";
+  auth_required: boolean;
+}
+
+export interface AuthIdentity extends User {
+  mode: "production" | "demo";
+  email: string;
+  expires_at: number | null;
 }
 
 // ── Health ────────────────────────────────────────────────────────────────────

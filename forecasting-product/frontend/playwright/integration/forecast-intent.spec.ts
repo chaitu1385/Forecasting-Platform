@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
+import { loginDemo, navigateWithinApp } from "../helpers/auth";
 
 function snapshot(root: string): Record<string, string> {
   const files: Record<string, string> = {};
@@ -38,7 +39,8 @@ test("preserves a Croston five-period plan through the real UI/API @integration 
     return [frontendUrl.origin, apiUrl].includes(origin) ? route.continue() : route.abort();
   });
   await page.setViewportSize({ width: 1440, height: 1800 });
-  await page.goto("/data-onboarding");
+  await loginDemo(page, { username: "intent-demo", role: "admin" });
+  await navigateWithinApp(page, "/data-onboarding");
   await page.getByLabel("LOB Name").fill("intent_browser");
   const rows = Array.from({ length: 60 }, (_, i) =>
     `sku,${new Date(Date.UTC(2024, 0, 1 + i * 7)).toISOString().slice(0, 10)},${10 + i * 3}`

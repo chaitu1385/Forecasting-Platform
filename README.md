@@ -29,7 +29,7 @@ A production-grade, modular multi-frequency sales forecasting product (daily, we
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │  REST API  (FastAPI, JWT-protected)   src/api/              │
-│  POST /auth/token                                           │
+│  GET /auth/status · GET /auth/me                             │
 │  41 endpoints: /health /forecast /metrics /series /hierarchy│
 │  /sku-mapping /overrides /pipeline /governance /ai/*       │
 │  GET /forecast/{lob}/{series_id}  /metrics/drift/{lob}     │
@@ -117,7 +117,7 @@ forecasting-product/
 │   ├── analytics/          # Data profiling, forecastability, causal analysis, LLM interpretation, BI export, explainability, governance, FVA
 │   ├── api/                # FastAPI REST serving layer (auth-protected)
 │   ├── audit/              # Append-only Parquet audit log (immutable, date-partitioned)
-│   ├── auth/               # RBAC, JWT authentication, role/permission models
+│   ├── auth/               # Fail-closed settings, RBAC/JWT, private operator token output
 │   ├── backtesting/        # Walk-forward backtest engine, champion selection
 │   ├── config/             # YAML config schema + loader (incl. external regressor config)
 │   ├── data/               # Data loading, preprocessing, validation, demand cleansing, regressor screening, external regressors, quality profiling
@@ -143,7 +143,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 1281 unit + integration tests
+├── tests/                  # 1691 unit + integration tests
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 ├── notebooks/              # Jupyter notebooks for exploration
@@ -287,12 +287,22 @@ Used by the Data Onboarding page to accept N CSV files, classify roles, preview 
 | `Role` (enum) | `ADMIN`, `DATA_SCIENTIST`, `PLANNER`, `MANAGER`, `VIEWER` |
 | `Permission` (enum) | 11 permissions: `VIEW_FORECASTS`, `VIEW_METRICS`, `VIEW_AUDIT_LOG`, `CREATE_OVERRIDE`, `DELETE_OVERRIDE`, `APPROVE_OVERRIDE`, `RUN_BACKTEST`, `RUN_PIPELINE`, `PROMOTE_MODEL`, `MODIFY_CONFIG`, `MANAGE_USERS` |
 | `ROLE_PERMISSIONS` | Complete role -> permission mapping |
+| `AuthSettings` | Shared strict production/demo settings; missing/weak signing configuration fails startup |
 | `User` | Dataclass with `user_id`, `email`, `role`, `is_active`; `has_permission()` method |
 | `get_current_user()` | FastAPI dependency — extracts/validates JWT from `Authorization: Bearer` header |
 | `require_permission(perm)` | FastAPI dependency factory for fine-grained permission checks |
 | `require_role(*roles)` | FastAPI dependency factory for role-based checks |
 | `create_token(user_id, email, role)` | Create signed JWT (HS256, 24h default expiry) |
 | `decode_token(token, secret)` | Decode and validate JWT; returns `None` on failure |
+| `write_private_token(path, token)` | Exclusive new-file credential output: POSIX 0600 or verified protected Windows DACL |
+
+Production is the default across the factory, launcher and image. A trusted
+operator uses `scripts/issue_token.py` to assign a role and issue a private-file
+token (one-hour default, 1-24 hours). The browser verifies `/auth/me` before
+sign-in and keeps credentials only in per-tab memory. There is no HTTP issuer,
+password login, SSO or user registry. Explicit demo requires
+`AUTH_ENABLED=false`, `API_DEV_MODE=true`, and no signing key; role selection is
+only a simulation. See [provisioning, expiry and rotation](docs/DEPLOYMENT.md#authentication-setup).
 
 **Permission matrix:**
 
@@ -504,7 +514,7 @@ Measures how much accuracy each forecast layer contributes — from naive baseli
 
 | Class | Description |
 |-------|-------------|
-| `BatchInferenceRunner` | Partition series → parallel fit/predict → merge; configurable `n_workers`, `batch_size`, backend (`"local"` ProcessPool) |
+| `BatchInferenceRunner` | Partition series → parallel fit/predict → merge; isolated spawn workers preserve configured models, and failed batches raise rather than return partial forecasts |
 | `PipelineScheduler` | Recurring pipeline execution with retry (exponential backoff) and dead-letter JSON for failed runs |
 
 ### `src/overrides/` — Planner Overrides
@@ -537,12 +547,14 @@ Maps new SKUs to analogues and splits multi-mapped forecasts proportionally.
 
 ### `src/api/` — REST API
 
-Built with FastAPI. Auto-generated Swagger docs at `/docs`. All data endpoints require JWT authentication when `auth_enabled=True`.
+Built with FastAPI. Auto-generated Swagger docs at `/docs`. All business endpoints
+require verified JWTs by default; only an explicit unauthenticated demo opts out.
 
 | Endpoint | Method | Description | Auth |
 |----------|--------|-------------|------|
-| `/health` | GET | Liveness probe | No |
-| `/auth/token` | POST | Obtain JWT access token (`username`, `role` params) | No |
+| `/health` | GET | Bounded readiness status, version and boolean checks | No |
+| `/auth/status` | GET | Public mode and authentication-required flag only | No |
+| `/auth/me` | GET | Verified identity, role, permissions and expiry; never a token | Yes |
 | `/forecast/{lob}` | GET | Latest forecasts for a LOB (optional `series_id`, `horizon` query params) | Yes |
 | `/forecast/{lob}/{series_id}` | GET | Latest forecast for a single series | Yes |
 | `/metrics/leaderboard/{lob}` | GET | Model leaderboard ranked by WMAPE | Yes |
@@ -854,8 +866,10 @@ exporter = BIExporter()
 exporter.export_forecast_vs_actual(reconciled, actuals_df, lob="retail")
 exporter.export_fva(fva_detail, fva_summary, lob="retail")
 
-# 12. Auth — create JWT token and validate
-token = create_token(user_id="analyst_1", email="a@co.com", role="data_scientist", secret_key="secret")
+# 12. Auth — trusted operator utility (signing key injected from protected configuration)
+import os
+token = create_token(user_id="analyst_1", email="a@co.com", role="data_scientist", secret_key=os.environ["JWT_SECRET_KEY"])
+# Do not print or persist the token insecurely; prefer scripts/issue_token.py for operator use.
 user = User(user_id="analyst_1", email="a@co.com", role=Role.DATA_SCIENTIST)
 assert user.has_permission(Permission.RUN_BACKTEST)
 
@@ -963,11 +977,30 @@ observability:
 
 ```bash
 pip install -r forecasting-product/requirements.txt
-python -m pytest forecasting-product/tests/ \
-  --ignore=forecasting-product/tests/test_metrics.py \
-  --ignore=forecasting-product/tests/test_feature_engineering.py -v
-# 1281 tests collected across 53 test files
+pip install -e "forecasting-product[dev]"
+cd forecasting-product
+POLARS_MAX_THREADS=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+  MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1 \
+  python -m pytest -v --timeout=180 --timeout-method=thread \
+    -o faulthandler_timeout=60
+# 1691 cases across 64 test modules; no test module exclusions
 ```
+
+On Windows, set the same process environment variables with PowerShell
+(`$env:POLARS_MAX_THREADS = "2"`, etc.) before starting Python. CI runs the complete
+suite with the existing 30% coverage gate. Its native-process regressions have a
+90-second deadline; only the expensive M5 backtest consumers have a 20-minute
+allowance inside the 30-minute backend job limit. The checked-in sample has 105
+series and 76,755 rows. One real three-model/two-fold backtest is shared by those
+consumers, with separate artifact copies and application/response state; the
+forecast still runs through the real API. No model search settings, fixture rows,
+folds or numerical assertions are reduced.
+
+The stable **CI gate** requires successful lint, focused validation/intent,
+process safety, the full backend matrix, frontend, Docker cold/restart smoke,
+and automation safety jobs. Missing, skipped, cancelled or failed constituents
+cannot produce a successful gate. Branch protection must require this context;
+workflow code alone does not configure repository protection.
 
 | Test file | Tests | Covers |
 |-----------|------:|--------|
@@ -991,13 +1024,13 @@ python -m pytest forecasting-product/tests/ \
 | `test_hierarchical_forecaster.py` | 17 | Hierarchical forecaster with reconciliation |
 | `test_constrained_demand.py` | 16 | Non-negativity, capacity limits, aggregate budgets, quantile monotonicity |
 | `test_rbac.py` | 14 | Role permissions, User model, AuditEvent, AuditLogger log/query/filters |
-| `test_override_store.py` | 14 | Override CRUD, approval workflow |
+| `test_override_store.py` | 19 | Override CRUD, approval workflow, old/current DuckDB Arrow result APIs and conversion errors |
 | `test_break_detection.py` | 14 | Structural break detection |
 | `test_mase.py` | 13 | MASE metric computation |
 | `test_statistical_forecasters.py` | 12 | AutoARIMA, AutoETS fit/predict/quantiles |
 | `test_fva.py` | 12 | FVA classification, layer metrics, cascade computation, FVAAnalyzer |
 | `test_data_preprocessor.py` | 12 | Data preprocessing pipeline |
-| `test_ml_forecasters.py` | 11 | LightGBM, XGBoost direct forecasters |
+| `test_ml_forecasters.py` | 19 | LightGBM/XGBoost, native thread budgets, fresh quantile models after refitting |
 | `test_hierarchy_aggregator.py` | 11 | Aggregation, disaggregation, proportions |
 | `test_data_integrity.py` | 9 | Data integrity checks |
 | `test_multi_horizon.py` | 8 | Multi-horizon forecast evaluation |
@@ -1010,8 +1043,15 @@ python -m pytest forecasting-product/tests/ \
 | `test_sku_mapping.py` | 81 | SKU transition engine, predecessor matching (attribute, naming, curve fitting, temporal), Bayesian fusion |
 | `test_observability.py` | 41 | PipelineContext, StructuredLogger, MetricsEmitter, AlertDispatcher, CostEstimator, PipelineScheduler |
 | `test_batch_runner.py` | 8 | BatchInferenceRunner, ParallelismConfig |
+| `test_process_execution.py` | 5 | Bounded real ASGI/process execution, payload parity, fitted-model quantile isolation and serialization failures |
+| `test_docker_seed.py` | 11 | Identical cold/restart paths, complete seed success and child-process cleanup |
 | `test_fabric_portability.py` | 19 | requirements-fabric.txt, ParquetOverrideStore, get_override_store factory, FabricNotebookAdapter |
 | `test_evaluator.py` | 5 | Evaluation orchestration |
+
+Repository automation also has 57 dependency-free Node tests under
+`.github/scripts/`: cleanup eligibility, atomic expected-SHA deletion against
+disposable local repositories, and every CI-gate failure state. They never delete
+a real GitHub branch.
 
 ---
 
@@ -1025,7 +1065,7 @@ A production-grade UI built with Next.js 15 (App Router), TypeScript, and Tailwi
 | **Styling** | Tailwind CSS, Radix UI primitives |
 | **Charts** | Recharts (bar, line, pie, area), Plotly (fan chart, sunburst, SBC scatter) |
 | **Data fetching** | TanStack React Query with typed API client |
-| **Auth** | NextAuth.js wrapping existing JWT/RBAC (5 roles) |
+| **Auth** | Server-verified operator JWTs in per-tab memory; explicit demo-only role simulation |
 | **Pages** | Login + 9 workflow pages |
 | **Dark mode** | Toggle with localStorage persistence |
 
@@ -1043,9 +1083,10 @@ npm run dev
 
 Set `NEXT_PUBLIC_API_URL=http://localhost:8000` in `.env.local` to connect to the FastAPI backend.
 
-**Docker quick-start** (API on port 8000, frontend on port 3000):
+**Explicit local Docker demo** (loopback API on port 8000, frontend on port 3000;
+use a fresh shell without production signing credentials):
 ```bash
-docker compose up
+docker compose -f docker-compose.yml -f docker-compose.demo.yml up --build
 # → Open http://localhost:3000
 ```
 
@@ -1066,6 +1107,7 @@ rapidfuzz >= 3.0.0          # SKU name matching
 duckdb >= 0.9.0             # Override store
 pyyaml >= 5.4.0
 fastapi + uvicorn           # REST API
+pyjwt >= 2.0.0, < 3.0       # Required API JWT validation
 ```
 
 **Frontend** (Node.js 18+):
@@ -1075,15 +1117,14 @@ react >= 19.0.0             # UI library
 tailwindcss >= 4.0.0        # Utility-first CSS
 recharts >= 2.15.0          # Chart components
 @tanstack/react-query       # Server state management
-next-auth >= 4.24.0         # Authentication (JWT wrapper)
+next-auth >= 4.24.0         # Legacy installed dependency; not used by the sign-in flow
 ```
 
 **Optional:**
 ```
 neuralforecast              # N-BEATS, NHITS, TFT neural forecasters
 shap                        # SHAP explainability for ML models
-pyjwt >= 2.0.0              # JWT token creation/validation (RBAC)
-bcrypt >= 4.0.0             # Password hashing (auth)
+bcrypt >= 4.0.0             # Legacy optional dependency; password login is not implemented
 holidays >= 0.40            # Holiday calendar generation (external regressors)
 pyspark >= 3.4.0            # Distributed execution
 delta-spark >= 2.4.0        # Delta Lake (local dev)

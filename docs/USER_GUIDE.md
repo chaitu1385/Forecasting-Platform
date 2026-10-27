@@ -336,8 +336,8 @@ The frontend lives at `forecasting-product/frontend/`. It connects to the FastAP
 ### Getting Started
 
 ```bash
-# Start the FastAPI backend first
-python forecasting-product/scripts/serve.py --port 8000
+# Explicit local synthetic demo (no production signing credentials)
+python forecasting-product/scripts/serve.py --demo --port 8000
 
 # In a separate terminal, start the frontend
 cd forecasting-product/frontend
@@ -405,7 +405,16 @@ metrics (including context-dependent `mase`), and included in the top-level
 
 ### Authentication
 
-The login page (`/login`) collects username and password, which are sent to `POST /auth/token` on the FastAPI backend. The API returns a JWT token stored in the browser session via NextAuth. All subsequent API calls include this token in the `Authorization` header. Role-based access controls which pages and actions are visible.
+Production `/login` accepts a short-lived access token issued by a trusted local
+operator, not a password or a self-selected role. The API verifies identity and
+role through `/auth/me` before sign-in. This operational MVP does not provide SSO
+or a user directory. Follow [operator provisioning](DEPLOYMENT.md#authentication-setup).
+
+Tokens stay only in the current tab's memory. Logout, expiry, an invalid session
+or full reload clears protected data and requires sign-in again; old localStorage
+tokens are never restored. Missing API mode discovery disables sign-in instead
+of falling back to anonymous access. Username/role selection is shown only in
+explicitly unauthenticated demo mode; it is a simulation, not identity assurance.
 
 ### Configuration
 
@@ -413,8 +422,9 @@ Key environment variables for `.env.local`:
 
 ```
 NEXT_PUBLIC_API_URL=http://localhost:8000    # Backend API URL
-NEXTAUTH_SECRET=your-secret-here             # Required for production
-NEXTAUTH_URL=http://localhost:3000           # Frontend URL
 ```
+
+The public API URL is a build-time setting. Never put signing keys or access
+tokens into frontend environment files; `NEXTAUTH_*` settings are unused.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for production deployment instructions.

@@ -156,8 +156,11 @@ class OverrideStore:
             if new_sku:
                 query += " AND new_sku = ?"
                 params.append(new_sku)
-            result = self._conn.execute(query, params).pl()
-            return result
+            result = self._conn.execute(query, params)
+            # DuckDB 2 removed .pl() and the deprecated fetch_arrow_table name.
+            if hasattr(result, "to_arrow_table"):
+                return pl.from_arrow(result.to_arrow_table())
+            return pl.from_arrow(result.fetch_arrow_table())
         else:
             if not self._csv_path.exists():
                 return pl.DataFrame()

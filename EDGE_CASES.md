@@ -166,11 +166,19 @@ A catalog of the failure modes that break forecasting platforms — what goes wr
 
 ## 17. Parallel Execution Failures
 
-**What happens:** A worker process in `BatchInferenceRunner` or parallel backtest crashes — out of memory, model convergence failure, or serialization error. Partial results exist for some batches but not others. The pipeline appears to succeed but with missing series in the output.
+**What happens:** A worker process in `BatchInferenceRunner` or parallel backtest crashes from out-of-memory, convergence or serialization errors. Forking after Polars has initialized its native threads can also deadlock workers in IPC reads while the parent waits indefinitely.
 
-**How the platform handles it:** The `BatchInferenceRunner` and parallel backtest engine catch per-batch/per-model exceptions individually using `concurrent.futures.as_completed()`. Failed batches are logged as errors but don't crash the entire run — successful batches are still collected and concatenated. The `BacktestEngine` records failures in `self._failures` with model name, fold, error type, and message. The `get_failure_summary()` method returns these as a DataFrame for reporting. Data is serialized as Polars IPC bytes for safe inter-process transfer.
+**How the platform handles it:** Both executors use an explicit `spawn` context without changing the embedding application's global start method. Workers receive configured model objects and Polars IPC data, preserving parameters and frequency; pools are capped by useful task count. Failed forecast batches are logged and raised, never silently concatenated into a partial success. The backtest engine retains its per-model/fold failure report through `engine.failures` and `get_failure_summary()`. Bounded subprocess tests reproduce the former Linux deadlock and verify real ASGI execution and serialization-failure reporting.
 
 **What to watch for:** A silently failed batch means some series are missing from the output. Always check `engine.failures` after a parallel backtest run and compare the number of output series against the input. Memory pressure is the most common cause — each worker loads a full copy of the model plus its batch data. If you see OOM errors, reduce `batch_size` or `n_workers`. For models that aren't pickle-safe (e.g., those with live database connections), the parallel path will fail — use `n_workers=1` as a safe fallback.
+
+Previously fitted ML models can also carry cached quantile learners trained on a
+different date range. Each refit clears that training-dependent cache while
+retaining model configuration. Otherwise point predictions can land on validation
+dates while cached intervals target dates beyond the full history, silently
+leaving missing intervals or using information from outside the training fold.
+Real LightGBM/XGBoost refit and previously fitted parallel-fold tests compare
+against fresh training on the same fold, including non-null interval checks.
 
 ---
 
@@ -313,3 +321,28 @@ chooses the first configured model, not a remembered or guessed winner.
 Invalidation prevents stale UI selection, not cancellation of server work or
 transactional/immutable output storage. Multi-model backtest results are not
 silently reduced to their first row for this single-model handoff.
+
+---
+
+## 29. Missing Authentication Configuration and Stale Browser Identity
+
+**What happens:** A production launcher lacks a signing key, an environment value
+such as `"false"` is interpreted as truthy, a caller chooses their own admin
+role, or an old request completes after logout or a different login.
+
+**How the product handles it:** One shared `AuthSettings` contract defaults to
+authenticated production and rejects missing/weak keys, invalid booleans and
+conflicting demo settings before startup. The HTTP token issuer is removed;
+only a trusted local operator with the key can issue a short-lived token into a
+new restricted file. `/auth/me` verifies signed identity, role, activity and
+expiry. The browser holds credentials only in memory, clears protected caches on
+replacement/logout/expiry/401, and rejects stale session-owned responses.
+Unavailable mode discovery never opens a demo fallback.
+
+**What to watch for:** Explicit demo is intentionally unauthenticated and must
+not receive production data or keys. Browser reload requires sign-in again.
+Windows private output uses a verified protected DACL, not `chmod`; failed secure
+output may leave an empty or private partial file. Stateless tokens have no live
+per-user revocation: a copied token remains valid until expiry or coordinated
+key rotation/restart. Production containers never seed demo data; the separate
+demo Compose override uses its own volume and retains cold/restart safeguards.

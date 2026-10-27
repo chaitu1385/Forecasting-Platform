@@ -78,17 +78,20 @@ python forecasting-product/scripts/run_forecast.py \
 
 ### "Authentication required" / "Invalid or expired token"
 
-```
-HTTPException 401: "Authentication required. Provide a Bearer token."
-HTTPException 401: "Invalid or expired token."
-```
+**Cause:** The production API has no valid, active operator-signed token. Missing,
+invalid or expired tokens return 401; inactive identity and wrong-role requests
+return 403. There is no HTTP token issuer.
 
-**Cause:** Auth is enabled but no valid token was provided.
+**Fix:** Ask your trusted operator to issue a fresh token with the required role
+using `scripts/issue_token.py`, then paste it into the production login field.
+The CLI defaults to one hour (1-24 hours supported). Do not put the token in
+command arguments, URLs, logs or browser storage. Reload deliberately signs out;
+it does not restore an old localStorage session. See
+[Authentication Setup](DEPLOYMENT.md#authentication-setup).
 
-**Fix:**
-1. Get a token: `curl -X POST "http://localhost:8000/auth/token?username=user&role=data_scientist"`
-2. Use it: `curl -H "Authorization: Bearer <token>" http://localhost:8000/forecast/retail`
-3. Tokens expire after 24 hours — request a new one.
+For startup rejection, check the exact production/demo settings and a dedicated
+random `JWT_SECRET_KEY`. Missing keys never enable anonymous access. Use an
+explicit demo only for isolated synthetic data, not to bypass a production error.
 
 ---
 
@@ -395,6 +398,15 @@ report = builder._last_quality_report
 
 ### Backtests are slow
 
+Distinguish a stalled worker from expensive optimization. A parent waiting in
+`as_completed` is not sufficient evidence of a deadlock: inspect worker stacks
+and CPU use. Old Linux pools could fork after Polars initialization and block in
+`read_ipc`/`collect`; current pools use explicit `spawn`. Active ARIMA likelihood
+optimization is a different case and can legitimately take minutes on the full
+daily sample. Do not disable tests, models or assertions to hide either case.
+CI emits stack diagnostics and uses bounded test/job deadlines; the expensive
+M5 setup runs once with isolated copies for its consumers.
+
 - **Reduce models** — Start with 2-3 candidates, not all 18
 - **Reduce folds** — `n_folds: 2` instead of 5 (less robust but faster)
 - **Skip neural models** — `nbeats`, `nhits`, `tft` are orders of magnitude slower than statistical/ML
@@ -404,11 +416,18 @@ report = builder._last_quality_report
 ### Out of memory
 
 - **Reduce `n_workers`** — Each worker loads a full model + data copy
-- **Increase `batch_size`** — Smaller chunks per worker
+- **Reduce `batch_size`** — Smaller chunks per worker
 - **Use Spark** — `backend: spark` for datasets that don't fit in memory
 - **Drop neural models** — They have the largest memory footprint
 
 ### Docker container crashes
+
+Check the seeder logs before deleting or recreating data. Cold and restart
+launches must use the same absolute data/metrics paths, and `.seeded` is written
+only after both pipelines succeed with nonempty forecast output. A failed seed
+now exits and reaps its child instead of leaving an unseeded service running.
+Keep the named data volume intact; CI separately exercises a fresh-container
+restart against an unchanged temporary volume.
 
 - Provision at least **2 GB RAM** for datasets with 1000+ series
 - The Rossmann demo dataset (1M rows) runs comfortably in 2 GB
@@ -485,9 +504,9 @@ npm install
 **Issue:** Login form submits but redirects back or shows error.
 
 **Fix:**
-1. Ensure the API is running and `POST /auth/token` returns a response
-2. Check that `NEXTAUTH_SECRET` is set in `.env.local` for production
-3. In development, NextAuth uses a default secret — verify the API returns valid JWT tokens
+1. Check public `/auth/status`. Unavailable or inconsistent mode discovery deliberately disables sign-in.
+2. Production requires a fresh trusted-operator-issued token verified by `/auth/me`; there is no `/auth/token`, password login or SSO provider.
+3. Explicit demo requires `AUTH_ENABLED=false`, `API_DEV_MODE=true` and no signing key. A missing key never enables anonymous production access. `NEXTAUTH_*` settings do nothing.
 
 ### `npm run build` fails
 
@@ -504,6 +523,6 @@ npm install
 **Issue:** Pages load but show "Unauthorized" errors when fetching data.
 
 **Fix:**
-1. JWT tokens expire after the configured TTL (default 24 hours). Log out and log back in
-2. Check that the API server's `JWT_SECRET` matches what was used to issue the token
-3. If the API was restarted with a new secret, all existing tokens are invalidated — users must re-authenticate
+1. The operator CLI defaults to one-hour tokens (1-24 hours supported). Ask for a fresh token; reloading the browser intentionally loses in-memory credentials.
+2. Check that the API and trusted operator use the same protected `JWT_SECRET_KEY`; do not print it while diagnosing.
+3. After key rotation, restart every API worker/replica and reissue tokens. Client logout alone does not revoke a copied stateless token.
