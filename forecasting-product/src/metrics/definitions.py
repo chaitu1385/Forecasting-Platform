@@ -38,6 +38,16 @@ def wmape(actual: pl.Series, forecast: pl.Series) -> Optional[float]:
     return float(abs_error / abs_actual)
 
 
+def macro_wmape_component(actual: pl.Series, forecast: pl.Series) -> Optional[float]:
+    """WMAPE of one series/fold, the atomic term of ``macro_wmape``.
+
+    Panel-level macro scoring requires the grouping keys and is implemented by
+    ``aggregate_metrics``; a flat pair of Series cannot identify those groups.
+    Registration exposes this criterion to the existing configuration allowlist.
+    """
+    return wmape(actual, forecast)
+
+
 def normalized_bias(actual: pl.Series, forecast: pl.Series) -> Optional[float]:
     """
     Normalized Bias — measures systematic over/under-forecasting.
@@ -128,6 +138,7 @@ def make_mase(
 
 METRIC_REGISTRY: Dict[str, Callable[[pl.Series, pl.Series], float]] = {
     "wmape": wmape,
+    "macro_wmape": macro_wmape_component,
     "normalized_bias": normalized_bias,
     "mape": mape,
     "mae": mae,

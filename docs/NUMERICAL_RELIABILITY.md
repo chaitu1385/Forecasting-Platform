@@ -65,6 +65,16 @@ not a new business objective. Request `primary_metric: macro_wmape` for explicit
 equal-series/fold weighting. It matches the former weighting on complete,
 equal-length, positive-volume folds.
 
+For YAML/API plans, list the selection criteria in `metrics` as required by the
+existing configuration contract:
+
+```yaml
+backtest:
+  primary_metric: macro_wmape
+  secondary_metric: normalized_bias
+metrics: [macro_wmape, normalized_bias]
+```
+
 Zero-volume observations' errors still count in aggregate volume WMAPE.
 WMAPE and normalized bias are undefined (`null`), not perfect, if total volume
 is zero. Macro WMAPE is undefined if any constituent ratio is undefined; it cannot

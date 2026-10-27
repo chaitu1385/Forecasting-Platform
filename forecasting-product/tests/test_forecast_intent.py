@@ -245,6 +245,18 @@ def test_configured_frequency_and_horizon_reach_forecast(client, frequency):
     ]
 
 
+def test_explicit_macro_wmape_is_a_valid_configured_selection_criterion(client):
+    config = _config()
+    config["backtest"]["primary_metric"] = "macro_wmape"
+    config["metrics"] = ["macro_wmape", "normalized_bias"]
+    response = _run(client, "backtest", config=config)
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result["champion_model"] == "croston"
+    assert all(row["macro_wmape"] is not None for row in result["leaderboard"])
+    assert all(row["scoring_policy"] == "raw-observations-v1" for row in result["leaderboard"])
+
+
 INVALID_CONFIGS = [
     pytest.param(b"forecast: [", id="syntax"),
     pytest.param(b"", id="empty-upload"),
