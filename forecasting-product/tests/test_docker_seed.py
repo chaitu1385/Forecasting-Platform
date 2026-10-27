@@ -17,6 +17,7 @@ def seeder(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("API_DATA_DIR", "state")
     monkeypatch.setenv("API_METRICS_DIR", "state/metrics")
+    monkeypatch.setenv("API_RUNS_DIR", "state/runs")
     monkeypatch.setenv("AUTH_ENABLED", "false")
     monkeypatch.setenv("API_DEV_MODE", "true")
     monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
@@ -47,6 +48,7 @@ def test_cold_and_restart_use_identical_absolute_storage(seeder, tmp_path, monke
     cold_command = popen.call_args.args[0]
     assert cold_command[cold_command.index("--data-dir") + 1] == str(tmp_path / "state")
     assert cold_command[cold_command.index("--metrics-dir") + 1] == str(tmp_path / "state" / "metrics")
+    assert cold_command[cold_command.index("--runs-dir") + 1] == str(tmp_path / "state" / "runs")
     assert (tmp_path / "state" / ".seeded").read_text().endswith("champion=naive_seasonal\n")
 
     seeder.main()

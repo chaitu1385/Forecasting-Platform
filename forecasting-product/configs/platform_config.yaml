@@ -121,6 +121,7 @@ output:
     channel: channel
   forecast_path: data/forecasts/
   metrics_path: data/metrics/
+  runs_path: data/runs/
   bi_export_path: data/bi_exports/
   format: parquet
 

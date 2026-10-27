@@ -37,13 +37,19 @@ function execution(model = "croston"): PipelineExecutionSettings {
 }
 
 function backtestResult(model = "croston"): PipelineRunResponse {
-  return { lob: "retail", status: "completed", champion_model: model, execution: execution(model) };
+  return {
+    lob: "retail", status: "completed", champion_model: model, execution: execution(model),
+    run_id: "1".repeat(32), run_type: "backtest",
+    links: { metadata: "/run/one", config: "/run/one/config", input_lineage: "/run/one/input" },
+  };
 }
 
 function forecastResult(): PipelineRunResponse {
   return {
     lob: "retail", status: "completed", model_id: "croston", horizon: 5, forecast_rows: 5,
     series_count: 1, execution: { ...execution(), model_source: "request" },
+    run_id: "2".repeat(32), run_type: "forecast",
+    links: { metadata: "/run/two", config: "/run/two/config", input_lineage: "/run/two/input" },
   };
 }
 

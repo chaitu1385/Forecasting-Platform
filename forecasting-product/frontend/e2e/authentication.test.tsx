@@ -51,7 +51,7 @@ function authHook() {
 beforeEach(() => {
   mode = "production";
   verify = async () => response(identity());
-  forecast = async () => response({ points: [] });
+  forecast = async () => response({ lob: "synthetic", series_count: 0, points: [] });
   fetchMock.mockReset();
   fetchMock.mockImplementation(async (input, options) => {
     const path = new URL(String(input)).pathname;
@@ -105,7 +105,7 @@ describe("production operator-token authentication", () => {
     expect(result.current.hasPermission("manage_users")).toBe(false);
     forecast = async headers => {
       expect(headers.get("authorization")).toBe("Bearer opaque-synthetic-credential");
-      return response({ points: [] });
+      return response({ lob: "synthetic", series_count: 0, points: [] });
     };
     await api.getForecasts("synthetic");
     expect(client.getQueryCache().getAll()).toHaveLength(0);
@@ -123,7 +123,7 @@ describe("production operator-token authentication", () => {
     expect(localStorage.getItem("user")).toBeNull();
     forecast = async headers => {
       expect(headers.has("authorization")).toBe(false);
-      return response({ points: [] });
+      return response({ lob: "synthetic", series_count: 0, points: [] });
     };
     await api.getForecasts("synthetic");
   });
@@ -143,7 +143,7 @@ describe("production operator-token authentication", () => {
     expect(client.getQueryData(["protected"])).toBeUndefined();
     forecast = async headers => {
       expect(headers.has("authorization")).toBe(false);
-      return response({ points: [] });
+      return response({ lob: "synthetic", series_count: 0, points: [] });
     };
     await api.getForecasts("synthetic");
   });
@@ -196,7 +196,7 @@ describe("production operator-token authentication", () => {
     expect(result.current.user?.username).toBe("new-viewer");
     forecast = async headers => {
       expect(headers.get("authorization")).toBe("Bearer second-opaque-value");
-      return response({ points: [] });
+      return response({ lob: "synthetic", series_count: 0, points: [] });
     };
     await api.getForecasts("synthetic");
   });
@@ -226,7 +226,7 @@ describe("production operator-token authentication", () => {
     client.setQueryData(["protected"], { owner: "old" });
     verify = async () => response(identity("new-identity"));
     await act(async () => { await result.current.loginWithToken("new-opaque-value"); });
-    pending.resolve(response({ points: [{ private: "old" }] }));
+    pending.resolve(response({ lob: "synthetic", series_count: 1, points: [{ private: "old" }] }));
     expect(await old).toBe("Session changed. Sign in again.");
     expect(client.getQueryData(["protected"])).toBeUndefined();
     expect(result.current.user?.username).toBe("new-identity");
@@ -291,7 +291,7 @@ describe("explicit demo authentication boundary", () => {
       expect(headers.has("authorization")).toBe(false);
       expect(headers.get("x-demo-role")).toBe("viewer");
       expect(decodeURIComponent(headers.get("x-demo-user") ?? "")).toBe("Demo Viewer");
-      return response({ points: [] });
+      return response({ lob: "synthetic", series_count: 0, points: [] });
     };
     await api.getForecasts("synthetic");
     expect(localStorage.length).toBe(0);

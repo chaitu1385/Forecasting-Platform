@@ -11,7 +11,13 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 
 from ...auth.models import Permission, User
 from ...auth.rbac import get_current_user, require_permission
-from ..deps import validate_path_param, validate_upload_size
+from ..deps import (
+    metric_records,
+    raise_run_error,
+    run_reader,
+    validate_path_param,
+    validate_upload_size,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,20 +32,12 @@ def get_fva(
     lob: str,
     request: Request,
     run_type: str = Query("backtest"),
+    run_id: Optional[str] = Query(None),
     user: User = Depends(require_permission(Permission.VIEW_METRICS)),
 ):
     """Compute Forecast Value Add (FVA) cascade for a LOB."""
     from ...analytics.fva_analyzer import FVAAnalyzer
-    from ...metrics.store import MetricStore
-
-    validate_path_param(lob, "lob")
-    store = MetricStore(str(request.app.state.metrics_dir))
-    try:
-        df = store.read(lob=lob, run_type=run_type)
-    except (FileNotFoundError, OSError) as exc:
-        raise HTTPException(status_code=404, detail=f"Metric data not found for LOB '{lob}': {exc}")
-    except (ValueError, KeyError) as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to read metrics: {exc}")
+    df, selected = metric_records(request, lob, run_type, run_id, latest=True)
 
     if df is None or df.is_empty():
         raise HTTPException(status_code=404, detail=f"No metric data for LOB '{lob}'.")
@@ -51,6 +49,8 @@ def get_fva(
 
     return {
         "lob": lob,
+        "run_id": selected.run_id if selected else None,
+        "artifact_source": "committed" if selected else "legacy",
         "summary": fva_summary.to_dicts() if not fva_summary.is_empty() else [],
         "layer_leaderboard": layer_lb.to_dicts() if not layer_lb.is_empty() else [],
         "detail_preview": fva_detail.head(100).to_dicts() if not fva_detail.is_empty() else [],
@@ -62,20 +62,12 @@ def get_calibration(
     lob: str,
     request: Request,
     run_type: str = Query("backtest"),
+    run_id: Optional[str] = Query(None),
     user: User = Depends(require_permission(Permission.VIEW_METRICS)),
 ):
     """Compute prediction interval calibration report."""
     from ...evaluation.calibration import compute_calibration_report
-    from ...metrics.store import MetricStore
-
-    validate_path_param(lob, "lob")
-    store = MetricStore(str(request.app.state.metrics_dir))
-    try:
-        df = store.read(lob=lob, run_type=run_type)
-    except (FileNotFoundError, OSError) as exc:
-        raise HTTPException(status_code=404, detail=f"Metric data not found for LOB '{lob}': {exc}")
-    except (ValueError, KeyError) as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to read metrics: {exc}")
+    df, selected = metric_records(request, lob, run_type, run_id, latest=True)
 
     if df is None or df.is_empty():
         raise HTTPException(status_code=404, detail=f"No metric data for LOB '{lob}'.")
@@ -105,6 +97,8 @@ def get_calibration(
 
     return {
         "lob": lob,
+        "run_id": selected.run_id if selected else None,
+        "artifact_source": "committed" if selected else "legacy",
         "model_reports": model_reports,
         "per_series_preview": report.per_series.head(50).to_dicts() if report.per_series is not None and not report.per_series.is_empty() else [],
     }
@@ -118,12 +112,22 @@ async def compute_shap(
     model_name: str = Query("lgbm_direct", description="Model to explain"),
     season_length: int = Query(52),
     top_k: int = Query(10, description="Number of top features to return"),
+    run_id: Optional[str] = Query(None),
     user: User = Depends(require_permission(Permission.VIEW_METRICS)),
 ):
     """Compute SHAP feature attribution for tree-based models."""
     from ...analytics.explainer import ForecastExplainer
+    from ...pipeline.run_store import RunIntegrityError, RunNotFoundError
 
     validate_path_param(lob, "lob")
+    try:
+        reader = run_reader(request)
+        selected = reader.forecast(lob, run_id)
+        forecast_df = selected.frame.rename({
+            selected.id_column: "series_id", selected.time_column: "week",
+        })
+    except (RunIntegrityError, RunNotFoundError, ValueError, OSError) as exc:
+        raise_run_error(exc)
     # Load data
     if file:
         content = await validate_upload_size(file)
@@ -136,29 +140,20 @@ async def compute_shap(
         except (ValueError, UnicodeDecodeError, OSError) as exc:
             raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}")
     else:
-        # Try loading from data_dir
-        for subdir in ("history", "actuals"):
-            d = request.app.state.data_dir / subdir / lob
-            if d.exists():
-                files = sorted(d.glob("*.parquet"))
-                if files:
-                    df = pl.read_parquet(files[-1])
-                    break
-        else:
-            raise HTTPException(status_code=404, detail=f"No data found for LOB '{lob}'. Upload a file or ensure data exists.")
+        try:
+            history = reader.history(lob, selected.run_id, legacy=selected.source == "legacy")
+            df = history.frame.rename({
+                history.id_column: "series_id", history.time_column: "week",
+                history.target_column: "quantity",
+            })
+        except (RunIntegrityError, RunNotFoundError, ValueError, OSError) as exc:
+            raise_run_error(exc)
 
     explainer = ForecastExplainer(season_length=season_length)
 
     try:
         # explain_ml needs a trained model — for API use, we'll use the decompose + narrative approach
         # since we don't have a persisted model object. Return decomposition-based feature importance.
-        forecast_dir = request.app.state.data_dir / "forecasts" / lob
-        forecast_df = pl.DataFrame()
-        if forecast_dir.exists():
-            pfiles = sorted(forecast_dir.glob("forecast_*.parquet"))
-            if pfiles:
-                forecast_df = pl.read_parquet(pfiles[-1])
-
         if forecast_df.is_empty():
             raise HTTPException(status_code=404, detail="No forecast data available for SHAP analysis.")
 
@@ -183,6 +178,8 @@ async def compute_shap(
 
         return {
             "lob": lob,
+            "run_id": selected.run_id,
+            "artifact_source": selected.source,
             "model": model_name,
             "feature_importance": importance[:top_k],
             "decomposition_preview": decomp.head(50).to_dicts(),
@@ -371,6 +368,7 @@ def get_validation(
     lob: str,
     request: Request,
     run_type: str = Query("backtest"),
+    run_id: Optional[str] = Query(None),
     user: User = Depends(require_permission(Permission.VIEW_METRICS)),
 ):
     """Run 4-layer post-pipeline validation on the latest metrics for a LOB.
@@ -378,17 +376,22 @@ def get_validation(
     Returns confidence grade (A-F), score (0-100), and per-layer details.
     """
     from ...config.schema import PostValidationConfig
-    from ...metrics.store import MetricStore
+    from ...pipeline.run_store import RunIntegrityError, RunNotFoundError
     from ...pipeline.validation_step import run_post_validation
 
-    validate_path_param(lob, "lob")
-    store = MetricStore(str(request.app.state.metrics_dir))
-    try:
-        df = store.read(lob=lob, run_type=run_type)
-    except (FileNotFoundError, OSError) as exc:
-        raise HTTPException(status_code=404, detail=f"Metric data not found for LOB '{lob}': {exc}")
-    except (ValueError, KeyError) as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to read metrics: {exc}")
+    df, selected = metric_records(request, lob, run_type, run_id, latest=True)
+    if selected is not None:
+        try:
+            result = run_reader(request).store.json_member(lob, selected.run_id, "validation")
+        except (RunIntegrityError, RunNotFoundError, ValueError, OSError) as exc:
+            raise_run_error(exc)
+        return {
+            "lob": lob, "run_id": selected.run_id, "artifact_source": "committed",
+            "grade": result.get("grade", "N/A"), "score": result.get("score", -1),
+            "badge": result.get("badge", "Validation disabled for this run"),
+            "layers": result.get("layers", {}), "confidence": result.get("confidence", {}),
+            "skipped": result.get("skipped", False),
+        }
 
     if df is None or df.is_empty():
         raise HTTPException(status_code=404, detail=f"No metric data for LOB '{lob}'.")
@@ -403,6 +406,8 @@ def get_validation(
 
     return {
         "lob": lob,
+        "run_id": None,
+        "artifact_source": "legacy",
         "grade": result["grade"],
         "score": result["score"],
         "badge": result["badge"],

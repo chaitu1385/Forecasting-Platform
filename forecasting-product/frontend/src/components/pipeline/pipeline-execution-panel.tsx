@@ -141,6 +141,7 @@ export function PipelineExecutionPanel({ lobName, initialFile, configYaml }: { l
       {backtest.result && (
         <div className="space-y-2 rounded-md bg-green-50 dark:bg-green-950 p-4">
           <h3 className="text-sm font-medium">Backtest Result</h3>
+          <p className="break-all text-xs">Committed run: <code>{backtest.result.run_id}</code></p>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <MetricCard label="Status" value={backtest.result.status} />
             <MetricCard label="Champion" value={backtest.result.execution.model_id || "N/A"} />
@@ -160,6 +161,7 @@ export function PipelineExecutionPanel({ lobName, initialFile, configYaml }: { l
       {forecast.result && (
         <div className="space-y-2 rounded-md bg-blue-50 dark:bg-blue-950 p-4">
           <h3 className="text-sm font-medium">Forecast Result</h3>
+          <p className="break-all text-xs">Committed run: <code>{forecast.result.run_id}</code></p>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <MetricCard label="Status" value={forecast.result.status} />
             <MetricCard label="Effective model" value={forecast.result.execution.model_id ?? "N/A"} />

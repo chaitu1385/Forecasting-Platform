@@ -29,8 +29,8 @@ class ForecastAnalytics:
     returns a DataFrame.  Chain with ``.head()``, ``.filter()``, etc.
     """
 
-    def __init__(self, metric_store_path: str = "data/metrics/"):
-        self._store = MetricStore(metric_store_path)
+    def __init__(self, metric_store_path: str = "data/metrics/", runs_path: Optional[str] = None):
+        self._store = MetricStore(metric_store_path, runs_path=runs_path)
 
     # ── Model comparison ──────────────────────────────────────────────────
 
@@ -41,6 +41,8 @@ class ForecastAnalytics:
         grain_level: Optional[str] = None,
         primary_metric: str = "wmape",
         secondary_metric: str = "normalized_bias",
+        run_id: Optional[str] = None,
+        latest: bool = False,
     ) -> pl.DataFrame:
         """
         Rank models by primary metric (lower WMAPE = better).
@@ -53,15 +55,18 @@ class ForecastAnalytics:
             primary_metric=primary_metric,
             secondary_metric=secondary_metric,
             grain_level=grain_level,
+            run_id=run_id,
+            latest=latest,
         )
 
     def model_comparison_by_fold(
         self,
         lob: Optional[str] = None,
         metric: str = "wmape",
+        run_id: Optional[str] = None,
     ) -> pl.DataFrame:
         """Per-fold model performance — shows stability across time."""
-        df = self._store.read(run_type="backtest", lob=lob)
+        df = self._store.read(run_type="backtest", lob=lob, run_id=run_id)
         if df.is_empty():
             return df
 
@@ -79,6 +84,7 @@ class ForecastAnalytics:
         lob: Optional[str] = None,
         run_type: str = "live",
         metric: str = "wmape",
+        run_id: Optional[str] = None,
     ) -> pl.DataFrame:
         """Weekly accuracy trend for a model — identifies drift."""
         return self._store.accuracy_over_time(
@@ -86,6 +92,7 @@ class ForecastAnalytics:
             run_type=run_type,
             lob=lob,
             metric=metric,
+            run_id=run_id,
         )
 
     # ── Grain drill-down ──────────────────────────────────────────────────
@@ -97,6 +104,7 @@ class ForecastAnalytics:
         model: Optional[str] = None,
         run_type: str = "backtest",
         metric: str = "wmape",
+        run_id: Optional[str] = None,
     ) -> pl.DataFrame:
         """
         Accuracy broken down by a hierarchy grain.
@@ -106,7 +114,7 @@ class ForecastAnalytics:
         grain_column:
             Column to group by (e.g. "series_id", "channel").
         """
-        df = self._store.read(run_type=run_type, lob=lob, model_id=model)
+        df = self._store.read(run_type=run_type, lob=lob, model_id=model, run_id=run_id)
         if df.is_empty() or grain_column not in df.columns:
             return df
 
@@ -127,6 +135,7 @@ class ForecastAnalytics:
         model: Optional[str] = None,
         lob: Optional[str] = None,
         run_type: str = "backtest",
+        run_id: Optional[str] = None,
     ) -> pl.DataFrame:
         """
         Bias distribution across series.
@@ -134,7 +143,7 @@ class ForecastAnalytics:
         Returns per-series average normalized bias — helps identify
         which series are systematically over/under-forecasted.
         """
-        df = self._store.read(run_type=run_type, lob=lob, model_id=model)
+        df = self._store.read(run_type=run_type, lob=lob, model_id=model, run_id=run_id)
         if df.is_empty():
             return df
 
@@ -156,6 +165,8 @@ class ForecastAnalytics:
         new_sku: str,
         run_type: str = "backtest",
         metric: str = "wmape",
+        lob: Optional[str] = None,
+        run_id: Optional[str] = None,
     ) -> pl.DataFrame:
         """
         Compare accuracy before and after a product transition.
@@ -163,7 +174,7 @@ class ForecastAnalytics:
         Shows how well the stitched series forecasts compared to the
         original series.
         """
-        df = self._store.read(run_type=run_type)
+        df = self._store.read(run_type=run_type, lob=lob, run_id=run_id)
         if df.is_empty():
             return df
 
@@ -179,14 +190,16 @@ class ForecastAnalytics:
         self,
         lob: Optional[str] = None,
         metric: str = "wmape",
+        backtest_run_id: Optional[str] = None,
+        live_run_id: Optional[str] = None,
     ) -> pl.DataFrame:
         """
         Compare backtest performance to live performance per model.
 
         Answers: "does our backtesting champion actually win in production?"
         """
-        bt = self._store.read(run_type="backtest", lob=lob)
-        live = self._store.read(run_type="live", lob=lob)
+        bt = self._store.read(run_type="backtest", lob=lob, run_id=backtest_run_id)
+        live = self._store.read(run_type="live", lob=lob, run_id=live_run_id)
 
         if bt.is_empty() or live.is_empty():
             return pl.DataFrame(schema={

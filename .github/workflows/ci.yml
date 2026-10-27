@@ -294,6 +294,46 @@ jobs:
           name: backend-results-python-${{ matrix.python-version }}
           path: forecasting-product/test-results.xml
 
+  run-artifacts:
+    name: Run artifacts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      POLARS_MAX_THREADS: "2"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMBA_NUM_THREADS: "1"
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: forecasting-product/requirements.txt
+      - name: Install local filesystem regression dependencies
+        run: python -m pip install -r forecasting-product/requirements.txt pytest-timeout
+      - name: Verify native publication, faults, races, restart, roots and authorized retrieval
+        working-directory: forecasting-product
+        run: >
+          python -m pytest tests/test_run_store.py tests/test_run_artifacts.py
+          tests/test_run_store_process.py tests/test_run_cli.py
+          -q -o addopts="" -o faulthandler_timeout=90
+          --timeout=150 --timeout-method=thread --junitxml=run-artifact-results.xml
+      - name: Upload run artifact evidence (no credentials or input datasets)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: run-artifact-results-${{ matrix.os }}
+          path: forecasting-product/run-artifact-results.xml
+
   build:
     name: Docker Build
     runs-on: ubuntu-latest
@@ -308,6 +348,7 @@ jobs:
         run: |
           docker build \
             --target api \
+            --build-arg FORECAST_BUILD_REVISION=${{ github.sha }} \
             -t forecasting-product:${{ github.sha }} \
             .
 
@@ -384,7 +425,7 @@ jobs:
   ci-gate:
     name: CI gate
     if: always()
-    needs: [lint, validation, forecast-intent, process-safety, test, build, frontend, automation, authentication]
+    needs: [lint, validation, forecast-intent, process-safety, test, build, frontend, automation, authentication, run-artifacts]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

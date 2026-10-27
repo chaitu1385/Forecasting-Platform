@@ -51,16 +51,26 @@ API_DEV_MODE      Strict boolean; defaults to false. Explicit demo also requires
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 
-from .deps import validate_path_param, validate_upload_size
+from .deps import (
+    metric_records,
+    raise_run_error,
+    run_reader,
+    validate_path_param,
+    validate_upload_size,
+)
+from .deps import (
+    metric_store as request_metric_store,
+)
 from .schemas import (
     AnalysisResponse,
     CommentaryRequest,
@@ -84,6 +94,13 @@ from .schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _finite_number(value) -> Optional[float]:
+    if value is None:
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
 
 _API_VERSION = os.environ.get("API_VERSION", "1.0.0")
 
@@ -158,6 +175,7 @@ def create_app(
     audit_log_path: Optional[str] = None,
     cors_origins: list[str] | None = None,
     dev_mode: Optional[bool] = None,
+    runs_dir: Optional[str] = None,
 ) -> FastAPI:
     """
     Factory function — returns a configured FastAPI application.
@@ -181,6 +199,10 @@ def create_app(
     metrics_path = Path(
         metrics_dir if metrics_dir is not None else os.environ.get("API_METRICS_DIR", str(data_path / "metrics"))
     ).resolve()
+    run_location = runs_dir if runs_dir is not None else os.environ.get("API_RUNS_DIR")
+    if run_location is not None and (not run_location.strip() or "://" in run_location):
+        raise ValueError("API_RUNS_DIR must be a nonblank local filesystem path")
+    runs_path = Path(run_location if run_location is not None else data_path / "runs").resolve()
     if auth_settings.dev_mode:
         logger.warning("DEMO MODE: identities and roles are simulated; this API is not production-authenticated")
 
@@ -220,6 +242,7 @@ def create_app(
     # ── Shared state (attached to app for testability) ─────────────────────
     app.state.data_dir = data_path
     app.state.metrics_dir = metrics_path
+    app.state.runs_dir = runs_path
     app.state.auth_settings = auth_settings
     app.state.auth_enabled = auth_settings.auth_enabled
     app.state.jwt_secret = auth_settings.jwt_secret
@@ -266,57 +289,39 @@ def create_app(
     @app.get("/forecast/{lob}", response_model=ForecastResponse, tags=["forecasts"])
     def get_forecast(
         lob: str,
+        request: Request,
         series_id: Optional[str] = Query(None, description="Filter to a single series"),
-        horizon: Optional[int] = Query(None, description="Limit output to first N weeks"),
+        horizon: Optional[int] = Query(None, ge=1, description="Limit output to first N periods"),
+        run_id: Optional[str] = Query(None),
+        legacy: bool = Query(False),
         user: User = Depends(get_current_user),
     ):
         """
-        Return the latest forecast Parquet file for a LOB.
-
-        Reads the most recently written ``forecast_*.parquet`` under
-        ``{data_dir}/forecasts/{lob}/``.
+        Return an exact committed run or deterministic latest, with labelled legacy compatibility.
         """
         validate_path_param(lob, "lob")
-        forecast_dir = app.state.data_dir / "forecasts" / lob
-        if not forecast_dir.exists():
-            raise HTTPException(
-                status_code=404,
-                detail=f"No forecast data found for LOB '{lob}'. "
-                       f"Expected directory: {forecast_dir}",
-            )
-
-        parquet_files = sorted(forecast_dir.glob("forecast_*.parquet"))
-        if not parquet_files:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No forecast Parquet files in {forecast_dir}.",
-            )
-
         import polars as pl
-        df = pl.read_parquet(parquet_files[-1])   # most recent
+
+        from ..pipeline.run_store import RunIntegrityError, RunNotFoundError
+        try:
+            selected = run_reader(request).forecast(lob, run_id, legacy=legacy)
+        except (RunIntegrityError, RunNotFoundError, ValueError, OSError) as exc:
+            raise_run_error(exc)
+        df = selected.frame
+        id_column, time_column = selected.id_column, selected.time_column
 
         if series_id:
-            df = df.filter(pl.col("series_id") == series_id)
+            df = df.filter(pl.col(id_column).cast(pl.Utf8) == series_id)
             if df.is_empty():
                 raise HTTPException(
                     status_code=404,
                     detail=f"series_id '{series_id}' not found in LOB '{lob}'.",
                 )
 
-        time_column = next(
-            (name for name in ("week", "date", "period", "timestamp") if name in df.columns),
-            None,
-        )
-        if time_column is None:
-            raise HTTPException(
-                status_code=500,
-                detail="Forecast artifact has no supported time column.",
-            )
-
         if horizon:
             df = (
-                df.sort(["series_id", time_column])
-                .group_by("series_id", maintain_order=True)
+                df.sort([id_column, time_column])
+                .group_by(id_column, maintain_order=True)
                 .head(horizon)
             )
 
@@ -326,23 +331,27 @@ def create_app(
 
         points = [
             ForecastPoint(
-                series_id=row["series_id"],
+                series_id=str(row[id_column]),
                 week=row[time_column],
-                forecast=float(row["forecast"]),
+                forecast=_finite_number(row["forecast"]),
                 model=row.get("model"),
                 lob=lob,
-                forecast_p10=float(row["forecast_p10"]) if has_p10 and row.get("forecast_p10") is not None else None,
-                forecast_p50=float(row["forecast_p50"]) if has_p50 and row.get("forecast_p50") is not None else None,
-                forecast_p90=float(row["forecast_p90"]) if has_p90 and row.get("forecast_p90") is not None else None,
+                forecast_p10=_finite_number(row.get("forecast_p10")) if has_p10 else None,
+                forecast_p50=_finite_number(row.get("forecast_p50")) if has_p50 else None,
+                forecast_p90=_finite_number(row.get("forecast_p90")) if has_p90 else None,
             )
             for row in df.iter_rows(named=True)
         ]
 
         return ForecastResponse(
             lob=lob,
-            series_count=df["series_id"].n_unique(),
-            forecast_origin=parquet_files[-1].stem.replace(f"forecast_{lob}_", ""),
+            series_count=df[id_column].n_unique(),
+            forecast_origin=selected.forecast_origin,
             points=points,
+            run_id=selected.run_id,
+            artifact_source=selected.source,
+            config_hash=selected.manifest.config_hash if selected.manifest else None,
+            input_data_hash=selected.manifest.input_data_hash if selected.manifest else None,
         )
 
     @app.get(
@@ -350,9 +359,16 @@ def create_app(
         response_model=ForecastResponse,
         tags=["forecasts"],
     )
-    def get_forecast_series(lob: str, series_id: str, user: User = Depends(get_current_user)):
+    def get_forecast_series(
+        lob: str, series_id: str, request: Request,
+        run_id: Optional[str] = Query(None), legacy: bool = Query(False),
+        user: User = Depends(get_current_user),
+    ):
         """Return the latest forecast for a single series within a LOB."""
-        return get_forecast(lob=lob, series_id=series_id, horizon=None, user=user)
+        return get_forecast(
+            lob=lob, series_id=series_id, horizon=None, request=request,
+            run_id=run_id, legacy=legacy, user=user,
+        )
 
     @app.get(
         "/metrics/leaderboard/{lob}",
@@ -361,7 +377,9 @@ def create_app(
     )
     def get_leaderboard(
         lob: str,
-        run_type: str = Query("backtest", description="'backtest' or 'live'"),
+        request: Request,
+        run_type: Literal["backtest", "live"] = Query("backtest"),
+        run_id: Optional[str] = Query(None),
         user: User = Depends(get_current_user),
     ):
         """
@@ -370,21 +388,20 @@ def create_app(
         Models are ranked by WMAPE (ascending).
         """
         validate_path_param(lob, "lob")
-        from ..metrics.store import MetricStore
+        from ..pipeline.run_store import RunIntegrityError, RunNotFoundError
 
-        store = MetricStore(str(app.state.metrics_dir))
+        store = request_metric_store(request)
         try:
-            df = store.leaderboard(lob=lob, run_type=run_type)
-        except (FileNotFoundError, OSError) as exc:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Leaderboard data not found for LOB '{lob}': {exc}",
+            authority = run_reader(request).store
+            selected = authority.get(lob, run_id, run_type) if run_id is not None else (
+                authority.latest(lob, "backtest") if run_type == "backtest" else None
             )
-        except (ValueError, KeyError) as exc:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to read leaderboard: {exc}",
+            df = store.leaderboard(
+                lob=lob, run_type=run_type,
+                run_id=selected.run_id if selected else None, latest=True,
             )
+        except (RunIntegrityError, RunNotFoundError, ValueError, OSError, KeyError) as exc:
+            raise_run_error(exc)
 
         if df.is_empty():
             raise HTTPException(
@@ -395,15 +412,19 @@ def create_app(
         entries = [
             LeaderboardEntry(
                 model=row["model_id"],
-                wmape=float(row["wmape"]),
-                normalized_bias=float(row.get("normalized_bias", 0.0) or 0.0),
+                wmape=_finite_number(row["wmape"]),
+                normalized_bias=_finite_number(row.get("normalized_bias")),
                 rank=int(row.get("rank", i + 1)),
                 n_series=int(row.get("n_series", 0) or 0),
             )
             for i, row in enumerate(df.iter_rows(named=True))
         ]
 
-        return LeaderboardResponse(lob=lob, run_type=run_type, entries=entries)
+        return LeaderboardResponse(
+            lob=lob, run_type=run_type, entries=entries,
+            run_id=selected.run_id if selected else None,
+            artifact_source="committed" if selected else "legacy",
+        )
 
     @app.get(
         "/metrics/drift/{lob}",
@@ -427,7 +448,7 @@ def create_app(
         from ..metrics.drift import DriftConfig, ForecastDriftDetector
         from ..metrics.store import MetricStore
 
-        store = MetricStore(str(app.state.metrics_dir))
+        store = MetricStore(str(app.state.metrics_dir), str(app.state.runs_dir))
         try:
             df = store.read(lob=lob, run_type=run_type)
         except (FileNotFoundError, OSError) as exc:
@@ -560,43 +581,52 @@ def create_app(
     @app.post("/ai/explain", response_model=NLQueryResponse, tags=["ai"])
     async def ai_explain(
         request: NLQueryRequest,
+        http_request: Request,
         user: User = Depends(require_permission(Permission.VIEW_FORECASTS)),
     ):
         """Answer a natural-language question about a specific series forecast."""
         import polars as pl
 
         from ..ai.nl_query import NaturalLanguageQueryEngine
+        from ..pipeline.run_store import RunIntegrityError, RunNotFoundError
 
         validate_path_param(request.lob, "lob")
-        # Load forecast data for the series
-        forecast_dir = app.state.data_dir / "forecasts" / request.lob
         forecast_df = pl.DataFrame()
-        if forecast_dir.exists():
-            parquet_files = sorted(forecast_dir.glob("forecast_*.parquet"))
-            if parquet_files:
-                forecast_df = pl.read_parquet(parquet_files[-1])
-                forecast_df = forecast_df.filter(pl.col("series_id") == request.series_id)
-
-        # Load metrics data
-        metrics_df = pl.DataFrame()
-        try:
-            from ..metrics.store import MetricStore
-            store = MetricStore(str(app.state.metrics_dir))
-            metrics_df = store.read(lob=request.lob, run_type="backtest")
-        except (FileNotFoundError, OSError, ValueError, KeyError):
-            logger.debug("Could not load metrics for NL query (lob=%s)", request.lob, exc_info=True)
-
-        # Load history data if available
         history_df = pl.DataFrame()
-        history_dir = app.state.data_dir / "history" / request.lob
-        if history_dir.exists():
-            parquet_files = sorted(history_dir.glob("*.parquet"))
-            if parquet_files:
-                try:
-                    history_df = pl.read_parquet(parquet_files[-1])
-                    history_df = history_df.filter(pl.col("series_id") == request.series_id)
-                except (FileNotFoundError, OSError, ValueError) as _exc:
-                    logger.debug("Could not load history for NL query (series=%s)", request.series_id, exc_info=True)
+        selected = None
+        reader = run_reader(http_request)
+        try:
+            selected = reader.forecast(request.lob, request.run_id, legacy=request.legacy)
+            forecast_df = selected.frame.rename({selected.id_column: "series_id", selected.time_column: "week"})
+            forecast_df = forecast_df.filter(pl.col("series_id").cast(pl.Utf8) == request.series_id)
+        except RunNotFoundError as exc:
+            if request.run_id is not None:
+                raise_run_error(exc)
+        except (RunIntegrityError, ValueError, OSError) as exc:
+            raise_run_error(exc)
+        if selected is not None:
+            try:
+                history = reader.history(request.lob, selected.run_id, legacy=selected.source == "legacy")
+                history_df = history.frame.rename({
+                    history.id_column: "series_id", history.time_column: "week", history.target_column: "quantity",
+                }).filter(pl.col("series_id").cast(pl.Utf8) == request.series_id)
+            except RunNotFoundError as exc:
+                if selected.run_id is not None:
+                    raise_run_error(exc)
+            except (RunIntegrityError, ValueError, OSError) as exc:
+                raise_run_error(exc)
+        if selected is not None and selected.manifest is not None:
+            try:
+                matching = next((
+                    item for item in reader.store.list(request.lob, "backtest")
+                    if item.input_data_hash == selected.manifest.input_data_hash
+                    and item.prepared_data_hash == selected.manifest.prepared_data_hash
+                ), None)
+                metrics_df = reader.store.frame(request.lob, matching.run_id, "metrics") if matching else pl.DataFrame()
+            except (RunIntegrityError, ValueError, OSError) as exc:
+                raise_run_error(exc)
+        else:
+            metrics_df, _ = metric_records(http_request, request.lob, "backtest", latest=True)
 
         engine = NaturalLanguageQueryEngine()
         result = engine.query(
@@ -618,21 +648,15 @@ def create_app(
     @app.post("/ai/triage", response_model=TriageResponse, tags=["ai"])
     async def ai_triage(
         request: TriageRequest,
+        http_request: Request,
         user: User = Depends(require_permission(Permission.VIEW_METRICS)),
     ):
         """Triage drift alerts by business impact with suggested actions."""
         from ..ai.anomaly_triage import AnomalyTriageEngine
         from ..metrics.drift import DriftConfig, ForecastDriftDetector
-        from ..metrics.store import MetricStore
 
         validate_path_param(request.lob, "lob")
-        store = MetricStore(str(app.state.metrics_dir))
-        try:
-            df = store.read(lob=request.lob, run_type=request.run_type)
-        except (FileNotFoundError, OSError) as exc:
-            raise HTTPException(status_code=404, detail=f"Metric data not found for LOB '{request.lob}': {exc}")
-        except (ValueError, KeyError) as exc:
-            raise HTTPException(status_code=500, detail=f"Failed to read metric store: {exc}")
+        df, _ = metric_records(http_request, request.lob, request.run_type, request.run_id)
 
         if df is None or df.is_empty():
             raise HTTPException(status_code=404, detail=f"No metric data for LOB '{request.lob}'.")
@@ -681,12 +705,12 @@ def create_app(
         from ..metrics.store import MetricStore
 
         validate_path_param(request.lob, "lob")
-        store = MetricStore(str(app.state.metrics_dir))
+        store = MetricStore(str(app.state.metrics_dir), str(app.state.runs_dir))
 
         # Load leaderboard
         leaderboard = None
         try:
-            leaderboard = store.leaderboard(lob=request.lob, run_type=request.run_type)
+            leaderboard = store.leaderboard(lob=request.lob, run_type=request.run_type, latest=True)
         except (FileNotFoundError, OSError, ValueError, KeyError):
             logger.warning("Could not load leaderboard for config tuner (lob=%s)", request.lob, exc_info=True)
 
@@ -728,7 +752,7 @@ def create_app(
         from ..metrics.store import MetricStore
 
         validate_path_param(request.lob, "lob")
-        store = MetricStore(str(app.state.metrics_dir))
+        store = MetricStore(str(app.state.metrics_dir), str(app.state.runs_dir))
         try:
             df = store.read(lob=request.lob, run_type=request.run_type)
         except (FileNotFoundError, OSError) as exc:
@@ -746,7 +770,7 @@ def create_app(
         # Get leaderboard
         leaderboard = None
         try:
-            leaderboard = store.leaderboard(lob=request.lob, run_type=request.run_type)
+            leaderboard = store.leaderboard(lob=request.lob, run_type=request.run_type, latest=True)
         except (FileNotFoundError, OSError, ValueError, KeyError):
             logger.warning("Could not load leaderboard for commentary (lob=%s)", request.lob, exc_info=True)
 

@@ -31,6 +31,8 @@ Usage
 import logging
 from typing import List, Optional
 
+from ..observability.context import new_run_id
+
 logger = logging.getLogger(__name__)
 
 
@@ -73,9 +75,11 @@ class SparkForecastPipeline:
         ``PlatformConfig`` instance (loaded from YAML).
     """
 
-    def __init__(self, spark, config):
+    def __init__(self, spark, config, correlation_id: Optional[str] = None):
         self.spark = spark
         self.config = config
+        self.correlation_id = correlation_id
+        self.run_id: Optional[str] = None
 
     # ── forecast ──────────────────────────────────────────────────────────────
 
@@ -106,6 +110,7 @@ class SparkForecastPipeline:
         -------
         Spark DataFrame: [series_id, week, forecast].
         """
+        self.run_id = new_run_id()
         from pyspark.sql import types as T
 
         from .utils import repartition_by_series
@@ -165,8 +170,8 @@ class SparkForecastPipeline:
                 _forecast_partition, schema=output_schema
             )
         logger.info(
-            "SparkForecastPipeline.run_forecast launched (model=%s, horizon=%d)",
-            champion_model, horizon,
+            "Spark forecast plan launched: run_id=%s parent=%s model=%s horizon=%d storage_contract=external",
+            self.run_id, self.correlation_id, champion_model, horizon,
         )
         return forecasts_sdf
 
@@ -198,6 +203,9 @@ class SparkForecastPipeline:
         -------
         Spark DataFrame: [series_id, model, fold, wmape, normalized_bias, mae].
         """
+        self.run_id = new_run_id()
+        logger.info("Spark backtest plan: run_id=%s parent=%s storage_contract=external",
+                    self.run_id, self.correlation_id)
         from pyspark.sql import types as T
 
         from .utils import repartition_by_series

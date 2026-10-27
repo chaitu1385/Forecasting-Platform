@@ -44,7 +44,7 @@ python forecasting-product/setup.py sdist bdist_wheel
 
 ```
 forecasting-product/
-├── src/                    # Source modules (125 files across 36 packages)
+├── src/                    # Application source modules
 │   ├── ai/                 # AI-native features (Claude-powered)
 │   │   ├── base.py         # AIFeatureBase — shared client wrapper
 │   │   ├── nl_query.py     # NaturalLanguageQueryEngine — POST /ai/explain
@@ -60,7 +60,7 @@ forecasting-product/
 │   │       ├── hierarchy.py    # POST /hierarchy/build, aggregate, reconcile
 │   │       ├── sku_mapping.py  # POST /sku-mapping/phase1, phase2
 │   │       ├── overrides.py    # CRUD /overrides
-│   │       ├── pipeline.py     # POST /pipeline/backtest, forecast; GET manifests, costs; POST analyze-multi-file
+│   │       ├── pipeline.py     # POST backtest/forecast; GET exact runs/config/input, manifests, costs; multi-file analysis
 │   │       ├── analytics.py    # GET /metrics/{lob}/fva, calibration; POST shap, decompose, compare, constrain
 │   │       └── governance.py   # GET /governance/model-cards, lineage; POST export
 │   ├── audit/              # Append-only Parquet audit logging
@@ -95,8 +95,10 @@ forecasting-product/
 │   │   ├── alerts.py       # AlertDispatcher — drift alerts → webhooks
 │   │   └── cost.py         # CostEstimator — compute cost tracking
 │   ├── overrides/          # Planner manual override store (DuckDB + Parquet fallback)
-│   ├── pipeline/           # End-to-end backtest + forecast pipelines, provenance manifest
-│   │   ├── manifest.py     # PipelineManifest — provenance sidecar (JSON) for each forecast run
+│   ├── pipeline/           # End-to-end backtest + forecast pipelines, immutable local bundles
+│   │   ├── run_store.py    # RunStore — UUID authority, atomic commit marker, integrity/exact/latest reads
+│   │   ├── readers.py      # RunReader — shared forecast/history discovery and explicit legacy adapters
+│   │   ├── manifest.py     # PipelineManifest — safe versioned provenance, canonical config/model metadata
 │   │   ├── batch_runner.py # BatchInferenceRunner — partitioned parallel forecasting
 │   │   └── scheduler.py    # PipelineScheduler — recurring runs with retry + dead-letter
 │   ├── series/             # Series builder, sparse detector, SKU transitions, structural break detection
@@ -114,7 +116,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 1691 tests (pytest)
+├── tests/                  # 1736 cases (pytest)
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 └── notebooks/              # Jupyter notebooks for exploration
@@ -151,6 +153,33 @@ request override > valid YAML > platform defaults; the required
 allowlist, not `asdict(PlatformConfig)`. Keep server paths and credentials out of it.
 The UI forwards only the current backtest champion/horizon and invalidates dependent
 results when data, LOB, or configuration changes.
+
+### Immutable run storage
+
+`OutputConfig.runs_path` explicitly selects the local authority. Without it,
+direct/custom forecast pipelines use `<forecast_path>/runs`, and backtests use
+`<metrics_path>/runs`; never infer a shared parent or silently redirect to cwd.
+The API/standard CLI/demo deployment pass a shared explicit root
+(`API_RUNS_DIR` / `--runs-dir`, default `data/runs`). The YAML loader constructs
+`OutputConfig` explicitly, so new schema fields require explicit parser wiring.
+
+A fresh UUID32 at each `run()` entry is shared by context, engine metric rows,
+manifest and response. A run is visible only after a no-replace hard link
+publishes fixed `manifest.json` in its exclusive directory. All required members
+must already be closed, fsynced and hashed. Never catch a metadata write failure
+and return completed, mirror to a second authoritative store, delete a committed
+run after an error, or use stale output from the previous invocation.
+`RunPublicationError` distinguishes `not_committed`, `committed` and `uncertain`.
+Latest is attempt-start UTC plus ID within LOB/type; retry means a new attempt.
+
+Readers verify identities, fixed member names, checksums and typed schemas;
+corruption/unknown versions must be explicit, not healthy empty/fallback.
+Pass the same explicit root to MetricStore/notebook readers. Legacy reads are
+read-only/unknown lineage. Keep credential/private-path settings out of
+canonical config/model provenance; input byte hashes do not claim semantic
+equivalence or deterministic fitted-model replay. Managed Spark/Fabric Delta
+storage remains a separate contract. See docs/DEPLOYMENT.md for local filesystem,
+fsync/Windows and offline recovery limitations.
 
 ### Multi-frequency support
 
@@ -193,11 +222,18 @@ Only explicit demo renders role simulation; production seeding is disabled.
 - Framework: pytest
 - Test files mirror source structure with `test_` prefix
 - Helper fixtures use `_make_*` factory functions (e.g., `_make_weekly_actuals`)
-- 1691 cases across 64 test modules; run the full suite without module exclusions
+- 1736 cases across 68 test modules; run the full suite without module exclusions
 - Key test modules: `test_platform.py` (85 tests), `test_sku_mapping.py` (81), `test_ai_*.py` (73), `test_forecast_explainability.py` (59), `test_intermittent_demand.py` (55), `test_observability.py` (41), `test_file_classifier.py` (26), `test_file_merger.py` (20)
 - Focused forecast-intent coverage: `test_forecast_intent.py` (108 real ASGI cases),
   plus frontend `e2e/pipeline-execution.test.tsx` and `e2e/data-onboarding-state.test.tsx`
   (21 handoff/state cases). These require only core/API and existing frontend test dependencies.
+- Run safety: `test_run_store.py`, `test_run_artifacts.py`,
+  `test_run_store_process.py` and `test_run_cli.py` cover publication faults on
+  both sides of the marker, exact/legacy/auth/path contracts, actual multiprocess
+  completion races, owned-process interruption/restart, isolated restore and
+  explicit root precedence. Required Linux/Windows CI jobs do not skip these.
+  `e2e/run-selection.test.tsx` and the private production Playwright case exercise
+  exact older-run values/config, stale response isolation and no POST retries.
 - Process safety: `test_process_execution.py` has five real subprocess cases,
   including the ASGI backtest path, configured model/frequency parity, and
   serialization errors. Both production pools use a local `spawn` context, never

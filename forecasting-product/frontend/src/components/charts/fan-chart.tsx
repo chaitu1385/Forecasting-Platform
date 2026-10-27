@@ -7,10 +7,10 @@ const Plot = dynamic(() => import("react-plotly.js"), { ssr: false });
 
 interface FanChartPoint {
   week: string;
-  forecast: number;
-  forecast_p10?: number;
-  forecast_p50?: number;
-  forecast_p90?: number;
+  forecast: number | null;
+  forecast_p10?: number | null;
+  forecast_p50?: number | null;
+  forecast_p90?: number | null;
   actual?: number;
 }
 

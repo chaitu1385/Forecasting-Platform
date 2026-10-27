@@ -42,6 +42,10 @@ class SeriesBuilder:
         self._last_quality_report = None
         self._last_regressor_screen_report = None
 
+    def normalized_input_snapshot(self, actuals: pl.DataFrame) -> pl.DataFrame:
+        """Preserve raw values and add only the configured composite series ID."""
+        return self._ensure_series_id(actuals.clone(), self.config.forecast.series_id_column)
+
     def build(
         self,
         actuals: pl.DataFrame,
@@ -80,6 +84,7 @@ class SeriesBuilder:
 
         # Step 0: Schema validation (before anything else)
         dq = self.config.data_quality
+        self._last_cleansing_report = None
         self._last_validation_report = None
         if dq.validation.enabled:
             from ..data.validator import DataValidator

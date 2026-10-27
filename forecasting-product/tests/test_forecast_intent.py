@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from src.api.app import create_app
 from src.config.schema import PlatformConfig
 from src.forecasting.intermittent import CrostonForecaster
-from src.pipeline.manifest import read_manifest
+from src.pipeline.run_store import RunStore
 
 pytestmark = pytest.mark.integration
 
@@ -102,10 +102,13 @@ def test_backtest_winner_and_five_period_plan_are_preserved(client):
     assert backtest.json()["execution"]["model_source"] == "backtest"
     assert backtest.json()["execution"]["config"]["backtest_val_periods"] == 4
 
-    stored = list((client.app.state.data_dir / "forecasts" / "retail").glob("forecast_*.parquet"))
+    store = RunStore(client.app.state.runs_dir)
+    stored = store.list("retail", "forecast")
     assert len(stored) == 1
-    assert pl.read_parquet(stored[0]).height == 5
-    manifest = read_manifest(str(stored[0].with_name(f"{stored[0].stem}_manifest.json")))
+    assert store.frame("retail", body["run_id"], "forecast").height == 5
+    manifest = store.get("retail", body["run_id"], "forecast")
+    assert manifest.run_id == stored[0].run_id
+    assert body["run_id"] != backtest.json()["run_id"]
     assert manifest.champion_model_id == winner
     assert manifest.forecast_horizon == 5
 

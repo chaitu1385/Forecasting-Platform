@@ -26,17 +26,43 @@ class BIExporter:
         bi_exports/
         ├── forecast_vs_actual/
         │   └── lob=surface/channel=consumer/
-        │       └── <run_date>.parquet
+        │       └── <run_date>_<export_id>.parquet
         ├── model_leaderboard/
         │   └── lob=surface/
-        │       └── <run_date>.parquet
+        │       └── <run_date>_<export_id>.parquet
         └── bias_report/
             └── lob=surface/
-                └── <run_date>.parquet
+                └── <run_date>_<export_id>.parquet
     """
 
     def __init__(self, base_path: str = "data/bi_exports/"):
-        self.base_path = Path(base_path)
+        self.base_path = Path(base_path).resolve()
+
+    def _write_export(
+        self, frame: pl.DataFrame, report: str, lob: str, run_date: Optional[str],
+        run_id: Optional[str] = None, actuals_run_id: Optional[str] = None,
+    ) -> Path:
+        from datetime import date
+
+        from ..pipeline.run_store import (
+            atomic_frame_append,
+            checked_child,
+            validate_lob,
+            validate_run_id,
+        )
+
+        validate_lob(lob)
+        if run_id is not None:
+            validate_run_id(run_id)
+        if actuals_run_id is not None:
+            validate_run_id(actuals_run_id)
+        day = date.fromisoformat(run_date).isoformat() if run_date else date.today().isoformat()
+        frame = frame.with_columns(
+            pl.lit(run_id, dtype=pl.Utf8).alias("source_run_id"),
+            pl.lit(actuals_run_id, dtype=pl.Utf8).alias("actuals_run_id"),
+        )
+        directory = checked_child(self.base_path, report, f"lob={lob}")
+        return atomic_frame_append(frame, directory, prefix=day)
 
     def export_forecast_vs_actual(
         self,
@@ -46,6 +72,8 @@ class BIExporter:
         time_col: str = "week",
         id_col: str = "series_id",
         run_date: Optional[str] = None,
+        run_id: Optional[str] = None,
+        actuals_run_id: Optional[str] = None,
     ) -> Path:
         """
         Export a forecast-vs-actual comparison table.
@@ -53,17 +81,11 @@ class BIExporter:
         Joins forecasts and actuals, adds error columns, and writes
         as Parquet partitioned by LOB.
         """
-        from datetime import date as dt_date
-        run_date = run_date or dt_date.today().isoformat()
-
         merged = forecasts.join(
             actuals, on=[id_col, time_col], how="inner", suffix="_actual"
         )
 
-        out_dir = self.base_path / "forecast_vs_actual" / f"lob={lob}"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / f"{run_date}.parquet"
-        merged.write_parquet(str(path))
+        path = self._write_export(merged, "forecast_vs_actual", lob, run_date, run_id, actuals_run_id)
 
         logger.info("BI export: forecast_vs_actual → %s", path)
         return path
@@ -74,17 +96,11 @@ class BIExporter:
         lob: str,
         run_type: str = "backtest",
         run_date: Optional[str] = None,
+        run_id: Optional[str] = None,
     ) -> Path:
         """Export model leaderboard for BI."""
-        from datetime import date as dt_date
-        run_date = run_date or dt_date.today().isoformat()
-
-        board = metric_store.leaderboard(run_type=run_type, lob=lob)
-
-        out_dir = self.base_path / "model_leaderboard" / f"lob={lob}"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / f"{run_date}.parquet"
-        board.write_parquet(str(path))
+        board = metric_store.leaderboard(run_type=run_type, lob=lob, run_id=run_id, latest=True)
+        path = self._write_export(board, "model_leaderboard", lob, run_date, run_id)
 
         logger.info("BI export: model_leaderboard → %s", path)
         return path
@@ -96,12 +112,10 @@ class BIExporter:
         model_id: Optional[str] = None,
         run_type: str = "backtest",
         run_date: Optional[str] = None,
+        run_id: Optional[str] = None,
     ) -> Path:
         """Export per-series bias report for BI."""
-        from datetime import date as dt_date
-        run_date = run_date or dt_date.today().isoformat()
-
-        df = metric_store.read(run_type=run_type, lob=lob, model_id=model_id)
+        df = metric_store.read(run_type=run_type, lob=lob, model_id=model_id, run_id=run_id, latest=True)
         if not df.is_empty():
             bias = (
                 df.group_by("series_id")
@@ -120,10 +134,7 @@ class BIExporter:
                 "total_volume": pl.Float64,
             })
 
-        out_dir = self.base_path / "bias_report" / f"lob={lob}"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / f"{run_date}.parquet"
-        bias.write_parquet(str(path))
+        path = self._write_export(bias, "bias_report", lob, run_date, run_id)
 
         logger.info("BI export: bias_report → %s", path)
         return path
@@ -134,6 +145,7 @@ class BIExporter:
         fva_detail: pl.DataFrame,
         lob: str,
         run_date: Optional[str] = None,
+        run_id: Optional[str] = None,
     ) -> dict:
         """
         Export FVA analysis tables for BI consumption.
@@ -153,25 +165,17 @@ class BIExporter:
         -------
         Dict with paths to written Parquet files.
         """
-        from datetime import date as dt_date
-        run_date = run_date or dt_date.today().isoformat()
         paths = {}
 
         # FVA summary
         if not fva_summary.is_empty():
-            out_dir = self.base_path / "fva_summary" / f"lob={lob}"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            path = out_dir / f"{run_date}.parquet"
-            fva_summary.write_parquet(str(path))
+            path = self._write_export(fva_summary, "fva_summary", lob, run_date, run_id)
             paths["fva_summary"] = path
             logger.info("BI export: fva_summary → %s", path)
 
         # FVA detail
         if not fva_detail.is_empty():
-            out_dir = self.base_path / "fva_detail" / f"lob={lob}"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            path = out_dir / f"{run_date}.parquet"
-            fva_detail.write_parquet(str(path))
+            path = self._write_export(fva_detail, "fva_detail", lob, run_date, run_id)
             paths["fva_detail"] = path
             logger.info("BI export: fva_detail → %s", path)
 

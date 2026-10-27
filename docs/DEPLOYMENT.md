@@ -263,6 +263,100 @@ distributed Spark/Fabric execution paths.
 
 ---
 
+## Immutable Local Runs and Recovery
+
+The local Python/API pipelines publish one immutable bundle per attempt. Set
+`output.runs_path` for a shared authority; this explicit path always wins.
+The API uses `API_RUNS_DIR` / `serve.py --runs-dir` / `create_app(runs_dir=...)`,
+defaulting to `API_DATA_DIR/runs`, and ignores client-uploaded output locations.
+Standard CLI/default deployment uses `data/runs`; `--runs-dir` overrides YAML.
+For a direct pipeline or custom CLI configuration with no explicit run root,
+forecast runs stay under **configured forecast_path/runs**, and backtests under
+**configured metrics_path/runs**. No common ancestor or unrelated cwd root is
+searched. Set the same explicit root on all readers when using custom locations:
+
+```yaml
+output:
+  runs_path: /srv/forecast/runs
+  forecast_path: /srv/forecast/legacy-forecasts
+  metrics_path: /other-volume/legacy-metrics
+```
+
+New metrics and forecasts are inside the run authority, not mirrored into those
+legacy roots. This is one local consistency boundary even when legacy paths are
+on different volumes. `MetricStore(base_path, runs_path=...)` and
+`ForecastAnalytics(metric_store_path=..., runs_path=...)` take the same explicit
+authority; notebook `run_id` filters refer to the selected record scope.
+
+### Visibility and failure boundaries
+
+`runs/<lob>/<UUID32>/` is exclusively reserved. Inputs, prepared series, safe
+configuration, validation, model/version/source metadata and outputs are written,
+closed, fsynced and hashed before the candidate manifest is hard-linked, without
+replacement, to the fixed **`manifest.json`** commit marker. Only that marker
+allows discovery. `.attempt.json`, `.manifest.pending.json`, `failure.json` or
+loose Parquet files never constitute a completed run. Directory reuse is rejected.
+No global mutable latest index is required.
+
+The supported profile is a local filesystem supporting atomic same-filesystem
+file hard links; contract jobs exercise Linux local storage and Windows NTFS.
+Unsupported link operations
+fail explicitly; there is no non-atomic fallback. File fsync is required.
+POSIX directory fsync is attempted before and after the marker; Windows does not
+provide this directory-fsync guarantee here. Network shares, FUSE/OneLake/object
+mounts and machine power-loss ACID durability are **not** certified by these tests.
+Keep paths within the operating system's supported path-length limits.
+
+Before commit, any validation, snapshot, serialization or I/O error leaves no
+visible completed run and never changes older artifacts. Incomplete directories
+may retain bounded failure diagnostics for the operator. After a successful link,
+a lost receipt, directory-fsync error or process/HTTP failure can leave a valid
+committed run: the API returns an explicit `committed`/`uncertain` outcome and run
+ID where it can still respond. It never deletes that committed data or says
+"nothing published." Inspect the exact ID before repeating work. Client retries
+are **new attempts**, not exactly-once/idempotent operations; the frontend does
+not automatically retry pipeline writes.
+
+Latest means greatest **attempt-start UTC timestamp, then run ID** among committed
+runs of the requested LOB/type. A slow older attempt cannot displace a newer one
+when it finishes late. This assumes a consistent single-host clock, not a
+distributed ordering service. Exact ID lookup is unaffected by latest selection.
+Corrupt members, identity mismatches and unsupported schema versions raise explicit
+integrity diagnostics; they do not silently select an older success.
+
+### Compatibility and offline backup
+
+Existing date-named forecasts, both historical sidecar naming patterns, and
+legacy metric partitions remain readable without modification. They are labelled
+legacy/unverified and do not receive invented run IDs or input lineage. New
+committed runs take precedence for default latest; `legacy=true` explicitly
+selects old forecast/history files. Spark/Fabric Delta upsert/overwrite retains
+its separate contract. Spark's local adapter now appends atomic, uniquely named
+forecast files but remains legacy/unverified, not a complete run bundle.
+Legacy filename origins retain their ordering; multiple atomic appends for one
+origin use file modification time and filename as tie-breaks, not an invented
+trusted attempt identity. Derived BI files retain full `source_run_id` and
+`actuals_run_id` columns (null when unbound), rather than duplicating several IDs
+in a potentially overlong filename.
+No managed Delta transaction or schema migration is implied or tested here.
+
+For inspection, use the read-only CLI from the repository root:
+
+```bash
+python forecasting-product/scripts/inspect_runs.py --runs-dir /srv/forecast/runs --lob retail
+python forecasting-product/scripts/inspect_runs.py --runs-dir /srv/forecast/runs --lob retail --run-id <UUID32> --config
+```
+
+For a backup, quiesce writers and copy the complete run root to a **new** protected
+backup location, preserving all files. Restore to a new isolated root, run the
+inspection command there to verify every manifest/member checksum, and compare
+the expected IDs before deliberately reconfiguring the API. Isolated copy/restore
+and exact-run readback are regression-tested; no real deployment data is reset.
+Retain the original during recovery. Never clean directories by age alone: a
+markerless directory may be an active writer. Stop/identify the owner before any
+operator-approved cleanup. There is no automatic purge, repair or destructive
+legacy migration.
+
 ## Authentication Setup
 
 The factory, `serve.py`, and container entrypoint share one fail-closed contract.

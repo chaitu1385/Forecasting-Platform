@@ -105,13 +105,14 @@ src/components/
 
 ## API Client
 
-The centralized API client (`src/lib/api-client.ts`) provides typed methods for all 41 backend endpoints.
+The centralized API client (`src/lib/api-client.ts`) provides typed methods for the backend endpoints.
 
 **Features:**
 - Verified JWT injection from per-tab memory, never persistent browser storage
 - Server-verified expiry, logout/401 cache clearing, and stale-session response rejection
-- Retry logic: 3 retries with exponential backoff (1s, 2s, 4s)
-- Retryable status codes: 502, 503, 504, 429
+- Read retry logic: 3 retries with exponential backoff (1s, 2s, 4s)
+- Read retryable status codes: 502, 503, 504, 429; never retry authentication failures
+- Mutating requests are not automatically retried after ambiguous network/HTTP errors
 - FormData handling for file uploads (auto Content-Type boundary)
 - Custom `ApiError` class with HTTP status code
 
@@ -160,6 +161,26 @@ the effective model, horizon and frequency; both results expose an expandable,
 allowlisted settings summary. Configured paths, webhook addresses, AI credentials,
 and arbitrary metadata are not included. Contract and state regressions live in
 `e2e/pipeline-execution.test.tsx` and `e2e/data-onboarding-state.test.tsx`.
+
+### Exact Run Selection
+
+The run-list, forecast, history and saved-config queries resolve the shared run
+authority. Query keys include LOB and run selection.
+The Forecast Viewer lists complete runs, displays identity/input/config hashes,
+and shows the selected run's data and safe configuration. Response identities
+are checked so a wrongly substituted latest result is an explicit error.
+The data-table expansion remains open across selection changes; changing LOB
+clears selection. The AI panel is keyed to LOB/run/series and receives the same
+selector. Explicit legacy mode is labelled unknown, never assigned a new ID.
+
+`PipelineRunResponse` now also requires `run_id`, `run_type` and safe retrieval
+`links`; a successful result panel shows the committed ID. API numeric NaN/Inf
+values are JSON null and display as missing, not fabricated zero. No scientific
+metric formula or stored numeric artifact is changed by this transport rule.
+Six `e2e/run-selection.test.tsx` cases cover prior values/config, LOB changes,
+stale requests, mismatched identities and write retry behavior. The private
+production Playwright flow selects real earlier values (10 rather than latest
+20) and saved config after token verification, with credential capture disabled.
 
 ### Isolated Real-API Regression
 

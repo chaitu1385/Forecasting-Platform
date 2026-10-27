@@ -36,12 +36,12 @@ export interface HealthResponse {
 export interface ForecastPoint {
   series_id: string;
   week: string;
-  forecast: number;
+  forecast: number | null;
   model?: string;
   lob?: string;
-  forecast_p10?: number;
-  forecast_p50?: number;
-  forecast_p90?: number;
+  forecast_p10?: number | null;
+  forecast_p50?: number | null;
+  forecast_p90?: number | null;
 }
 
 export interface ForecastResponse {
@@ -49,14 +49,18 @@ export interface ForecastResponse {
   series_count: number;
   forecast_origin?: string;
   points: ForecastPoint[];
+  run_id?: string | null;
+  artifact_source?: "committed" | "legacy";
+  config_hash?: string | null;
+  input_data_hash?: string | null;
 }
 
 // ── Metrics / Leaderboard ────────────────────────────────────────────────────
 
 export interface LeaderboardEntry {
   model: string;
-  wmape: number;
-  normalized_bias: number;
+  wmape: number | null;
+  normalized_bias: number | null;
   rank: number;
   n_series: number;
 }
@@ -65,6 +69,8 @@ export interface LeaderboardResponse {
   lob: string;
   run_type: string;
   entries: LeaderboardEntry[];
+  run_id?: string | null;
+  artifact_source?: "committed" | "legacy";
 }
 
 // ── Drift ────────────────────────────────────────────────────────────────────
@@ -113,6 +119,8 @@ export interface AnalysisResponse {
 export interface NLQueryRequest {
   series_id: string;
   question: string;
+  run_id?: string;
+  legacy?: boolean;
   lob: string;
 }
 
@@ -217,10 +225,13 @@ export interface SeriesListResponse {
 
 export interface SeriesHistoryPoint {
   week: string;
-  value: number;
+  value: number | null;
 }
 
 export interface SeriesHistoryResponse {
+  run_id?: string | null;
+  artifact_source?: "committed" | "legacy";
+  input_stage?: "input" | "prepared" | "unknown";
   series_id: string;
   lob: string;
   points: SeriesHistoryPoint[];
@@ -372,6 +383,9 @@ export interface PipelineExecutionSettings {
 export interface PipelineRunResponse {
   lob: string;
   status: string;
+  run_id: string;
+  run_type: "forecast" | "backtest";
+  links: RunLinks;
   execution: PipelineExecutionSettings;
   champion_model?: string;
   best_wmape?: number | null;
@@ -386,7 +400,10 @@ export interface PipelineRunResponse {
 }
 
 export interface ManifestItem {
-  run_id: string;
+  run_id: string | null;
+  run_type?: "forecast" | "backtest" | "unknown";
+  artifact_source?: "committed" | "legacy";
+  lineage_status?: "verified_bundle" | "unknown";
   timestamp: string;
   lob: string;
   series_count: number;
@@ -394,10 +411,40 @@ export interface ManifestItem {
   backtest_wmape?: number;
   forecast_horizon: number;
   forecast_rows: number;
-  validation_passed: boolean;
+  validation_passed: boolean | null;
   validation_warnings: number;
   cleansing_applied: boolean;
   outliers_clipped: number;
+}
+
+export interface RunLinks {
+  metadata: string;
+  config: string;
+  input_lineage: string;
+  forecast?: string | null;
+  leaderboard?: string | null;
+}
+
+export interface CommittedRun extends ManifestItem {
+  run_id: string;
+  run_type: "forecast" | "backtest";
+  artifact_source: "committed";
+  input_data_hash: string;
+  config_hash: string;
+  links: RunLinks;
+}
+
+export interface RunListResponse {
+  count: number;
+  runs: CommittedRun[];
+}
+
+export interface RunConfigResponse {
+  run_id: string;
+  lob: string;
+  run_type: "forecast" | "backtest";
+  config_hash: string;
+  configuration: Record<string, unknown>;
 }
 
 export interface ManifestListResponse {
@@ -406,13 +453,13 @@ export interface ManifestListResponse {
 }
 
 export interface CostItem {
-  run_id: string;
+  run_id: string | null;
   timestamp: string;
   lob: string;
   series_count: number;
   champion_model: string;
-  total_seconds: number;
-  seconds_per_series?: number;
+  total_seconds: number | null;
+  seconds_per_series?: number | null;
 }
 
 export interface CostListResponse {
@@ -533,9 +580,9 @@ export interface LineageEntry {
   n_series: number;
   horizon_weeks: number;
   selection_strategy: string;
-  run_id: string;
+  run_id: string | null;
   notes: string;
-  user_id: string;
+  user_id: string | null;
 }
 
 export interface LineageResponse {
@@ -547,6 +594,9 @@ export interface BIExportResponse {
   report_type: string;
   export_path: string;
   status: string;
+  run_id?: string | null;
+  actuals_run_id?: string | null;
+  artifact_source?: "committed" | "legacy";
 }
 
 // ── Audit ────────────────────────────────────────────────────────────────────

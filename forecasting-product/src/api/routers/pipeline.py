@@ -6,6 +6,8 @@ import inspect
 import io
 import json
 import logging
+import math
+from dataclasses import asdict
 from typing import Literal, Optional
 
 import polars as pl
@@ -17,12 +19,37 @@ from ...config.loader import parse_config_yaml
 from ...config.schema import PlatformConfig
 from ...forecasting.registry import registry
 from ...metrics.definitions import CONTEXT_METRICS, METRIC_REGISTRY
-from ..deps import validate_path_param, validate_upload_size
+from ..deps import raise_run_error, run_links, run_reader, validate_path_param, validate_upload_size
 from ..schemas import EffectivePipelineConfig, PipelineExecutionSettings, PipelineRunResponse
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
+
+
+def _transport_value(value):
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _transport_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_transport_value(item) for item in value]
+    return value
+
+
+def _committed_response(summary: dict) -> PipelineRunResponse:
+    """A response-construction failure must not pretend the committed run vanished."""
+    from fastapi.encoders import jsonable_encoder
+
+    try:
+        response = PipelineRunResponse(**_transport_value(summary))
+        json.dumps(jsonable_encoder(response), allow_nan=False)
+    except (ValueError, TypeError, UnicodeDecodeError) as exc:
+        raise HTTPException(409, detail={
+            "code": "committed_response_unavailable", "run_id": summary["run_id"], "outcome": "committed",
+            "links": jsonable_encoder(summary["links"]),
+        }) from exc
+    return response
 
 
 def _can_run_standalone(model_id: Optional[str], frequency: str) -> bool:
@@ -90,8 +117,9 @@ async def _load_run_config(
         )
 
     config.lob = lob
-    config.output.metrics_path = str(request.app.state.data_dir / "metrics")
+    config.output.metrics_path = str(request.app.state.metrics_dir)
     config.output.forecast_path = str(request.app.state.data_dir / "forecasts")
+    config.output.runs_path = str(request.app.state.runs_dir)
     return config
 
 
@@ -148,7 +176,11 @@ async def run_backtest(
     user: User = Depends(require_permission(Permission.RUN_BACKTEST)),
 ):
     """Run the backtest pipeline on uploaded data."""
+    from fastapi.encoders import jsonable_encoder
+
     from ...pipeline.backtest import BacktestPipeline
+    from ...pipeline.run_store import RunPublicationError
+    from ...pipeline.validation_step import ValidationError
 
     validate_path_param(lob, "lob")
     config = await _load_run_config(request, config_file, lob)
@@ -163,15 +195,28 @@ async def run_backtest(
         raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}")
 
     try:
-        pipeline = BacktestPipeline(config=config)
+        pipeline = BacktestPipeline(config=config, source_kind="api")
         results = pipeline.run(actuals=df)
-    except (ValueError, RuntimeError, KeyError) as exc:
-        raise HTTPException(status_code=500, detail=f"Backtest failed: {exc}")
+    except RunPublicationError as exc:
+        raise HTTPException(
+            409 if exc.outcome in {"committed", "uncertain"} else 500,
+            detail={"code": "run_publication_error", "run_id": exc.run_id, "outcome": exc.outcome,
+                    "links": jsonable_encoder(run_links(lob, exc.run_id, "backtest"))},
+        ) from exc
+    except (ValidationError, ValueError, RuntimeError, KeyError, OSError) as exc:
+        raise HTTPException(500, detail={
+            "code": "backtest_failed", "run_id": pipeline.context.run_id, "outcome": "not_committed",
+        }) from exc
+    if pipeline.last_run is None:
+        raise HTTPException(500, detail="Backtest returned without a committed run")
 
     # Summarize results
     summary = {
         "lob": lob,
         "status": "completed",
+        "run_id": pipeline.last_run.run_id,
+        "run_type": "backtest",
+        "links": run_links(lob, pipeline.last_run.run_id, "backtest"),
     }
     selected_model = None
 
@@ -220,7 +265,7 @@ async def run_backtest(
     if _can_run_standalone(selected_model, config.forecast.frequency):
         summary["champion_model"] = selected_model
     summary["execution"] = _execution_settings(config, config_file, selected_model, "backtest")
-    return PipelineRunResponse(**summary)
+    return _committed_response(summary)
 
 
 @router.post("/forecast", response_model=PipelineRunResponse, response_model_exclude_unset=True)
@@ -234,7 +279,11 @@ async def run_forecast(
     user: User = Depends(require_permission(Permission.RUN_PIPELINE)),
 ):
     """Run the forecast pipeline on uploaded data."""
+    from fastapi.encoders import jsonable_encoder
+
     from ...pipeline.forecast import ForecastPipeline
+    from ...pipeline.run_store import RunPublicationError
+    from ...pipeline.validation_step import ValidationError
 
     validate_path_param(lob, "lob")
     config = await _load_run_config(request, config_file, lob)
@@ -266,17 +315,30 @@ async def run_forecast(
         raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}")
 
     try:
-        pipeline = ForecastPipeline(config=config)
+        pipeline = ForecastPipeline(config=config, source_kind="api")
         result = pipeline.run(
             actuals=df,
             champion_model=effective_model,
         )
-    except (ValueError, RuntimeError, KeyError) as exc:
-        raise HTTPException(status_code=500, detail=f"Forecast pipeline failed: {exc}")
+    except RunPublicationError as exc:
+        raise HTTPException(
+            409 if exc.outcome in {"committed", "uncertain"} else 500,
+            detail={"code": "run_publication_error", "run_id": exc.run_id, "outcome": exc.outcome,
+                    "links": jsonable_encoder(run_links(lob, exc.run_id, "forecast"))},
+        ) from exc
+    except (ValidationError, ValueError, RuntimeError, KeyError, OSError) as exc:
+        raise HTTPException(500, detail={
+            "code": "forecast_failed", "run_id": pipeline.context.run_id, "outcome": "not_committed",
+        }) from exc
+    if pipeline.last_run is None:
+        raise HTTPException(500, detail="Forecast returned without a committed run")
 
     summary = {
         "lob": lob,
         "status": "completed",
+        "run_id": pipeline.last_run.run_id,
+        "run_type": "forecast",
+        "links": run_links(lob, pipeline.last_run.run_id, "forecast"),
         "model_id": effective_model,
         "horizon": config.forecast.horizon_periods,
         "execution": execution,
@@ -298,7 +360,104 @@ async def run_forecast(
         summary["series_count"] = forecast_df[id_col].n_unique() if id_col in forecast_df.columns else 0
         summary["forecast_preview"] = forecast_df.head(100).to_dicts()
 
-    return PipelineRunResponse(**summary)
+    return _committed_response(summary)
+
+
+def _summary(manifest, *, committed: bool) -> dict:
+    return {
+        "run_id": manifest.run_id if committed else None,
+        "run_type": manifest.run_type if committed else "unknown",
+        "artifact_source": "committed" if committed else "legacy",
+        "lineage_status": "verified_bundle" if committed else "unknown",
+        "timestamp": manifest.started_at if committed else manifest.timestamp,
+        "lob": manifest.lob,
+        "series_count": manifest.input_series_count,
+        "champion_model": manifest.champion_model_id,
+        "backtest_wmape": manifest.backtest_wmape,
+        "forecast_horizon": manifest.forecast_horizon,
+        "forecast_rows": manifest.forecast_row_count,
+        "validation_passed": manifest.validation_passed if committed or manifest.validation_applied else None,
+        "validation_warnings": manifest.validation_warnings,
+        "cleansing_applied": manifest.cleansing_applied,
+        "outliers_clipped": manifest.outliers_clipped,
+        "post_validation_grade": manifest.post_validation_grade,
+        "post_validation_score": manifest.post_validation_score,
+        "input_data_hash": manifest.input_data_hash if committed else None,
+        "config_hash": manifest.config_hash if committed else None,
+        "links": run_links(manifest.lob, manifest.run_id, manifest.run_type) if committed else None,
+    }
+
+
+@router.get("/runs")
+def list_runs(
+    request: Request,
+    lob: Optional[str] = Query(None),
+    run_type: Optional[Literal["forecast", "backtest"]] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    user: User = Depends(require_permission(Permission.VIEW_METRICS)),
+):
+    """List complete verified bundles; temporary/failed directories are not runs."""
+    from ...pipeline.run_store import RunIntegrityError
+
+    try:
+        manifests = run_reader(request).store.list(lob=lob, run_type=run_type)[:limit]
+    except (RunIntegrityError, ValueError, OSError) as exc:
+        raise_run_error(exc)
+    return {"count": len(manifests), "runs": [_summary(item, committed=True) for item in manifests]}
+
+
+@router.get("/runs/{lob}/{run_id}")
+def get_run(
+    lob: str, run_id: str, request: Request,
+    user: User = Depends(require_permission(Permission.VIEW_METRICS)),
+):
+    """Retrieve safe provenance for this exact LOB/run identity."""
+    from ...pipeline.run_store import RunIntegrityError, RunNotFoundError
+
+    try:
+        manifest = run_reader(request).store.get(lob, run_id)
+    except (RunIntegrityError, RunNotFoundError, ValueError, OSError) as exc:
+        raise_run_error(exc)
+    return {**asdict(manifest), "links": run_links(lob, run_id, manifest.run_type)}
+
+
+@router.get("/runs/{lob}/{run_id}/config")
+def get_run_config(
+    lob: str, run_id: str, request: Request,
+    user: User = Depends(require_permission(Permission.VIEW_METRICS)),
+):
+    """Retrieve the canonical safe settings, not the original secret-bearing YAML."""
+    from ...pipeline.run_store import RunIntegrityError, RunNotFoundError
+
+    try:
+        store = run_reader(request).store
+        manifest = store.get(lob, run_id)
+        configuration = store.json_member(lob, run_id, "config")
+    except (RunIntegrityError, RunNotFoundError, ValueError, OSError) as exc:
+        raise_run_error(exc)
+    return {"run_id": run_id, "lob": lob, "run_type": manifest.run_type,
+            "config_hash": manifest.config_hash, "configuration": configuration}
+
+
+@router.get("/runs/{lob}/{run_id}/input")
+def get_run_input_lineage(
+    lob: str, run_id: str, request: Request,
+    user: User = Depends(require_permission(Permission.VIEW_FORECASTS)),
+):
+    """Expose verified input identity/schema; values use the protected history API."""
+    from ...pipeline.run_store import RunIntegrityError, RunNotFoundError
+
+    try:
+        manifest = run_reader(request).store.get(lob, run_id)
+    except (RunIntegrityError, RunNotFoundError, ValueError, OSError) as exc:
+        raise_run_error(exc)
+    return {
+        "run_id": run_id, "lob": lob, "run_type": manifest.run_type,
+        "input_snapshot_stage": manifest.input_snapshot_stage,
+        "input": manifest.artifacts["input"], "prepared": manifest.artifacts["prepared"],
+        "series_url": f"/series/{lob}?run_id={run_id}",
+        "reproducibility": manifest.reproducibility,
+    }
 
 
 @router.get("/manifests")
@@ -308,47 +467,19 @@ def list_manifests(
     limit: int = Query(20, ge=1, le=100),
     user: User = Depends(require_permission(Permission.VIEW_METRICS)),
 ):
-    """List recent pipeline run manifests."""
-    from ...pipeline.manifest import read_manifest
+    """List committed bundles first, then explicitly unverified legacy sidecars."""
+    from ...pipeline.run_store import RunIntegrityError
 
-    if lob:
-        validate_path_param(lob, "lob")
-    manifests_dir = request.app.state.data_dir / "forecasts"
-    if not manifests_dir.exists():
-        return {"count": 0, "manifests": []}
-
-    manifest_files = []
-    search_dirs = [manifests_dir / lob] if lob else list(manifests_dir.iterdir())
-
-    for d in search_dirs:
-        if d.is_dir():
-            manifest_files.extend(sorted(d.glob("manifest_*.json"), reverse=True))
-
-    manifest_files = sorted(manifest_files, key=lambda f: f.stat().st_mtime, reverse=True)[:limit]
-
-    results = []
-    for mf in manifest_files:
-        try:
-            manifest = read_manifest(str(mf))
-            results.append({
-                "run_id": manifest.run_id,
-                "timestamp": manifest.timestamp,
-                "lob": manifest.lob,
-                "series_count": manifest.input_series_count,
-                "champion_model": manifest.champion_model_id,
-                "backtest_wmape": manifest.backtest_wmape,
-                "forecast_horizon": manifest.forecast_horizon,
-                "forecast_rows": manifest.forecast_row_count,
-                "validation_passed": manifest.validation_passed,
-                "validation_warnings": manifest.validation_warnings,
-                "cleansing_applied": manifest.cleansing_applied,
-                "outliers_clipped": manifest.outliers_clipped,
-                "post_validation_grade": getattr(manifest, "post_validation_grade", None),
-                "post_validation_score": getattr(manifest, "post_validation_score", None),
-            })
-        except (FileNotFoundError, json.JSONDecodeError, ValueError, OSError) as exc:
-            logger.warning(f"Failed to read manifest {mf}: {exc}")
-
+    try:
+        reader = run_reader(request)
+        current = reader.store.list(lob=lob)
+        legacy = reader.legacy_manifests(lob=lob)
+        results = [
+            *[_summary(item, committed=True) for item in current],
+            *[_summary(item, committed=False) for item in legacy],
+        ][:limit]
+    except (RunIntegrityError, ValueError, OSError) as exc:
+        raise_run_error(exc)
     return {"count": len(results), "manifests": results}
 
 
@@ -359,43 +490,32 @@ def get_costs(
     limit: int = Query(20, ge=1, le=100),
     user: User = Depends(require_permission(Permission.VIEW_METRICS)),
 ):
-    """Get cost tracking data from pipeline manifests."""
-    from ...pipeline.manifest import read_manifest
+    """Read timings from the same authoritative discovery rules as run listing."""
+    from ...pipeline.run_store import RunIntegrityError
 
-    if lob:
-        validate_path_param(lob, "lob")
-    manifests_dir = request.app.state.data_dir / "forecasts"
-    if not manifests_dir.exists():
-        return {"count": 0, "costs": []}
-
-    manifest_files = []
-    search_dirs = [manifests_dir / lob] if lob else list(manifests_dir.iterdir())
-
-    for d in search_dirs:
-        if d.is_dir():
-            manifest_files.extend(sorted(d.glob("manifest_*.json"), reverse=True))
-
-    manifest_files = sorted(manifest_files, key=lambda f: f.stat().st_mtime, reverse=True)[:limit]
-
-    costs = []
-    for mf in manifest_files:
-        try:
-            manifest = read_manifest(str(mf))
-            series_count = manifest.input_series_count or 1
-            # Try to read timing from manifest (may not always be present)
-            total_seconds = getattr(manifest, "total_seconds", 0.0)
+    try:
+        reader = run_reader(request)
+        manifests = [
+            *[(item, True) for item in reader.store.list(lob=lob)],
+            *[(item, False) for item in reader.legacy_manifests(lob=lob)],
+        ][:limit]
+        costs = []
+        for manifest, committed in manifests:
+            seconds = manifest.total_seconds if committed else None
             costs.append({
-                "run_id": manifest.run_id,
-                "timestamp": manifest.timestamp,
-                "lob": manifest.lob,
-                "series_count": series_count,
+                "run_id": manifest.run_id if committed else None,
+                "artifact_source": "committed" if committed else "legacy",
+                "timestamp": manifest.started_at if committed else manifest.timestamp,
+                "lob": manifest.lob, "series_count": manifest.input_series_count,
                 "champion_model": manifest.champion_model_id,
-                "total_seconds": total_seconds,
-                "seconds_per_series": round(total_seconds / series_count, 3) if total_seconds else None,
+                "total_seconds": seconds,
+                "seconds_per_series": (
+                    round(seconds / manifest.input_series_count, 3)
+                    if seconds is not None and manifest.input_series_count else None
+                ),
             })
-        except (FileNotFoundError, json.JSONDecodeError, ValueError, OSError) as exc:
-            logger.warning(f"Failed to read manifest {mf}: {exc}")
-
+    except (RunIntegrityError, ValueError, OSError) as exc:
+        raise_run_error(exc)
     return {"count": len(costs), "costs": costs}
 
 

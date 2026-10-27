@@ -143,7 +143,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 1691 unit + integration tests
+├── tests/                  # 1736 unit + integration cases
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 ├── notebooks/              # Jupyter notebooks for exploration
@@ -391,7 +391,7 @@ Tikhonov regularisation (lambda = 1e-6) applied for numerical stability.
 
 | Class | Description |
 |-------|-------------|
-| `BacktestEngine` | Orchestrates walk-forward folds; writes per-fold, per-series metrics to MetricStore |
+| `BacktestEngine` | Orchestrates walk-forward folds; pipeline callers defer persistence until validation and bundle commit |
 | `WalkForwardCV` | Expanding-window fold generator; configurable `n_folds`, `horizon_weeks`, `step_weeks` |
 | `CVFold` | Dataclass for one fold: train indices, test indices, fold number |
 | `ChampionSelector` | Ranks models by WMAPE; promotes lowest-error model; `compute_ensemble_weights()` |
@@ -400,7 +400,7 @@ Tikhonov regularisation (lambda = 1e-6) applied for numerical stability.
 
 | Class/Function | Description |
 |----------------|-------------|
-| `MetricStore` | Append-only Parquet store; `write()`, `read()`, `leaderboard()`, `accuracy_over_time()` |
+| `MetricStore` | Unique atomic standalone appends, committed-bundle metrics and explicit legacy adapters; run-scoped reads |
 | `ForecastDriftDetector` | Detects accuracy drift, bias drift, and volume anomalies per series |
 | `DriftAlert` | `series_id`, `metric`, `severity` (warning/critical), `current_value`, `baseline_value` |
 | `DriftConfig` | `baseline_weeks`, `recent_weeks` configuration |
@@ -614,12 +614,23 @@ PySpark wrappers for large-scale runs on Fabric/Databricks:
 
 | Class | Description |
 |-------|-------------|
-| `BacktestPipeline` | Wires `SeriesBuilder -> BacktestEngine -> MetricStore -> ChampionSelector` |
-| `ForecastPipeline` | Wires `SeriesBuilder -> champion model -> Reconciler -> OverrideStore -> BIExporter` |
-| `PipelineManifest` | Provenance sidecar for each forecast run: input data hash, cleansing/validation/screen summaries, config hash, champion model, output metadata |
+| `BacktestPipeline` | Current-run evaluation/selection/validation, then one immutable input/config/metric bundle |
+| `ForecastPipeline` | Prepared series, selected model/constraints, validation, then one immutable forecast bundle |
+| `RunStore` | Exclusive UUID directories, no-replace manifest commit marker, checksums, exact/latest reads and explicit uncertain outcomes |
+| `RunReader` | Shared committed resolver and read-only legacy forecast/history/sidecar compatibility |
+| `PipelineManifest` | Versioned provenance: raw/prepared inputs, safe canonical settings, models/source, validation and artifact checksums |
 | `build_manifest()` | Collects provenance from SeriesBuilder reports into a single manifest |
-| `write_manifest()` | Writes manifest as JSON sidecar next to the forecast Parquet file |
+| `write_manifest()` | Atomic no-overwrite legacy sidecar helper; not the versioned run publisher |
 | `read_manifest()` | Loads manifest from JSON file |
+
+Use an explicit `output.runs_path` / server `API_RUNS_DIR` to share one local
+authority across API, CLI and notebook readers. New successful runs never
+overwrite a date/second-named predecessor. Exact run ID selection survives
+service restart; default latest follows attempt-start UTC with ID tie-break.
+The Forecast Viewer lists prior runs, shows their exact values and stored
+configuration, and labels legacy provenance unknown. Read the
+[storage and recovery contract](docs/DEPLOYMENT.md#immutable-local-runs-and-recovery):
+local hard-link visibility is not a distributed/OneLake or power-loss ACID claim.
 
 ### `src/config/` — Configuration Schema & Loader
 
@@ -983,7 +994,7 @@ POLARS_MAX_THREADS=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1 \
   python -m pytest -v --timeout=180 --timeout-method=thread \
     -o faulthandler_timeout=60
-# 1691 cases across 64 test modules; no test module exclusions
+# 1736 cases across 68 test modules; no test module exclusions
 ```
 
 On Windows, set the same process environment variables with PowerShell

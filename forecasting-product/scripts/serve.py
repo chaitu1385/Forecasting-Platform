@@ -43,6 +43,8 @@ def parse_args():
                    help="Root data directory for forecasts")
     p.add_argument("--metrics-dir", default=os.environ.get("API_METRICS_DIR"),
                    help="Metrics store directory")
+    p.add_argument("--runs-dir", default=os.environ.get("API_RUNS_DIR"),
+                   help="Shared immutable run authority (default: data-dir/runs)")
     p.add_argument("--demo", action="store_true", help="Explicit unauthenticated local demo; do not use in production")
     p.add_argument("--reload",      action="store_true", help="Enable hot-reload (dev mode)")
     p.add_argument("--workers",     type=int, default=1,
@@ -56,6 +58,11 @@ def main():
     os.environ["API_DATA_DIR"] = str(Path(args.data_dir).resolve())
     os.environ["API_METRICS_DIR"] = str(
         Path(args.metrics_dir).resolve() if args.metrics_dir else Path(os.environ["API_DATA_DIR"]) / "metrics"
+    )
+    if args.runs_dir is not None and (not args.runs_dir.strip() or "://" in args.runs_dir):
+        raise ValueError("--runs-dir must be a nonblank local filesystem path")
+    os.environ["API_RUNS_DIR"] = str(
+        Path(args.runs_dir).resolve() if args.runs_dir else Path(os.environ["API_DATA_DIR"]) / "runs"
     )
     from src.auth.settings import AuthSettings
 

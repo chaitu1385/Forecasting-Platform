@@ -13,9 +13,8 @@ Steps:
 
 import logging
 from datetime import date
-from pathlib import Path
+from threading import Lock
 from typing import Optional, Union
-from uuid import uuid4
 
 import polars as pl
 
@@ -25,6 +24,8 @@ from ..forecasting.registry import registry
 from ..observability.context import PipelineContext
 from ..observability.metrics import MetricsEmitter
 from ..series.builder import SeriesBuilder
+from .manifest import PipelineManifest, build_manifest, model_metadata, runtime_metadata
+from .run_store import RunStore, resolve_run_root, utc_timestamp
 from .validation_step import run_post_validation
 
 logger = logging.getLogger(__name__)
@@ -41,8 +42,15 @@ class ForecastPipeline:
     >>> forecast_df = pipeline.run(actuals_df, champion_model="lgbm_direct")
     """
 
-    def __init__(self, config: PlatformConfig, context: Optional[PipelineContext] = None):
+    def __init__(
+        self, config: PlatformConfig, context: Optional[PipelineContext] = None,
+        source_kind: str = "programmatic",
+    ):
         self.config = config
+        self._parent_context = context
+        if source_kind not in {"programmatic", "api", "cli", "spark-local"}:
+            raise ValueError("Unknown pipeline source kind")
+        self._source_kind = source_kind
         self.context = context or PipelineContext(lob=config.lob)
         self._emitter = MetricsEmitter(
             backend=config.observability.metrics_backend,
@@ -53,6 +61,8 @@ class ForecastPipeline:
         self._conformal_residuals: Optional[pl.DataFrame] = None
         self._last_forecast_path: Optional[str] = None
         self._last_validation_result: Optional[dict] = None
+        self.last_run: Optional[PipelineManifest] = None
+        self._run_lock = Lock()
 
     def set_conformal_residuals(self, residuals: pl.DataFrame) -> None:
         """Set conformal residuals from backtest for interval correction."""
@@ -67,6 +77,48 @@ class ForecastPipeline:
         forecast_origin: Optional[date] = None,
         overrides: Optional[pl.DataFrame] = None,
         external_features: Optional[pl.DataFrame] = None,
+    ) -> pl.DataFrame:
+        """Generate and atomically publish one independent forecast attempt.
+
+        A supplied constructor context is a parent correlation, not an artifact
+        identity. Concurrent reuse of one mutable pipeline instance is rejected.
+        """
+        if not self._run_lock.acquire(blocking=False):
+            raise RuntimeError("This pipeline instance already has a running attempt")
+        try:
+            self.context = PipelineContext(
+                lob=self.config.lob,
+                parent_run_id=self._parent_context.run_id if self._parent_context else None,
+            )
+            self._emitter.set_context(self.context)
+            self._series_builder = SeriesBuilder(self.config)
+            self._last_forecast_path = None
+            self._last_validation_result = None
+            self.last_run = None
+            return self._run(
+                actuals.clone(),
+                champion_model.clone() if isinstance(champion_model, pl.DataFrame) else champion_model,
+                product_master.clone() if product_master is not None else None,
+                mapping_table.clone() if mapping_table is not None else None,
+                forecast_origin,
+                overrides.clone() if overrides is not None else None,
+                external_features.clone() if external_features is not None else None,
+            )
+        except Exception as exc:
+            logger.error("Forecast attempt failed: run_id=%s error_type=%s", self.context.run_id, type(exc).__name__)
+            raise
+        finally:
+            self._run_lock.release()
+
+    def _run(
+        self,
+        actuals: pl.DataFrame,
+        champion_model: Union[str, BaseForecaster, pl.DataFrame],
+        product_master: Optional[pl.DataFrame],
+        mapping_table: Optional[pl.DataFrame],
+        forecast_origin: Optional[date],
+        overrides: Optional[pl.DataFrame],
+        external_features: Optional[pl.DataFrame],
     ) -> pl.DataFrame:
         """
         Generate production forecasts.
@@ -94,8 +146,6 @@ class ForecastPipeline:
         ``forecast_p{q}`` quantile columns if ``config.forecast.quantiles``
         is configured.
         """
-        self._last_forecast_path = None
-        self._last_validation_result = None
         fc = self.config.forecast
         horizon = fc.horizon_weeks
         run_id = self.context.run_id
@@ -128,9 +178,15 @@ class ForecastPipeline:
                 logger.warning("Data quality: %s", w)
 
         # Multi-horizon stitching: champion_model is a DataFrame
+        optional_inputs = {
+            kind: frame for kind, frame in {
+                "product_master": product_master, "mapping_table": mapping_table,
+                "overrides": overrides, "external_features": external_features,
+            }.items() if frame is not None
+        }
         if isinstance(champion_model, pl.DataFrame):
             return self._run_multi_horizon(
-                series, champion_model, forecast_origin
+                actuals, series, champion_model, forecast_origin, optional_inputs,
             )
 
         # Step 2: Resolve forecaster (name → registry lookup, or use directly)
@@ -164,6 +220,7 @@ class ForecastPipeline:
             if er_config.enabled and er_config.future_features_path:
                 from ..data.regressors import load_external_features
                 future_feats = load_external_features(er_config.future_features_path)
+                optional_inputs["future_features"] = future_feats
                 feature_target.set_future_features(
                     future_feats,
                     id_col=fc.series_id_column,
@@ -211,26 +268,22 @@ class ForecastPipeline:
                 model_id=base_model_name if isinstance(champion_model, str) else None,
             )
             logger.info("Applied conformal prediction correction to intervals")
+            optional_inputs["conformal_residuals"] = self._conformal_residuals
 
-        # Step 5: Validate and write to output
-        forecast = self._write_forecast(forecast, forecast_origin)
-
-        # Step 6: Write provenance manifest
-        self._write_manifest(
-            actuals=actuals,
-            champion_model_id=(
-                base_model_name
-            ),
-            forecast=forecast,
+        self._publish(
+            actuals, series, forecast, base_model_name, forecast_origin,
+            [model_metadata(forecaster, fc.frequency, horizon)], optional_inputs,
         )
 
         return forecast
 
     def _run_multi_horizon(
         self,
+        actuals: pl.DataFrame,
         series: pl.DataFrame,
         champion_table: pl.DataFrame,
         forecast_origin: Optional[date],
+        optional_inputs: dict,
     ) -> pl.DataFrame:
         """
         Generate a stitched forecast from multiple champion models.
@@ -250,6 +303,7 @@ class ForecastPipeline:
         )
 
         forecast_parts = []
+        models = []
         for row in champion_table.iter_rows(named=True):
             model_name = row["model_id"]
             start_step = row["start_step"]
@@ -271,6 +325,9 @@ class ForecastPipeline:
             preds = forecaster.predict(
                 horizon=horizon, id_col=id_col, time_col=time_col
             )
+            if "model" not in preds.columns:
+                preds = preds.with_columns(pl.lit(model_name).alias("model"))
+            models.append(model_metadata(forecaster, fc.frequency, horizon))
 
             # Add forecast_step: rank by time within each series
             preds = preds.with_columns(
@@ -288,7 +345,7 @@ class ForecastPipeline:
             forecast_parts.append(bucket_preds)
 
         if not forecast_parts:
-            return pl.DataFrame()
+            raise ValueError("Multi-horizon forecast produced no forecast parts")
 
         forecast = pl.concat(forecast_parts).sort([id_col, time_col])
 
@@ -296,48 +353,24 @@ class ForecastPipeline:
         if "forecast_step" in forecast.columns:
             forecast = forecast.drop("forecast_step")
 
-        forecast = self._write_forecast(forecast, forecast_origin)
-
-        # Write provenance manifest for multi-horizon run
-        self._write_manifest(
-            actuals=series,
-            champion_model_id="multi_horizon",
-            forecast=forecast,
-        )
+        optional_inputs["champion_table"] = champion_table
+        self._publish(actuals, series, forecast, "multi_horizon", forecast_origin, models, optional_inputs)
 
         return forecast
 
-    def _write_manifest(
+    def _publish(
         self,
         actuals: pl.DataFrame,
-        champion_model_id: str,
+        prepared: pl.DataFrame,
         forecast: pl.DataFrame,
-        backtest_wmape: Optional[float] = None,
+        champion_model_id: str,
+        forecast_origin: Optional[date],
+        models: list,
+        optional_inputs: dict,
     ) -> None:
-        """Write a provenance manifest alongside the last forecast file."""
-        if self._last_forecast_path is None:
-            return
-        try:
-            from .manifest import build_manifest, write_manifest
-            manifest = build_manifest(
-                run_id=uuid4().hex[:16],
-                config=self.config,
-                actuals=actuals,
-                series_builder=self._series_builder,
-                champion_model_id=champion_model_id,
-                forecast=forecast,
-                forecast_file=Path(self._last_forecast_path).name,
-                backtest_wmape=backtest_wmape,
-                post_validation_result=self._last_validation_result,
-            )
-            write_manifest(manifest, self._last_forecast_path)
-        except Exception:
-            logger.warning("Failed to write pipeline manifest", exc_info=True)
-
-    def _write_forecast(
-        self, forecast: pl.DataFrame, forecast_origin: Optional[date]
-    ) -> pl.DataFrame:
-        """Validate every forecast path before any publication side effects."""
+        """Validate, then make the complete run visible through its one marker."""
+        if forecast.is_empty():
+            raise ValueError("Forecast attempt produced no rows")
         if self.config.post_validation.enabled:
             fc = self.config.forecast
             with self._emitter.timer("post_validation"):
@@ -350,19 +383,40 @@ class ForecastPipeline:
                     time_col=fc.time_column,
                 )
 
-        output_path = Path(self.config.output.forecast_path) / self.config.lob
-        output_path.mkdir(parents=True, exist_ok=True)
-
-        origin_str = (
-            forecast_origin.isoformat()
-            if forecast_origin
-            else date.today().isoformat()
+        actuals = self._series_builder.normalized_input_snapshot(actuals)
+        manifest = build_manifest(
+            run_id=self.context.run_id, config=self.config, actuals=actuals,
+            series_builder=self._series_builder, champion_model_id=champion_model_id,
+            forecast=forecast, forecast_file="forecast.parquet",
+            post_validation_result=self._last_validation_result,
         )
-        filename = f"forecast_{self.config.lob}_{origin_str}.parquet"
-        filepath = output_path / filename
-
-        forecast.write_parquet(str(filepath))
-        logger.info("Forecast written to %s (%d rows)", filepath, len(forecast))
-        self._last_forecast_path = str(filepath)
-
-        return forecast
+        manifest.run_type = "forecast"
+        manifest.started_at = utc_timestamp(self.context.started_at)
+        manifest.timestamp = manifest.started_at
+        origin = forecast_origin or prepared[self.config.forecast.time_column].max()
+        manifest.forecast_origin = origin.isoformat() if origin is not None else None
+        manifest.models = models
+        manifest.execution = {
+            "run_type": "forecast", "model_id": champion_model_id,
+            "frequency": self.config.forecast.frequency,
+            "horizon_periods": self.config.forecast.horizon_periods, "models": models,
+        }
+        manifest.source = {**runtime_metadata(), "entrypoint": self._source_kind}
+        manifest.reproducibility = {
+            "raw_snapshot": "normalized input DataFrame including configured series ID, not original upload bytes",
+            "prepared_snapshot": "SeriesBuilder output; models may apply additional preparation",
+            "optional_inputs_snapshotted": sorted(optional_inputs),
+            "fitted_model_persisted": False,
+            "limits": ["No guarantee of deterministic retraining or frozen external provider/model weights",
+                       "Credential settings and server locations are deliberately omitted"],
+        }
+        manifest.total_seconds = self.context.elapsed_seconds
+        store = RunStore(resolve_run_root(self.config, "forecast"))
+        committed = store.publish(
+            manifest, self.config,
+            {"input": actuals, "prepared": prepared, "forecast": forecast, **optional_inputs},
+            self._last_validation_result or {"skipped": True},
+        )
+        self.last_run = committed
+        self._last_forecast_path = str(store.directory(self.config.lob, committed.run_id) / "forecast.parquet")
+        logger.info("Forecast committed: run_id=%s rows=%d", committed.run_id, len(forecast))

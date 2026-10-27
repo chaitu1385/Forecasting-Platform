@@ -217,53 +217,63 @@ STORE_002  | 2024-09-07 | 5600.3   | 4200.1       | 7000.5
 
 ## Output: Pipeline Manifest (JSON)
 
-Each forecast run produces a JSON sidecar file alongside the Parquet output (e.g., `forecast_retail_2024-09-07_manifest.json`).
+New local forecast and backtest attempts use schema-version-1 run bundles:
 
-### Schema
-
-```json
-{
-  "run_id": "abc123def456",
-  "timestamp": "2024-09-07T14:30:45",
-  "lob": "retail",
-
-  "input_data_hash": "a1b2c3d4e5f6",
-  "input_row_count": 52000,
-  "input_series_count": 1000,
-  "date_range_start": "2023-01-07",
-  "date_range_end": "2024-09-07",
-
-  "validation_applied": true,
-  "validation_passed": true,
-  "validation_warnings": 5,
-  "validation_errors": 0,
-
-  "cleansing_applied": true,
-  "outliers_clipped": 42,
-  "stockout_periods_imputed": 127,
-  "rows_modified": 169,
-
-  "regressor_screen_applied": true,
-  "regressors_dropped": ["low_variance_feature"],
-
-  "config_hash": "a1b2c3d4",
-  "champion_model_id": "lgbm_direct",
-  "backtest_wmape": 0.087,
-
-  "forecast_horizon": 39,
-  "forecast_row_count": 39000,
-  "forecast_file": "forecast_retail_2024-09-07.parquet"
-}
+```text
+runs/<lob>/<server-generated UUID32>/
+  input.parquet              normalized raw values + configured series ID
+  prepared.parquet           SeriesBuilder output
+  config.json                canonical allowlisted settings + effective execution
+  validation.json            actual validation result, or explicit opt-out
+  forecast.parquet            forecast runs
+  metrics.parquet             backtest runs
+  champions.parquet           backtest runs
+  leaderboard.parquet         backtest runs
+  manifest.json               authoritative atomic commit marker
 ```
 
-This manifest provides full provenance — you can trace exactly what data, config, and model produced any forecast.
+Optional supplied inputs (mapping/product/override/external/future-feature data,
+conformal residuals or multi-horizon champion tables) are separately named
+members when used. Internal candidate/attempt/failure files are not commit markers.
+
+| Manifest field | Contract |
+|----------------|----------|
+| `schema_version`, `status`, `run_type` | `1`, `completed`, and `forecast` or `backtest` |
+| `run_id`, `lob` | Same server UUID32 and validated LOB as context, metric rows, response and directory |
+| `started_at`, `completed_at` | Canonical UTC timestamps; latest uses attempt start plus ID, never mtime |
+| `artifacts` | Fixed allowlisted relative filenames, byte counts, SHA256 checksums, and frame row/schema descriptors |
+| `input_data_hash`, `prepared_data_hash` | SHA256 of actual stored Parquet bytes; **not** semantic data-equivalence hashes |
+| `config_hash`, `config_digest_kind` | SHA256 of canonical typed safe JSON, `sha256:canonical-json-v1` |
+| `models`, `execution`, `source` | Actual selected model parameters/frequency/horizon, runtime versions and observed source hashes/build revision |
+| `reproducibility` | Snapshot stages, supplied optional inputs, omitted/external state and retraining limitations |
+| Validation/cleansing fields | Per-attempt reports, including configured opt-out and post-validation grade/score |
+
+Normalized raw input is not the original CSV/Parquet upload byte stream. Prepared
+data is SeriesBuilder output; forecasters may do additional internal preparation.
+Fitted models/pickles, remote provider responses and external model weights are
+not captured or promised deterministic. Configuration omits descriptions,
+credentials, webhook/network settings and private server paths. No secret-bearing
+raw YAML or model `__dict__` dump is saved. Canonical JSON uses sorted keys and
+explicit tags for dates/nonfinite metadata, not arbitrary object repr.
+
+Historical `forecast_*_manifest.json` and `manifest_*.json` sidecars remain legacy
+schema zero, with unknown/unverified lineage. They are not upgraded into verified
+run identities. See [local storage/recovery](DEPLOYMENT.md#immutable-local-runs-and-recovery)
+for visibility, filesystem and durability boundaries.
+
+Derived BI Parquet exports add `source_run_id` and `actuals_run_id` string columns
+to the report data. Null identifies unbound/legacy provenance; these are not new
+forecast run IDs. Each export has a short date-plus-UUID filename and is an atomic
+standalone file, not a second authoritative run store.
 
 ---
 
 ## Output: Pipeline Execution Response
 
 `POST /pipeline/backtest` and `POST /pipeline/forecast` return a typed
-`PipelineRunResponse` (also documented in OpenAPI). Existing fields such as
+`PipelineRunResponse` (also documented in OpenAPI). Required `run_id`, `run_type`
+and relative `links` identify the committed bundle; no filesystem paths are returned.
+Existing fields such as
 `champion_model`, `leaderboard`, `model_id`, `horizon`, `forecast_rows`, and
 `forecast_preview` remain available where applicable. The required `execution`
 object makes resolved intent explicit:

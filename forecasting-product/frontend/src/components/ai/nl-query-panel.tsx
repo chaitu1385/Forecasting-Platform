@@ -9,10 +9,12 @@ import type { NLQueryResponse } from "@/lib/types";
 interface Props {
   seriesId: string;
   lob: string;
+  runId?: string;
+  legacy?: boolean;
   suggestions?: string[];
 }
 
-export function NLQueryPanel({ seriesId, lob, suggestions }: Props) {
+export function NLQueryPanel({ seriesId, lob, runId, legacy, suggestions }: Props) {
   const [question, setQuestion] = useState("");
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<NLQueryResponse | null>(null);
@@ -30,7 +32,7 @@ export function NLQueryPanel({ seriesId, lob, suggestions }: Props) {
     setLoading(true);
     setError("");
     try {
-      const res = await api.aiExplain({ series_id: seriesId, question: q, lob });
+      const res = await api.aiExplain({ series_id: seriesId, question: q, lob, run_id: runId, legacy });
       setResponse(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to get answer");

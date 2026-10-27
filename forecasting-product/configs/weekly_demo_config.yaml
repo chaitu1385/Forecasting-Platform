@@ -33,3 +33,4 @@ data_quality:
 output:
   metrics_path: "data/metrics"
   forecast_path: "data/forecasts"
+  runs_path: "data/runs"

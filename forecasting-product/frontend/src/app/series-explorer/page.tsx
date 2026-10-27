@@ -385,12 +385,13 @@ function SeriesExplorerContent() {
                   const v = Number(r.quantity ?? r.target ?? r.value ?? r.demand ?? 0);
                   if (w) cleanedMap.set(w, v);
                 }
-                const overlayData = seriesHistory.map((h) => ({
-                  week: h.week,
-                  original: h.value,
-                  cleaned: cleanedMap.get(h.week) ?? h.value,
-                  is_outlier: cleanedMap.has(h.week) && Math.abs((cleanedMap.get(h.week) ?? h.value) - h.value) > 0.01,
-                }));
+                const overlayData = seriesHistory.map((h) => {
+                  const cleaned = cleanedMap.get(h.week) ?? h.value;
+                  return {
+                    week: h.week, original: h.value, cleaned,
+                    is_outlier: h.value != null && cleaned != null && Math.abs(cleaned - h.value) > 0.01,
+                  };
+                });
                 const hasChanges = overlayData.some((d) => d.is_outlier);
                 return hasChanges ? (
                   <div className="rounded-lg border p-3">

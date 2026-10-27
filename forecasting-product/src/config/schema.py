@@ -461,6 +461,7 @@ class OutputConfig:
     # e.g. {"product": "product_unit", "geography": "country", "channel": "channel"}
     forecast_path: str = "data/forecasts/"
     metrics_path: str = "data/metrics/"
+    runs_path: Optional[str] = None     # explicit shared local run authority; otherwise operation-root/runs
     bi_export_path: str = "data/bi_exports/"
     format: str = "parquet"              # "parquet" | "csv"
 

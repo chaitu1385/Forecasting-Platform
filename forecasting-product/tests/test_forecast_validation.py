@@ -21,6 +21,7 @@ from src.config.schema import (
 from src.forecasting.naive import SeasonalNaiveForecaster
 from src.pipeline.backtest import BacktestPipeline
 from src.pipeline.forecast import ForecastPipeline
+from src.pipeline.run_store import MANIFEST_NAME, RunStore, resolve_run_root
 from src.pipeline.validation_step import ValidationError, run_post_validation
 from src.validation.business_rules import validate_segment_coverage
 from src.validation.logical_validator import validate_group_balance
@@ -109,6 +110,20 @@ def _published_files(config: PlatformConfig) -> dict[Path, bytes]:
 def _assert_failed_attempt(pipeline: ForecastPipeline) -> None:
     assert pipeline._last_validation_result is None
     assert pipeline._last_forecast_path is None
+    assert pipeline.last_run is None
+
+
+def _assert_single_published_run(config: PlatformConfig) -> dict:
+    store = RunStore(resolve_run_root(config, "forecast"))
+    manifests = store.list(lob=config.lob, run_type="forecast")
+    assert len(manifests) == 1
+    manifest = manifests[0]
+    directory = store.directory(config.lob, manifest.run_id)
+    expected = {item["file"] for item in manifest.artifacts.values()}
+    expected.update({MANIFEST_NAME, ".manifest.pending.json", ".attempt.json"})
+    assert {file.name for file in directory.iterdir()} == expected
+    assert {"input", "prepared", "forecast", "config", "validation"}.issubset(manifest.artifacts)
+    return json.loads((directory / MANIFEST_NAME).read_text())
 
 
 @pytest.mark.parametrize(
@@ -134,9 +149,8 @@ def test_multi_period_forecast_validates_before_publication(
     assert key_result["ok"] is True
     assert key_result["duplicate_count"] == 0
     assert_frame_equal(pl.read_parquet(pipeline._last_forecast_path), forecast)
-    files = _published_files(config)
-    assert len(files) == 2
-    manifest = json.loads(next(data for path, data in files.items() if path.suffix == ".json"))
+    manifest = _assert_single_published_run(config)
+    assert manifest["run_id"] == pipeline.context.run_id
     assert manifest["post_validation_grade"] == result["grade"]
     assert manifest["post_validation_score"] == result["score"]
 
@@ -215,7 +229,7 @@ def test_failed_repeat_preserves_published_files(
     champion = _champion(forecast_mode)
     pipeline.run(_actuals(config), champion_model=champion, forecast_origin=ORIGIN)
     before = _published_files(config)
-    assert len(before) == 2
+    _assert_single_published_run(config)
     assert pipeline._last_validation_result is not None
 
     if failure_kind == "exception":
@@ -254,7 +268,7 @@ def test_disabled_validation_preserves_opt_out(tmp_path, monkeypatch, forecast_m
     )
 
     assert forecast["forecast"].to_list() == [-10.0] * 8
-    assert len(_published_files(config)) == 2
+    _assert_single_published_run(config)
     assert pipeline._last_validation_result is None
 
 
@@ -273,7 +287,7 @@ def test_nonblocking_grade_warns_and_publishes(tmp_path, forecast_mode, caplog):
         )
 
     assert forecast.height == 8
-    assert len(_published_files(config)) == 2
+    _assert_single_published_run(config)
     result = pipeline._last_validation_result
     assert result is not None
     assert result["confidence"]["caps_applied"]["blocker_cap"] is True
@@ -300,7 +314,7 @@ def test_warning_does_not_halt_publication(tmp_path, forecast_mode, caplog):
     assert future_dates["severity"] == "WARNING"
     assert result["confidence"]["caps_applied"].get("blocker_cap") is not True
     assert "below minimum A" in caplog.text
-    assert len(_published_files(config)) == 2
+    _assert_single_published_run(config)
 
 
 def test_quantile_output_is_validated_before_publication(tmp_path, monkeypatch):
@@ -336,7 +350,7 @@ def test_valid_quantiles_are_published(tmp_path):
     assert forecast.height == 8
     assert pipeline._last_validation_result["layers"]["structural"]["ok"] is True
     assert_frame_equal(pl.read_parquet(pipeline._last_forecast_path), forecast)
-    assert len(_published_files(config)) == 2
+    _assert_single_published_run(config)
 
 
 def test_constraints_run_before_validation(tmp_path):
@@ -349,7 +363,7 @@ def test_constraints_run_before_validation(tmp_path):
 
     assert forecast["forecast"].to_list() == [0.0] * 8
     assert pipeline._last_validation_result["layers"]["business"]["details"]["no_negative"]["ok"]
-    assert len(_published_files(config)) == 2
+    _assert_single_published_run(config)
 
 
 def test_reused_pipeline_clears_result_when_validation_disabled(tmp_path, forecast_mode):
@@ -365,8 +379,10 @@ def test_reused_pipeline_clears_result_when_validation_disabled(tmp_path, foreca
     )
 
     assert pipeline._last_validation_result is None
-    files = _published_files(config)
-    manifest = json.loads(next(data for path, data in files.items() if path.suffix == ".json"))
+    store = RunStore(resolve_run_root(config, "forecast"))
+    assert len(store.list(lob=config.lob)) == 2
+    directory = store.directory(config.lob, pipeline.context.run_id)
+    manifest = json.loads((directory / MANIFEST_NAME).read_text())
     assert manifest["post_validation_grade"] is None
     assert manifest["post_validation_score"] is None
 

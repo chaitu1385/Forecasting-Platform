@@ -113,6 +113,7 @@ class DeploymentResult:
     retrained: bool = False
     error: str = ""
     preflight_warnings: List[str] = field(default_factory=list)
+    storage_contract: str = "external_delta_or_legacy_file"
 
 
 # ── Orchestrator ───────────────────────────────────────────────────────────────
@@ -135,6 +136,7 @@ class DeploymentOrchestrator:
         self.spark = spark
         self.config = config
         self.dc = deploy_config
+        self._correlation_id: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Public
@@ -154,13 +156,15 @@ class DeploymentOrchestrator:
         -------
         ``DeploymentResult`` with status, champion model, and row counts.
         """
-        run_id = uuid.uuid4().hex[:12].upper()
+        run_id = uuid.uuid4().hex
+        self._correlation_id = run_id
         run_date = date.today().isoformat()
         result = DeploymentResult(
             run_id=run_id,
             lob=self.dc.lob,
             run_date=run_date,
             status="failed",
+            storage_contract="external_delta" if self.dc.workspace else "legacy_atomic_forecast_file",
         )
 
         try:
@@ -179,7 +183,7 @@ class DeploymentOrchestrator:
             # ── Step 3: Forecast ───────────────────────────────────────────
             from src.spark.pipeline import SparkForecastPipeline
             horizon = self.dc.horizon_weeks or self.config.forecast.horizon_weeks
-            pipeline = SparkForecastPipeline(self.spark, self.config)
+            pipeline = SparkForecastPipeline(self.spark, self.config, correlation_id=run_id)
             forecasts_sdf = pipeline.run_forecast(
                 actuals_sdf=actuals_sdf,
                 champion_model=champion,
@@ -192,7 +196,7 @@ class DeploymentOrchestrator:
             result.n_forecast_rows = n_rows
 
             # ── Step 5: Write forecasts ────────────────────────────────────
-            self._write_forecasts(forecasts_sdf, run_date)
+            self._write_forecasts(forecasts_sdf, run_date, run_id)
 
             result.status = "success"
             logger.info("[%s] Deployment succeeded. Forecast rows: %d", run_id, n_rows)
@@ -277,7 +281,7 @@ class DeploymentOrchestrator:
 
         from src.spark.pipeline import SparkForecastPipeline
 
-        pipeline = SparkForecastPipeline(self.spark, self.config)
+        pipeline = SparkForecastPipeline(self.spark, self.config, correlation_id=self._correlation_id)
         models = self.dc.models or self.config.forecast.forecasters
 
         # Try to read existing champion from leaderboard (Fabric mode only)
@@ -361,7 +365,7 @@ class DeploymentOrchestrator:
     # Writers
     # ------------------------------------------------------------------
 
-    def _write_forecasts(self, forecasts_sdf, forecast_origin: str) -> None:
+    def _write_forecasts(self, forecasts_sdf, forecast_origin: str, run_id: str) -> None:
         """Write forecasts to Lakehouse (if configured) or local Parquet."""
         if self.dc.workspace:
             from src.fabric.config import FabricConfig
@@ -383,11 +387,25 @@ class DeploymentOrchestrator:
             logger.info("Forecasts written to Lakehouse.")
         else:
             from pathlib import Path
-            output_path = Path("data/forecasts") / self.dc.lob
-            output_path.mkdir(parents=True, exist_ok=True)
-            out_file = output_path / f"forecast_{self.dc.lob}_{forecast_origin}.parquet"
-            forecasts_sdf.toPandas().to_parquet(out_file, index=False)
-            logger.info("Forecasts written locally to %s.", out_file)
+
+            import polars as pl
+
+            from ..pipeline.run_store import (
+                atomic_frame_append,
+                checked_child,
+                validate_lob,
+                validate_run_id,
+            )
+
+            validate_lob(self.dc.lob)
+            validate_run_id(run_id)
+            output_path = checked_child(Path(self.config.output.forecast_path), self.dc.lob)
+            out_file = atomic_frame_append(
+                pl.from_pandas(forecasts_sdf.toPandas()), output_path,
+                prefix=f"forecast_{self.dc.lob}_{forecast_origin}",
+            )
+            logger.info("Legacy Spark adapter forecast saved: run_id=%s file=%s; no local run-bundle guarantee",
+                        run_id, out_file.name)
 
     def _write_leaderboard(self, backtest_sdf, leaderboard_sdf) -> None:
         """Write backtest results and leaderboard to Lakehouse."""

@@ -95,7 +95,9 @@ test("preserves a Croston five-period plan through the real UI/API @integration 
   });
 
   const before = snapshot(dataDir);
-  expect(Object.keys(before).some(filename => filename.includes("intent_browser") && filename.endsWith("_manifest.json"))).toBe(true);
+  expect(Object.keys(before).filter(filename =>
+    filename.includes("intent_browser") && path.basename(filename) === "manifest.json")).toHaveLength(2);
+  expect(result.run_id).not.toBe(winner.run_id);
   await configInput.setInputFiles({ name: "invalid-plan.yaml", mimeType: "text/yaml", buffer: Buffer.from("forecast: [") });
   await expect(page.getByRole("heading", { name: "Backtest Result", exact: true })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Forecast Result", exact: true })).toHaveCount(0);

@@ -297,7 +297,7 @@ against fresh training on the same fold, including non-null interval checks.
 
 **How the product handles it:** `ForecastPipeline` validates before any forecast or manifest write, for both standard and multi-horizon runs. A blocker halts publication when `post_validation.halt_on_blocker` is true; unexpected checker exceptions always propagate when that layer is enabled. Failed validation leaves existing files unchanged, even on a repeat attempt for the same forecast origin. Each run clears its previous validation result and forecast-path state so a failed attempt cannot appear to have succeeded using stale state.
 
-**What to watch for:** `halt_on_blocker` defaults to false, and `min_grade` is warning-only. Set `halt_on_blocker: true` for blocking quality checks; `post_validation.enabled: false` is an explicit opt-out. Forecast keys use both the configured series ID and period, not just the series ID. This guarantee concerns validation failures before publication, not transactional recovery from later filesystem failures or the separate Spark/Fabric pipelines.
+**What to watch for:** `halt_on_blocker` defaults to false, and `min_grade` is warning-only. Set `halt_on_blocker: true` for blocking quality checks; `post_validation.enabled: false` is an explicit opt-out. Forecast keys use both the configured series ID and period, not just the series ID. Local filesystem failures have the separate pre/post-commit contract below; managed Spark/Fabric pipelines do not inherit local bundle atomicity.
 
 ---
 
@@ -318,8 +318,8 @@ Responses identify the resolved model, horizon, settings, and their sources.
 **What to watch for:** An absent config means defaults; an empty/null uploaded
 document is invalid (use `{}` for defaults explicitly). Standalone forecasting
 chooses the first configured model, not a remembered or guessed winner.
-Invalidation prevents stale UI selection, not cancellation of server work or
-transactional/immutable output storage. Multi-model backtest results are not
+Invalidation prevents stale UI selection, not cancellation of server work.
+Immutable run publication is a separate server-side guarantee. Multi-model backtest results are not
 silently reduced to their first row for this single-model handoff.
 
 ---
@@ -346,3 +346,27 @@ output may leave an empty or private partial file. Stateless tokens have no live
 per-user revocation: a copied token remains valid until expiry or coordinated
 key rotation/restart. Production containers never seed demo data; the separate
 demo Compose override uses its own volume and retains cold/restart safeguards.
+
+---
+
+## 30. Concurrent Runs, Incomplete Writes and Lost Completion Receipts
+
+**What happens:** Two runs share an origin/second, an older attempt completes
+last, the process is interrupted while staging, or a disk/response error occurs
+just after the run becomes visible.
+
+**How the product handles it:** Each attempt exclusively reserves its own UUID32
+directory; all required members are hashed before the fixed manifest commit
+marker. Pre-commit errors leave no visible completed run, and prior bytes stay
+unchanged. Post-commit errors expose a `committed` or `uncertain` outcome and ID
+instead of deleting committed data or falsely promising rollback. Latest uses
+attempt start plus ID, so late completion does not regress it; exact-run reads,
+stored input/config and prior-run UI selection survive service restart.
+
+**What to watch for:** Inspect the exact ID before repeating an ambiguous write;
+retries create new attempts, not exactly-once operations. Do not remove a
+markerless directory merely because it looks old: it may have a live owner.
+Unknown versions, checksum mismatch or corrupt metadata are explicit integrity
+errors, never a healthy empty list or silent old-run fallback. Use the documented
+offline backup/restore procedure and the supported local hard-link filesystem
+profile; Windows power-loss and managed Delta atomicity are not certified here.

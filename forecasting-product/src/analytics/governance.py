@@ -377,7 +377,6 @@ class ForecastLineage:
 
     def __init__(self, base_path: str = "data/lineage/"):
         self._path = Path(base_path)
-        self._path.mkdir(parents=True, exist_ok=True)
 
     def record(
         self,
@@ -404,9 +403,9 @@ class ForecastLineage:
             "user_id": user_id,
         }])
 
-        ts = (run_date or date.today()).isoformat()
-        fname = f"lineage_{lob}_{ts}_{model_id[:12]}.parquet"
-        row.write_parquet(str(self._path / fname))
+        from ..pipeline.run_store import atomic_frame_append
+
+        atomic_frame_append(row, self._path, prefix="lineage")
 
     def history(
         self,
@@ -418,11 +417,19 @@ class ForecastLineage:
 
         Returns a DataFrame sorted by run_date descending.
         """
-        pattern = str(self._path / "*.parquet")
-        try:
-            df = pl.read_parquet(pattern)
-        except Exception:
+        from ..pipeline.run_store import RunIntegrityError, checked_child
+
+        files = sorted(self._path.glob("*.parquet"))
+        if not files:
             return pl.DataFrame(schema=self._SCHEMA)
+        try:
+            frames = [
+                pl.read_parquet(checked_child(self._path, filename.name), hive_partitioning=False)
+                for filename in files
+            ]
+            df = pl.concat(frames, how="diagonal_relaxed")
+        except Exception as exc:
+            raise RunIntegrityError("unreadable_legacy_lineage") from exc
 
         if lob:
             df = df.filter(pl.col("lob") == lob)

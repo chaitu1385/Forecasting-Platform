@@ -147,9 +147,16 @@ A model that was 95% accurate last quarter can silently degrade as demand patter
 
 ### Pipeline Provenance
 
-When a forecast looks wrong, the first question is "what produced this?" Without provenance, debugging is archaeology. The `PipelineManifest` is a JSON sidecar written alongside every forecast output, capturing: input data hash, cleansing summary, validation results, regressor screening decisions, config hash, champion model name, backtest WMAPE, and forecast metadata. This creates a complete audit trail from raw data to final forecast, enabling reproducibility and root-cause analysis.
+When a forecast looks wrong, first identify the exact run rather than whichever
+file was written most recently. A versioned bundle binds its input snapshots,
+safe effective settings, model/source metadata, validation and outputs to one
+server-issued ID; checksums detect damaged or inconsistent stored artifacts.
+The final manifest is also the commit marker, so readers cannot treat a partial
+write as success. This is a local provenance/retrieval boundary, not a promise of
+deterministic retraining, signed evidence against a filesystem administrator or
+distributed transactionality; historical sidecars retain unknown lineage.
 
-*Implementation: `src/pipeline/manifest.py` — `PipelineManifest`, `build_manifest()`*
+*Implementation: `src/pipeline/run_store.py`, `readers.py`, `manifest.py`*
 
 ### Model Governance & Audit
 

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useLob } from "@/providers/lob-provider";
 import { TimeSeriesLine } from "@/components/charts/time-series-line";
 import { FanChart } from "@/components/charts/fan-chart";
@@ -16,11 +17,39 @@ import { useForecast } from "@/hooks/use-forecast";
 import { formatNumber } from "@/lib/utils";
 import { COLORS } from "@/lib/constants";
 import { WorkflowNav } from "@/components/shared/workflow-nav";
+import { DataTable } from "@/components/data/data-table";
+import { api } from "@/lib/api-client";
 
 export default function ForecastPage() {
   const { lob, setLob } = useLob();
   const [selectedSeries, setSelectedSeries] = useState("");
-  const { data, isLoading, error, refetch } = useForecast(lob);
+  const [selection, setSelection] = useState({ lob, id: "" });
+  const [showConfig, setShowConfig] = useState(false);
+  const [showData, setShowData] = useState(false);
+  const selectedRun = selection.lob === lob ? selection.id : "";
+  const runs = useQuery({
+    queryKey: ["runs", lob, "forecast"],
+    queryFn: () => api.listRuns(lob, "forecast"),
+    enabled: !!lob,
+  });
+  const { data, isLoading, error, refetch } = useForecast(lob, {
+    run_id: selectedRun && selectedRun !== "legacy" ? selectedRun : undefined,
+    legacy: selectedRun === "legacy",
+  });
+  const currentRunId = data?.run_id;
+  const savedConfig = useQuery({
+    queryKey: ["run-config", lob, currentRunId],
+    queryFn: () => {
+      if (!currentRunId) throw new Error("No committed run is selected");
+      return api.getRunConfig(lob, currentRunId);
+    },
+    enabled: showConfig && !!currentRunId,
+  });
+  useEffect(() => {
+    setSelection({ lob, id: "" });
+    setSelectedSeries("");
+    setShowConfig(false);
+  }, [lob]);
 
   // Extract unique series IDs
   const seriesIds = useMemo(() => {
@@ -72,6 +101,27 @@ export default function ForecastPage() {
             className="rounded-md border bg-background px-3 py-1.5 text-sm w-32"
           />
         </div>
+        <div className="space-y-1">
+          <label htmlFor="forecast-run" className="text-xs font-medium">Forecast run</label>
+          <select
+            id="forecast-run" value={selectedRun}
+            onChange={(event) => {
+              setSelection({ lob, id: event.target.value });
+              setSelectedSeries("");
+              setShowConfig(false);
+            }}
+            disabled={runs.isLoading}
+            className="max-w-md rounded-md border bg-background px-3 py-1.5 text-sm"
+          >
+            <option value="">Latest available</option>
+            {runs.data?.runs.map(run => (
+              <option key={run.run_id} value={run.run_id}>
+                {run.timestamp} | {run.champion_model} | {run.run_id.slice(0, 8)}
+              </option>
+            ))}
+            <option value="legacy">Legacy files (unverified lineage)</option>
+          </select>
+        </div>
         {seriesIds.length > 0 && (
           <div className="space-y-1">
             <label className="text-xs font-medium">Series</label>
@@ -97,6 +147,7 @@ export default function ForecastPage() {
       </div>
 
       {isLoading && <ChartSkeleton />}
+      {runs.error && <ErrorDisplay message={runs.error.message} onRetry={() => runs.refetch()} />}
       {error && (error.message.includes("404") ? (
         <NoDataGuide lob={lob} dataType="forecast" />
       ) : (
@@ -109,6 +160,32 @@ export default function ForecastPage() {
 
       {data && data.points.length > 0 && (
         <>
+          <section aria-label="Run provenance" className="space-y-2 rounded-lg border p-4 text-sm">
+            <p>
+              Run: <code data-testid="forecast-run-id">{data.run_id ?? "Legacy / unknown"}</code>
+            </p>
+            {data.run_id ? (
+              <>
+                <p className="break-all text-xs text-muted-foreground">Input SHA256: {data.input_data_hash}</p>
+                <p className="break-all text-xs text-muted-foreground">Configuration SHA256: {data.config_hash}</p>
+                <button
+                  type="button" onClick={() => setShowConfig(value => !value)}
+                  className="rounded-md border px-3 py-1.5 text-sm"
+                >
+                  {showConfig ? "Hide stored configuration" : "View stored configuration"}
+                </button>
+                {showConfig && savedConfig.isLoading && <p role="status">Loading stored configuration...</p>}
+                {showConfig && savedConfig.error && <ErrorDisplay message={savedConfig.error.message} onRetry={() => savedConfig.refetch()} />}
+                {showConfig && savedConfig.data && (
+                  <pre className="max-h-80 overflow-auto rounded-md bg-muted p-3 text-xs">
+                    {JSON.stringify(savedConfig.data.configuration, null, 2)}
+                  </pre>
+                )}
+              </>
+            ) : (
+              <p className="text-muted-foreground">Legacy artifact: original input/configuration lineage is unknown.</p>
+            )}
+          </section>
           {/* Summary */}
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             <MetricCard label="Series Count" value={formatNumber(data.series_count)} />
@@ -145,6 +222,24 @@ export default function ForecastPage() {
               </div>
             </section>
           )}
+          {seriesPoints.length > 0 && (
+            <details
+              className="rounded-lg border p-4"
+              open={showData}
+              onToggle={event => setShowData(event.currentTarget.open)}
+            >
+              <summary className="cursor-pointer text-sm font-medium">Forecast data</summary>
+              <DataTable
+                columns={[
+                  { key: "week", label: "Period" },
+                  { key: "forecast", label: "Forecast", render: value => typeof value === "number" ? formatNumber(value, 2) : "N/A" },
+                  { key: "model", label: "Model" },
+                ]}
+                data={seriesPoints}
+                pageSize={10}
+              />
+            </details>
+          )}
 
           {/* Fan Chart */}
           {hasQuantiles && seriesPoints.length > 0 && (
@@ -173,8 +268,11 @@ export default function ForecastPage() {
             <section>
               <h2 className="text-lg font-semibold mb-3">Ask About This Forecast</h2>
               <NLQueryPanel
+                key={`${lob}:${data.run_id ?? "legacy"}:${selectedSeries}`}
                 seriesId={selectedSeries}
                 lob={lob}
+                runId={data.run_id ?? undefined}
+                legacy={data.artifact_source === "legacy"}
                 suggestions={[
                   "Why this trend?",
                   "What drives seasonality?",

@@ -1,6 +1,8 @@
 FROM python:3.10-slim AS base
 
 WORKDIR /app
+ARG FORECAST_BUILD_REVISION
+ENV FORECAST_BUILD_REVISION=$FORECAST_BUILD_REVISION
 
 # System deps for LightGBM, XGBoost
 RUN apt-get update && \

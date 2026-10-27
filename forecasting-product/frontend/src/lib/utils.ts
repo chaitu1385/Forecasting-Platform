@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
+import type { LeaderboardEntry } from "./types";
 
 /** Merge Tailwind classes safely */
 export function cn(...inputs: ClassValue[]) {
@@ -7,8 +8,13 @@ export function cn(...inputs: ClassValue[]) {
 }
 
 /** Format a number as percentage string */
-export function formatPct(value: number, decimals: number = 1): string {
+export function formatPct(value: number | null | undefined, decimals: number = 1): string {
+  if (value == null || !Number.isFinite(value)) return "N/A";
   return `${(value * 100).toFixed(decimals)}%`;
+}
+
+export function hasFiniteWmape(entry: LeaderboardEntry): entry is LeaderboardEntry & { wmape: number } {
+  return entry.wmape != null && Number.isFinite(entry.wmape);
 }
 
 /** Format a number with locale-aware separators */

@@ -11,7 +11,7 @@ import {
   Cell,
 } from "recharts";
 import { MODEL_LAYER_COLORS, COLORS } from "@/lib/constants";
-import { modelDisplayName, formatPct } from "@/lib/utils";
+import { modelDisplayName, formatPct, hasFiniteWmape } from "@/lib/utils";
 import type { LeaderboardEntry } from "@/lib/types";
 
 interface Props {
@@ -27,6 +27,7 @@ function getModelColor(model: string): string {
 
 export function LeaderboardBar({ entries }: Props) {
   const data = entries
+    .filter(hasFiniteWmape)
     .sort((a, b) => a.wmape - b.wmape)
     .map((e) => ({
       model: modelDisplayName(e.model),

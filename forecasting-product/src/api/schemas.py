@@ -20,7 +20,7 @@ class ForecastPoint(BaseModel):
     """A single (series, week, forecast) data point."""
     series_id: str
     week: date
-    forecast: float
+    forecast: Optional[float]
     model: Optional[str] = None
     lob: Optional[str] = None
     forecast_p10: Optional[float] = None
@@ -33,13 +33,17 @@ class ForecastResponse(BaseModel):
     series_count: int
     forecast_origin: Optional[str] = None
     points: List[ForecastPoint]
+    run_id: Optional[str] = None
+    artifact_source: Literal["committed", "legacy"] = "legacy"
+    config_hash: Optional[str] = None
+    input_data_hash: Optional[str] = None
 
 
 class LeaderboardEntry(BaseModel):
     """One model's aggregated performance metrics."""
     model: str
-    wmape: float
-    normalized_bias: float
+    wmape: Optional[float]
+    normalized_bias: Optional[float]
     rank: int
     n_series: int
     validation_grade: Optional[str] = Field(None, description="Post-validation confidence grade (A-F)")
@@ -50,6 +54,8 @@ class LeaderboardResponse(BaseModel):
     lob: str
     run_type: str
     entries: List[LeaderboardEntry]
+    run_id: Optional[str] = None
+    artifact_source: Literal["committed", "legacy"] = "legacy"
 
 
 class ValidationLayerResult(BaseModel):
@@ -153,9 +159,20 @@ class PipelineExecutionSettings(BaseModel):
     config: EffectivePipelineConfig
 
 
+class RunLinks(BaseModel):
+    metadata: str
+    config: str
+    input_lineage: str
+    forecast: Optional[str] = None
+    leaderboard: Optional[str] = None
+
+
 class PipelineRunResponse(BaseModel):
     lob: str
     status: str
+    run_id: str
+    run_type: Literal["forecast", "backtest"]
+    links: RunLinks
     execution: PipelineExecutionSettings
     champion_model: Optional[str] = Field(None, description="Single backtest winner usable by the name-based forecast endpoint")
     best_wmape: Optional[float] = None
@@ -179,6 +196,8 @@ class NLQueryRequest(BaseModel):
     series_id: str
     question: str
     lob: str
+    run_id: Optional[str] = None
+    legacy: bool = False
 
 
 class NLQueryResponse(BaseModel):
@@ -195,6 +214,7 @@ class TriageRequest(BaseModel):
     run_type: str = "backtest"
     severity_filter: Optional[str] = None   # "warning" | "critical" | None
     max_alerts: int = 50
+    run_id: Optional[str] = None
 
 
 class TriagedAlertItem(BaseModel):

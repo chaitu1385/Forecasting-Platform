@@ -35,6 +35,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 DATA_DIR = Path(os.environ.get("API_DATA_DIR", str(_ROOT / "data"))).resolve()
 METRICS_DIR = Path(os.environ.get("API_METRICS_DIR", str(DATA_DIR / "metrics"))).resolve()
+RUNS_DIR = Path(os.environ.get("API_RUNS_DIR", str(DATA_DIR / "runs"))).resolve()
 SENTINEL = DATA_DIR / ".seeded"
 DEMO_LOB = os.environ.get("DEMO_LOB", "walmart_m5_weekly")
 API_HOST = os.environ.get("API_HOST", "0.0.0.0")
@@ -157,6 +158,7 @@ def _server_command() -> list[str]:
         sys.executable, str(_HERE / "serve.py"),
         "--host", API_HOST, "--port", str(API_PORT),
         "--data-dir", str(DATA_DIR), "--metrics-dir", str(METRICS_DIR),
+        "--runs-dir", str(RUNS_DIR),
     ]
 
 

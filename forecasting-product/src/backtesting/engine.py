@@ -9,7 +9,6 @@ For each (model, fold) combination:
 """
 
 import logging
-import uuid
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import date
 from multiprocessing import cpu_count, get_context
@@ -21,6 +20,7 @@ from ..config.schema import PlatformConfig, get_frequency_profile
 from ..forecasting.base import BaseForecaster
 from ..metrics.definitions import compute_all_metrics
 from ..metrics.store import METRIC_SCHEMA, MetricStore
+from ..observability.context import new_run_id
 from .cross_validator import WalkForwardCV
 
 logger = logging.getLogger(__name__)
@@ -143,6 +143,7 @@ class BacktestEngine:
             frequency=config.forecast.frequency,
         )
         self._failures: List[dict] = []
+        self.run_id: Optional[str] = None
 
     def run(
         self,
@@ -152,6 +153,8 @@ class BacktestEngine:
         target_col: Optional[str] = None,
         time_col: Optional[str] = None,
         id_col: Optional[str] = None,
+        run_id: Optional[str] = None,
+        persist: bool = True,
     ) -> pl.DataFrame:
         """
         Run full backtesting.
@@ -172,6 +175,9 @@ class BacktestEngine:
         DataFrame of per-(model, fold, series, week) metrics.
         """
         fc = self.config.forecast
+        self.run_id = run_id or new_run_id()
+        self._failures = []
+        self._neural_notes = []
         target_col = target_col or fc.target_column
         time_col = time_col or fc.time_column
         id_col = id_col or fc.series_id_column
@@ -206,7 +212,7 @@ class BacktestEngine:
         # for their lag features (they'll fail silently otherwise).
         self._warn_insufficient_data(splits, forecasters, time_col)
 
-        run_id = f"backtest-{uuid.uuid4().hex[:8]}"
+        run_id = self.run_id
         run_date = date.today()
         all_results: List[pl.DataFrame] = []
         self._failures = []
@@ -308,14 +314,15 @@ class BacktestEngine:
         combined = pl.concat(all_results, how="diagonal")
 
         # Write to metric store
-        self.metric_store.write(
-            combined,
-            run_type="backtest",
-            lob=self.config.lob,
-        )
+        if persist:
+            self.metric_store.write(
+                combined,
+                run_type="backtest",
+                lob=self.config.lob,
+            )
         logger.info(
-            "Backtest complete: %d results written to metric store",
-            len(combined),
+            "Backtest complete: run_id=%s rows=%d persisted=%s",
+            run_id, len(combined), persist,
         )
 
         return combined

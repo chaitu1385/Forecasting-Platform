@@ -13,7 +13,7 @@ import { ChartSkeleton } from "@/components/shared/loading-skeleton";
 import { DataTable } from "@/components/data/data-table";
 import { useLeaderboard } from "@/hooks/use-leaderboard";
 import { api } from "@/lib/api-client";
-import { formatPct } from "@/lib/utils";
+import { formatPct, hasFiniteWmape } from "@/lib/utils";
 import { WorkflowNav } from "@/components/shared/workflow-nav";
 import type { FVAResponse, CalibrationResponse, ShapResponse } from "@/lib/types";
 
@@ -82,6 +82,8 @@ export default function BacktestPage() {
     }
   }
 
+  const rankedEntries = data?.entries.filter(hasFiniteWmape).sort((a, b) => a.wmape - b.wmape) ?? [];
+
   return (
     <div className="mx-auto max-w-6xl space-y-8">
       <div>
@@ -136,11 +138,11 @@ export default function BacktestPage() {
               <MetricCard label="Models" value={data.entries.length} />
               <MetricCard
                 label="Best WMAPE"
-                value={data.entries.length > 0 ? formatPct(Math.min(...data.entries.map((e) => e.wmape))) : "N/A"}
+                value={rankedEntries.length > 0 ? formatPct(rankedEntries[0].wmape) : "N/A"}
               />
               <MetricCard
                 label="Best Model"
-                value={data.entries.length > 0 ? data.entries.sort((a, b) => a.wmape - b.wmape)[0].model : "N/A"}
+                value={rankedEntries[0]?.model ?? "N/A"}
               />
               <MetricCard label="Run Type" value={data.run_type} />
             </div>
@@ -161,7 +163,7 @@ export default function BacktestPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {data.entries
+                  {[...data.entries]
                     .sort((a, b) => a.rank - b.rank)
                     .map((e) => (
                       <tr key={e.model} className="border-b last:border-0">

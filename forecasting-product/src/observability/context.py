@@ -22,6 +22,11 @@ from typing import Dict, Optional
 from uuid import uuid4
 
 
+def new_run_id() -> str:
+    """Generate an independent server attempt identity."""
+    return uuid4().hex
+
+
 @dataclass
 class PipelineContext:
     """
@@ -41,7 +46,7 @@ class PipelineContext:
         Arbitrary key-value metadata (model name, config hash, etc.).
     """
 
-    run_id: str = field(default_factory=lambda: uuid4().hex[:16])
+    run_id: str = field(default_factory=new_run_id)
     lob: str = ""
     started_at: datetime = field(default_factory=datetime.utcnow)
     parent_run_id: Optional[str] = None

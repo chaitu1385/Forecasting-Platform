@@ -127,7 +127,7 @@ function ManifestsTabContent({ lob }: { lob: string }) {
                   { key: "series_count", label: "Series", sortable: true },
                   { key: "champion_model", label: "Model", sortable: true },
                   { key: "total_seconds", label: "Total (s)", sortable: true,
-                    render: (v) => typeof v === "number" ? v.toFixed(1) : String(v),
+                    render: (v) => typeof v === "number" ? v.toFixed(1) : "N/A",
                   },
                   { key: "seconds_per_series", label: "Per Series (s)", sortable: true,
                     render: (v) => v != null ? (v as number).toFixed(3) : "N/A",

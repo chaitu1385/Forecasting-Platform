@@ -57,6 +57,7 @@ wait_ready() {
         && curl --fail --silent --show-error --max-time 5 "$base/health" >"$artifacts/$label-health.json"; then
       curl --fail --silent --show-error --max-time 10 "$base/forecast/walmart_m5_weekly" >"$artifacts/$label-forecast.json"
       curl --fail --silent --show-error --max-time 10 "$base/metrics/leaderboard/walmart_m5_weekly" >"$artifacts/$label-leaderboard.json"
+      curl --fail --silent --show-error --max-time 10 "$base/pipeline/runs?lob=walmart_m5_weekly" >"$artifacts/$label-runs.json"
       python3 - "$artifacts" "$label" <<'PY'
 import json
 import math
@@ -71,6 +72,11 @@ assert forecast["series_count"] == 10 and len(forecast["points"]) == 120, foreca
 assert all(math.isfinite(point["forecast"]) for point in forecast["points"])
 leaderboard = json.loads((root / f"{label}-leaderboard.json").read_text())
 assert leaderboard["entries"], leaderboard
+assert forecast["artifact_source"] == leaderboard["artifact_source"] == "committed"
+runs = json.loads((root / f"{label}-runs.json").read_text())["runs"]
+assert len(runs) == 2 and {run["run_type"] for run in runs} == {"forecast", "backtest"}
+assert forecast["run_id"] == next(run["run_id"] for run in runs if run["run_type"] == "forecast")
+assert leaderboard["run_id"] == next(run["run_id"] for run in runs if run["run_type"] == "backtest")
 print(f"{label}: healthy, 10 series / 120 forecasts, persisted leaderboard retrieved")
 PY
       return 0
@@ -89,10 +95,10 @@ from pathlib import Path
 
 root = Path("/app/forecasting-product/data")
 files = [root / ".seeded"]
-for directory in ("demo", "forecasts", "metrics"):
+for directory in ("demo", "forecasts", "metrics", "runs"):
     files.extend(path for path in (root / directory).rglob("*") if path.is_file())
-assert any(path.suffix == ".parquet" and "forecasts" in path.parts for path in files)
-assert any(path.suffix == ".parquet" and "metrics" in path.parts for path in files)
+assert any(path.name == "forecast.parquet" and "runs" in path.parts for path in files)
+assert any(path.name == "metrics.parquet" and "runs" in path.parts for path in files)
 print(json.dumps({str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
                   for path in sorted(files)}, indent=2, sort_keys=True))
 PY
@@ -113,4 +119,5 @@ snapshot >"$artifacts/restart-artifacts.json"
 docker logs "$container" >"$artifacts/restart.log" 2>&1
 grep -Fq "Sentinel found" "$artifacts/restart.log"
 diff -u "$artifacts/cold-artifacts.json" "$artifacts/restart-artifacts.json"
+diff -u "$artifacts/cold-runs.json" "$artifacts/restart-runs.json"
 echo "Cold start and fresh-container restart preserved identical seeded artifacts"

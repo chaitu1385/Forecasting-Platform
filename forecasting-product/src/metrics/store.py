@@ -5,7 +5,6 @@ Both backtesting and live performance write to the same schema, enabling
 cross-comparison ("does our backtesting champion actually win in production?").
 """
 
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -44,9 +43,9 @@ class MetricStore:
     while supporting incremental writes from both backtest and live engines.
     """
 
-    def __init__(self, base_path: str = "data/metrics/"):
-        self.base_path = Path(base_path)
-        self.base_path.mkdir(parents=True, exist_ok=True)
+    def __init__(self, base_path: str = "data/metrics/", runs_path: Optional[str] = None):
+        self.base_path = Path(base_path).resolve()
+        self.runs_path = Path(runs_path).resolve() if runs_path is not None else self.base_path / "runs"
 
     def write(self, records: pl.DataFrame, run_type: str, lob: str) -> Path:
         """
@@ -65,15 +64,18 @@ class MetricStore:
         -------
         Path to the written Parquet file.
         """
-        partition_dir = self.base_path / f"run_type={run_type}" / f"lob={lob}"
-        partition_dir.mkdir(parents=True, exist_ok=True)
+        from ..pipeline.run_store import atomic_frame_append, checked_child, validate_lob
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"metrics_{timestamp}.parquet"
-        path = partition_dir / filename
-
-        records.write_parquet(str(path))
-        return path
+        validate_lob(lob)
+        if run_type not in {"backtest", "live"}:
+            raise ValueError("Unsupported metric run type")
+        for column, value in (("run_type", run_type), ("lob", lob)):
+            if column not in records.columns:
+                records = records.with_columns(pl.lit(value).alias(column))
+            elif records.filter(pl.col(column).is_null() | (pl.col(column) != value)).height:
+                raise ValueError("Metric partition does not match record identity")
+        partition_dir = checked_child(self.base_path, f"run_type={run_type}", f"lob={lob}")
+        return atomic_frame_append(records, partition_dir)
 
     def read(
         self,
@@ -81,17 +83,50 @@ class MetricStore:
         lob: Optional[str] = None,
         model_id: Optional[str] = None,
         grain_level: Optional[str] = None,
+        run_id: Optional[str] = None,
+        latest: bool = False,
     ) -> pl.DataFrame:
         """
         Read metrics with optional filters.
 
         Returns an empty DataFrame with the correct schema if no data exists.
         """
-        pattern = str(self.base_path / "**" / "*.parquet")
-        try:
-            df = pl.read_parquet(pattern)
-        except Exception:
+        from ..pipeline.run_store import RunStore, checked_child, validate_lob
+
+        if lob is not None:
+            validate_lob(lob)
+        store = RunStore(self.runs_path)
+        committed = store.list(lob=lob, run_type="backtest") if run_type in (None, "backtest") else []
+        if run_id is not None:
+            committed = [item for item in committed if item.run_id == run_id]
+        if latest:
+            selected = {}
+            for item in committed:
+                selected.setdefault(item.lob, item)
+            committed = list(selected.values())
+        frames = [store.frame(item.lob, item.run_id, "metrics") for item in committed]
+        # Explicit legacy partitions only: never scan a run's uncommitted files.
+        if not committed or (not latest and run_id is None):
+            files = set(self.base_path.glob("run_type=*/lob=*/*.parquet"))
+            files.update(self.base_path.glob("backtest/lob=*/*.parquet"))
+            files.update(self.base_path.glob("live/lob=*/*.parquet"))
+            files.update(self.base_path.glob("*.parquet"))
+            for filename in sorted(files):
+                path = checked_child(self.base_path, *filename.relative_to(self.base_path).parts)
+                try:
+                    frame = pl.read_parquet(path, hive_partitioning=False)
+                except Exception as exc:
+                    from ..pipeline.run_store import RunIntegrityError
+                    raise RunIntegrityError("unreadable_legacy_metrics") from exc
+                partition_type = path.parent.parent.name.removeprefix("run_type=")
+                partition_lob = path.parent.name.partition("=")[2]
+                for column, value in (("run_type", partition_type), ("lob", partition_lob)):
+                    if column not in frame.columns and path.parent != self.base_path and value:
+                        frame = frame.with_columns(pl.lit(value).alias(column))
+                frames.append(frame)
+        if not frames:
             return pl.DataFrame(schema=METRIC_SCHEMA)
+        df = pl.concat(frames, how="diagonal_relaxed")
 
         if run_type is not None:
             df = df.filter(pl.col("run_type") == run_type)
@@ -101,6 +136,8 @@ class MetricStore:
             df = df.filter(pl.col("model_id") == model_id)
         if grain_level is not None:
             df = df.filter(pl.col("grain_level") == grain_level)
+        if run_id is not None:
+            df = df.filter(pl.col("run_id") == run_id)
 
         return df
 
@@ -111,13 +148,24 @@ class MetricStore:
         primary_metric: str = "wmape",
         secondary_metric: str = "normalized_bias",
         grain_level: Optional[str] = None,
+        run_id: Optional[str] = None,
+        latest: bool = False,
     ) -> pl.DataFrame:
         """
         Compute a model leaderboard ranked by primary metric.
 
         Returns one row per model with aggregated metric values.
         """
-        df = self.read(run_type=run_type, lob=lob, grain_level=grain_level)
+        df = self.read(run_type=run_type, lob=lob, grain_level=grain_level, run_id=run_id, latest=latest)
+        return self.leaderboard_from_records(df, primary_metric, secondary_metric)
+
+    @staticmethod
+    def leaderboard_from_records(
+        df: pl.DataFrame,
+        primary_metric: str = "wmape",
+        secondary_metric: str = "normalized_bias",
+    ) -> pl.DataFrame:
+        """Apply the existing aggregation formula to one explicit record set."""
 
         if df.is_empty():
             return pl.DataFrame(schema={
@@ -145,13 +193,14 @@ class MetricStore:
         lob: Optional[str] = None,
         metric: str = "wmape",
         time_column: str = "target_week",
+        run_id: Optional[str] = None,
     ) -> pl.DataFrame:
         """
         Metric trend over time for a specific model.
 
         Returns one row per week with the aggregated metric.
         """
-        df = self.read(run_type=run_type, lob=lob, model_id=model_id)
+        df = self.read(run_type=run_type, lob=lob, model_id=model_id, run_id=run_id)
 
         if df.is_empty():
             return pl.DataFrame(schema={time_column: pl.Date, metric: pl.Float64})
