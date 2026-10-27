@@ -166,13 +166,20 @@ prior learned-model reference was found in the repository/path history; captured
 runs are candidates for a first corrected-policy empirical reference, not proof
 of historical no-regression.
 
+Both empirical gates consume the independently rescored winner's WMAPE, never
+the API summary as the scoring authority. The API `best_wmape` must additionally
+match that score at the existing `1e-12` relative/absolute arithmetic precision.
+
 The full fixture can bind its candidate and complete raw predictions to actual
 lock/manifest bytes, installed versions, selected wheel hashes and native profile
 probe evidence. The legacy capture script only prepares an **unapproved** review
 draft; independent approval must bind the entire captured record. Input hashes
 normalize only CRLF/LF; dependency/wheel hashes remain raw. References are specific
-to their exact native runtime/OS/profile and are never silently reused across OSes
-or dependency changes. See the [empirical qualification commands and evidence
+to the exact Python patch, qualified OS family, native architecture, interpreter
+platform/ABI, packages, wheels and lock/manifest identities. Full host/kernel
+descriptors remain audit provenance, not compatibility equality keys; an
+incidental kernel patch does not change the declared profile. References are never
+silently reused across OS families or dependency changes. See the [empirical qualification commands and evidence
 contract](../forecasting-product/tests/integration/baselines/README.md).
 
 Final references still require reviewed results from accepted native locked

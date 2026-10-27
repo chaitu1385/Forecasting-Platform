@@ -20,6 +20,12 @@ The two original tests retain their original numerical requirements:
 - `test_baseline_fva_preserved`: naive minus champion WMAPE must be **positive**
   and at least **80%** of the approved reference improvement.
 
+Both gates use the independently rescored winner's WMAPE. The API `best_wmape`
+summary must also agree with that score under the existing `1e-12` relative/
+absolute arithmetic comparison policy; missing or inconsistent summaries fail.
+Even an accepted serialization difference does not replace the authoritative
+score supplied to the unchanged regression/FVA thresholds.
+
 Missing/unapproved references, missing scores/models, nonfinite values, wrong
 fixtures, wrong scoring policy, incomplete populations and incompatible native
 profiles now **fail**, never skip. The naive-only oracle replaces neither gate.
@@ -117,13 +123,19 @@ Do not fill it with placeholder identities or approve merely because a run passe
 Review the initial reference as such; there is no missing historical learned-model
 golden against which to claim backward no-regression.
 
-Each approved record is specific to its Python patch, OS descriptor/architecture,
-interpreter platform, complete installed profile, and selected wheel hashes.
+Each approved record is specific to its exact Python patch, declared OS family,
+native architecture, interpreter platform/ABI, complete installed profile, and
+selected wheel hashes.
 Use separate reviewed files and `M5_BASELINE_PATH` for different native profiles.
 Source commits/run IDs may change in a subsequent regression run; fixture,
-policy, population and environment identities must still match. Kernel/image,
-wheel or profile changes require explicit requalification, not relaxed tolerances.
-There is no claim of cross-OS bitwise model identity.
+policy, population and qualified profile identities must still match. The full
+`os_release` host descriptor remains required audit provenance, but incidental
+kernel patches do not invalidate an otherwise identical qualified profile.
+Job IDs, timestamps and source commits are not equality keys either. Changes to
+the qualified OS family, native architecture, interpreter ABI, Python patch,
+packages, wheels or lock/manifest identities still require explicit
+requalification, not relaxed numerical tolerances. There is no claim of cross-OS
+bitwise model identity.
 
 Finally rerun the **same complete** integration suite against the approved
 reference with fresh candidate output paths. Both original empirical gates

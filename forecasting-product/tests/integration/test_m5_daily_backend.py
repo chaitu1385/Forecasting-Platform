@@ -65,6 +65,17 @@ def _load_sample() -> pl.DataFrame:
     return pl.read_csv(SAMPLE_CSV, try_parse_dates=True)
 
 
+def _assert_api_champion_wmape(result: dict, scores: dict, champion: str) -> float:
+    """Cross-check the API summary, but return the independently rescored winner."""
+    assert result.get("champion_model") == champion, "API champion differs from independent winner"
+    authoritative = scores[champion]["wmape"]
+    reported = result.get("best_wmape")
+    assert reported == pytest.approx(authoritative, rel=1e-12, abs=1e-12), (
+        f"API best_wmape {reported!r} differs from independent champion WMAPE {authoritative!r}"
+    )
+    return float(authoritative)
+
+
 # ── Test app factory ──────────────────────────────────────────────────────────
 
 def _make_app(data_dir: str, metrics_dir: str):
@@ -146,7 +157,7 @@ def _daily_backtest(tmp_path_factory, record_testsuite_property):
     expected_champion = min(
         scores, key=lambda model: (scores[model]["wmape"], abs(scores[model]["normalized_bias"]), model),
     )
-    assert result["champion_model"] == expected_champion
+    _assert_api_champion_wmape(result, scores, expected_champion)
     snapshot = {
         **provenance,
         "scoring_policy": "raw-observations-v1",
@@ -347,6 +358,10 @@ class TestBacktestPipeline(unittest.TestCase):
 
         data = self._backtest_result
         self.assertIsNotNone(data.get("best_wmape"), "Missing observed champion WMAPE")
+        observed_champion_wmape = _assert_api_champion_wmape(
+            data, self._backtest_provenance["scalar_reference_scores"],
+            self._backtest_provenance["champion_model"],
+        )
         leaderboard = data.get("leaderboard", [])
         self.assertEqual(len(leaderboard), len(baseline.per_model_wmape),
                          "Observed model leaderboard is incomplete or duplicated")
@@ -359,7 +374,7 @@ class TestBacktestPipeline(unittest.TestCase):
         assert_no_regression(
             self,
             baseline,
-            observed_champion_wmape=float(data["best_wmape"]),
+            observed_champion_wmape=observed_champion_wmape,
             observed_per_model_wmape=per_model,
         )
 
@@ -387,12 +402,16 @@ class TestBacktestPipeline(unittest.TestCase):
                          "Observed model population is incomplete")
         naive_wmape = by_id["naive_seasonal"]
         self.assertIsNotNone(data.get("best_wmape"), "Missing observed champion WMAPE")
+        observed_champion_wmape = _assert_api_champion_wmape(
+            data, self._backtest_provenance["scalar_reference_scores"],
+            self._backtest_provenance["champion_model"],
+        )
 
         assert_fva_preserved(
             self,
             baseline,
             observed_naive_wmape=naive_wmape,
-            observed_champion_wmape=float(data["best_wmape"]),
+            observed_champion_wmape=observed_champion_wmape,
         )
 
     def test_leaderboard(self):

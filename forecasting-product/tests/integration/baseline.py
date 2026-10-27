@@ -227,14 +227,14 @@ def _validate_document(data: dict) -> None:
 def verify_baseline_compatibility(
     testcase: unittest.TestCase, baseline: Baseline, observed: dict,
 ) -> None:
-    """Compare like-for-like profiles/populations, never different OS/wheel runs."""
+    """Compare the declared native profile; host/kernel text remains audit-only."""
     _validate_candidate(observed, require_profile=True)
     expected = baseline.raw["provenance"]
     for key in (
         "fixture_utf8_lf_sha256", "config_utf8_lf_sha256", "scoring_policy", "models",
         "input_rows", "series_count", "folds", "validation_periods", "gap_periods",
         "scored_observations_per_model", "python", "system", "process_machine", "interpreter_platform",
-        "os_release", "packages", "profile_lock_name", "profile_lock_sha256",
+        "packages", "profile_lock_name", "profile_lock_sha256",
         "profile_manifest_sha256", "profile_package_versions", "profile_wheels",
     ):
         testcase.assertEqual(observed[key], expected[key], f"M5 baseline incompatible {key}")

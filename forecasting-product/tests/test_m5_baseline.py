@@ -202,6 +202,32 @@ def test_new_source_run_is_allowed_only_with_the_same_qualified_environment():
     gates.verify_baseline_compatibility(unittest.TestCase(), reference, observed)
 
 
+def test_same_qualified_profile_can_have_a_different_kernel_audit_descriptor():
+    document = _document()
+    document["provenance"]["os_release"] = "Linux-6.8.0-1030-azure-x86_64-with-glibc2.39"
+    document["approval"]["candidate_sha256"] = _digest(document["provenance"])
+    reference = gates.Baseline.from_dict(document)
+    observed = deepcopy(document["provenance"])
+    observed["os_release"] = "Linux-6.8.0-1031-azure-x86_64-with-glibc2.39"
+    observed["ci_run_id"] = "456"
+    observed["ci_source_sha"] = "b" * 40
+    gates.verify_baseline_compatibility(unittest.TestCase(), reference, observed)
+    assert reference.raw["provenance"]["os_release"] != observed["os_release"]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("system", "Windows"), ("process_machine", "aarch64"), ("interpreter_platform", "win-amd64")],
+)
+def test_kernel_tolerance_does_not_accept_other_os_architecture_or_interpreter(field, value):
+    reference = gates.Baseline.from_dict(_document())
+    observed = _candidate()
+    observed["os_release"] = "different-kernel-audit-descriptor"
+    observed[field] = value
+    with pytest.raises((AssertionError, ValueError), match="incompatible|native x64"):
+        gates.verify_baseline_compatibility(unittest.TestCase(), reference, observed)
+
+
 def test_input_hashes_normalize_only_checkout_line_endings(tmp_path):
     reference = gates.Baseline.from_dict(_document())
     fixture, config = tmp_path / "input.csv", tmp_path / "config.yaml"
@@ -253,6 +279,76 @@ def test_original_empirical_test_methods_keep_complete_model_gates(monkeypatch, 
         with pytest.raises(AssertionError):
             getattr(case, method)()
     else:
+        getattr(case, method)()
+
+
+def _case_with_rescored_champion(monkeypatch, method, rescored_wmape, api_wmape):
+    """Supply synthetic unit evidence to the real gate methods, without fitting models."""
+    from tests.integration.test_m5_daily_backend import TestBacktestPipeline
+
+    reference = gates.Baseline.from_dict(_document())
+    observed = _candidate()
+    observed["scalar_reference_scores"]["lgbm_direct"]["wmape"] = rescored_wmape
+    observed["scalar_reference_scores"]["lgbm_direct"]["mae"] = rescored_wmape * 7945 / 5880
+    observed["raw_predictions_sha256"] = "7" * 64
+    gates.verify_baseline_compatibility(unittest.TestCase(), reference, observed)
+    monkeypatch.setattr(gates, "require_baseline", lambda *args, **kwargs: reference)
+    case = TestBacktestPipeline(methodName=method)
+    case._backtest_provenance = observed
+    case._backtest_result = {
+        "best_wmape": api_wmape, "champion_model": "lgbm_direct",
+        "leaderboard": [
+            {"model_id": model, "wmape": score["wmape"]}
+            for model, score in observed["scalar_reference_scores"].items()
+        ],
+    }
+    return case
+
+
+@pytest.mark.parametrize("method", ["test_baseline_no_regression", "test_baseline_fva_preserved"])
+def test_original_gates_reject_stale_finite_api_summary(monkeypatch, method):
+    case = _case_with_rescored_champion(monkeypatch, method, 0.80, 0.75)
+    with pytest.raises(AssertionError, match="API best_wmape.*independent"):
+        getattr(case, method)()
+
+
+@pytest.mark.parametrize("method", ["test_baseline_no_regression", "test_baseline_fva_preserved"])
+@pytest.mark.parametrize("missing", ["absent", "null"])
+def test_original_gates_reject_missing_api_summary(monkeypatch, method, missing):
+    case = _case_with_rescored_champion(monkeypatch, method, 0.80, None)
+    if missing == "absent":
+        case._backtest_result.pop("best_wmape")
+    with pytest.raises(AssertionError, match="champion WMAPE|best_wmape"):
+        getattr(case, method)()
+
+
+@pytest.mark.parametrize(
+    "method,message",
+    [("test_baseline_no_regression", "Champion WMAPE regression"),
+     ("test_baseline_fva_preserved", "FVA regression")],
+)
+def test_original_gates_reject_rescored_point_eight_with_consistent_api_summary(monkeypatch, method, message):
+    case = _case_with_rescored_champion(monkeypatch, method, 0.80, 0.80)
+    with pytest.raises(AssertionError, match=message):
+        getattr(case, method)()
+
+
+@pytest.mark.parametrize(
+    "method,message",
+    [("test_baseline_no_regression", "Champion WMAPE regression"),
+     ("test_baseline_fva_preserved", "FVA regression")],
+)
+def test_original_gates_use_authoritative_score_even_within_summary_roundoff_policy(monkeypatch, method, message):
+    reference = gates.Baseline.from_dict(_document())
+    boundary = (
+        reference.champion_wmape * (1 + gates.CHAMPION_REGRESSION_TOLERANCE)
+        if method == "test_baseline_no_regression"
+        else reference.naive_wmape - reference.fva_vs_naive * gates.MIN_FVA_RATIO
+    )
+    case = _case_with_rescored_champion(
+        monkeypatch, method, boundary + 2e-13, boundary - 2e-13,
+    )
+    with pytest.raises(AssertionError, match=message):
         getattr(case, method)()
 
 
