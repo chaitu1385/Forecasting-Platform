@@ -184,7 +184,7 @@ Legacy files remain an explicit option with unknown lineage.
 Programmatically, keep the `run_id` and relative `links` in a successful pipeline
 response. Use `/pipeline/runs` to list completed attempts,
 `/pipeline/runs/{lob}/{run_id}/config` for safe saved settings, and
-`/forecasts/{lob}?run_id=<UUID32>` for exact output. History and metric queries
+`/forecast/{lob}?run_id=<UUID32>` for exact output. History and metric queries
 also support run scope. These endpoints require the existing authenticated read
 permissions; a LOB name is not tenant isolation.
 
