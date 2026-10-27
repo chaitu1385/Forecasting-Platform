@@ -495,7 +495,9 @@ class TestRouterRegistration(unittest.TestCase):
             jwt_secret="",
         )
         self.client = TestClient(app)
-        self.routes = [r.path for r in app.routes]
+        response = self.client.get("/openapi.json")
+        self.assertEqual(response.status_code, 200)
+        self.routes = response.json()["paths"]
 
     def test_series_routes_registered(self):
         self.assertIn("/series/{lob}", self.routes)

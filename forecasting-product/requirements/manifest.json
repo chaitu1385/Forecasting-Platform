@@ -1,148 +1,166 @@
 {
   "profiles": {
     "py311/ai.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.11.18",
-      "sha256": "78e3397faa63851a38c8176491a47c815b66cff0d80b8c60a57cec8b0d876773"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "5fd8d8dd8fceeac40ad2a74f29116ce268a093b7deb537d5ca11c397b5fff4dd"
     },
     "py311/api.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.11.18",
-      "sha256": "528014d6fddc88949e0420e13bb1f26103d32c6617216d473f777e1cae8b14c9"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "f8f43ccb8e51b408313d2fe85e518a9ceefb6e42766540fdccd398b978fdcf03"
     },
     "py311/core.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.11.18",
-      "sha256": "ca8e7f0b2a6008a20d9cc6ec36fc91114d1c6808d8cf466fc63d5d4bce6ad39b"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "2ec91c961ecdb99347bffaa71f39e3d6b995ecd52c35a5742cf64de44d075b24"
     },
     "py311/dev.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.11.18",
-      "sha256": "bf1759981185bfe4b7dc33c9b91b47d1a117600bfe74fb5505d6c03d31b7d9aa"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "373ff11fd8465af5023f724c6426d1c5a89fb1eecf3f687aba10003904498b51"
     },
     "py311/fabric.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.11.18",
-      "sha256": "dc7d0ed55f0268ddc9f3b383583ab1cfe112fa4b6463201c1a383d33556dd5bc"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "ce2d2942a0dda9178f66306e8455dbd0e7b7c5aa8d85fc85aea6e12b4728b6a4"
     },
     "py311/spark.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.11.18",
-      "sha256": "ef74e17a31213ca0894bd589cc36071fb44f7ce4dd74d9e24e28263b6622c13a"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "935a517e6460cf99f421446e5cd661fdb9a0db718ce3d4e81563fb3b75135ab6"
     },
     "py312/ai.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.12.16",
-      "sha256": "e1ef738121c66732cdebe304d8335b4f876a8170f4e03b81444b3e3b94d927fa"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "f272e182d66e06c76ca2edc833d943cec74bd332c34b24683af5310e2f333b68"
     },
     "py312/api.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.12.16",
-      "sha256": "7da4460d9ba354688a77ec5311065f909414574239498147c7d8e725b44546c3"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "2f202a848bec07b76fa048a8c5ae7d737b9b7169b48bb99066a5ed463c609854"
     },
     "py312/core.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.12.16",
-      "sha256": "46f51612f45fee9754c1ed1e8e66f04de3f968ede027b02695d2da950e2037bf"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "9d6e05465d78805512d1d8565a1d51f3bac3215abd7b0dc1be8eca1ba957e436"
     },
     "py312/dev.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.12.16",
-      "sha256": "37728de908072e6a22470764333fba13aff2ce08a4e27d0023daea2c582f3a39"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "a569c07a5b4ce4c5390bec323def8a615551f0f30a19ff0a690c58489f90fcee"
     },
     "py312/fabric.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.12.16",
-      "sha256": "1fba1b9c5bb1aa30cec29f28dbf0ee95e961afd7b16a1e71abef30a199ec90d3"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "bb1254fdadbd3ed2bb74ee0afd836527ef8dfabccc292972c88941fdb4b2d135"
     },
     "py312/spark.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.12.16",
-      "sha256": "f4248da09a5271514850db2852f4dfca01feca1d4114ea089e1f22d603aa9055"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "122a9a66341a426235dd9c22c6ec78001e51a712e5bb1a3e94c76ab767163682"
     },
     "py313/ai.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.13.18",
-      "sha256": "e4ebdefb29cff66f1e5dd76e7c10cb001ae93e51a6e7c0731ebdd80de8491375"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "48be63d46eca8a047868ccc44189b945b33725b9d91f47d206ae2c33cd65c400"
     },
     "py313/api.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.13.18",
-      "sha256": "a3c2a503dd34f8a5e1c4517d2ed00fb295524b1cf23415b2c3bdb6a622051865"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "1de2acba0debfed7858cad6935dea0cdbdde6ec47cee2e62aed9f8e26aa43a88"
     },
     "py313/core.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.13.18",
-      "sha256": "6189c7c46bccc2cf4ff96e2ca7afeefdb39355f0c21cccd231289209e1b125b5"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "cb99d617d9ad89151487c87d6ee127349602dd0b85f4efe3f8d17c7517c6f323"
     },
     "py313/dev.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.13.18",
-      "sha256": "1f95c803ea907ef59b1ce09ae4149df3a0ae186cc6b7f90c990aaf978a88e88b"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "6672369f865b5ef25fda928a61eb2d6f7db5c8e0aad1819cd076af4c2da826cf"
     },
     "py313/fabric.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.13.18",
-      "sha256": "2adb69feb1e14ef48c4f6c91b753a21132f9023ec1e21e60b4ac8c30948f73eb"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "bc65e8d123e21326068cd10cc0b298ce980be011f118d025d6ae95599c71b534"
     },
     "py313/spark.txt": {
-      "manifest_sha256": "22bb5298ab7c93b2253a6b14b7e6f7a5ea369b340f11e5b63cbda9d5e4b23c2c",
+      "manifest_sha256": "78b9f9b1dd9b23c749bcf61329d652f144307aa6be0a0a7ed6009bcb3548c6af",
       "pip": "26.2.2",
       "pip-tools": "7.6.2",
       "platform": "win32",
       "python": "3.13.18",
-      "sha256": "28493ae05fa6468927c475750a890118439ffece6b8bf07eaa7aa536180eface"
+      "release_policy": "stable-non-yanked-pins-preserved",
+      "sha256": "0306272ba0651dc3f8cb7c074f2c63bafec3a505d7cb41be827280320f8ab8d0"
     }
   }
 }

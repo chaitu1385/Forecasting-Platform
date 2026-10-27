@@ -27,7 +27,7 @@ jobs:
       - run: >-
           python -m pip install --require-hashes --only-binary=:all:
           -r forecasting-product/requirements/py312/dev.txt
-      - run: python forecasting-product/scripts/lock_dependencies.py --check
+      - run: python forecasting-product/scripts/lock_dependencies.py --check --upstream
       - run: ruff check forecasting-product/src/
       - name: Audit all locked Python dependency closures
         run: |
@@ -460,6 +460,9 @@ jobs:
           cache: npm
           cache-dependency-path: forecasting-product/frontend/package-lock.json
       - run: npm ci
+      - run: npm run lock:integrity -- --check-upstream
+        env:
+          npm_config_cache: ${{ runner.temp }}/npm-integrity-cache
       - run: npm audit --audit-level=high
       - run: npm run lint
       - run: npm run typecheck

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
 import importlib.metadata
 import json
@@ -57,6 +58,7 @@ def check_profile(profile: str, output: Path) -> None:
 
     import numpy as np
     import polars as pl
+    from src.forecasting.base import BaseForecaster
     from src.forecasting.registry import registry
 
     data = pl.DataFrame([
@@ -67,6 +69,28 @@ def check_profile(profile: str, output: Path) -> None:
         }
         for series in range(2) for period in range(80)
     ])
+    def collect(model: BaseForecaster) -> dict[str, object]:
+        model.fit(data)
+        points = model.predict(4).sort(["series_id", "week"])
+        intervals = model.predict_quantiles(4, [0.1, 0.5, 0.9]).sort(["series_id", "week"])
+        if points.height != 8 or intervals.height != 8:
+            raise AssertionError(f"{model.name}: native output shape changed")
+        for frame, columns in (
+            (points, ["forecast"]),
+            (intervals, ["forecast_p10", "forecast_p50", "forecast_p90"]),
+        ):
+            if not np.isfinite(frame.select(columns).to_numpy()).all():
+                raise AssertionError(f"{model.name}: nonfinite native output")
+        if intervals.filter(
+            (pl.col("forecast_p10") > pl.col("forecast_p50"))
+            | (pl.col("forecast_p50") > pl.col("forecast_p90"))
+        ).height:
+            raise AssertionError(f"{model.name}: crossed prediction intervals")
+        return {
+            "points": points.to_dicts(), "intervals": intervals.to_dicts(),
+            "parameters": model.get_params(),
+        }
+
     results = {}
     for model_name, parameter in (
         ("lgbm_direct", "lgbm_params"),
@@ -76,18 +100,18 @@ def check_profile(profile: str, output: Path) -> None:
             model_name, lags=[1, 2], num_threads=1,
             **{parameter: {"n_estimators": 12, "random_state": 17}},
         )
-        model.fit(data)
-        points = model.predict(4).sort(["series_id", "week"])
-        intervals = model.predict_quantiles(4, [0.1, 0.5, 0.9]).sort(["series_id", "week"])
-        if points.height != 8 or intervals.height != 8:
-            raise AssertionError(f"{model_name}: native output shape changed")
-        for frame, columns in (
-            (points, ["forecast"]),
-            (intervals, ["forecast_p10", "forecast_p50", "forecast_p90"]),
-        ):
-            if not np.isfinite(frame.select(columns).to_numpy()).all():
-                raise AssertionError(f"{model_name}: nonfinite native output")
-        results[model_name] = {"points": points.to_dicts(), "intervals": intervals.to_dicts()}
+        results[model_name] = collect(model)
+    diagnostic = registry.build(
+        "xgboost_direct", lags=[1, 2], num_threads=1,
+        xgb_params={
+            "n_estimators": 12, "random_state": 17,
+            "subsample": 1.0, "colsample_bytree": 1.0,
+        },
+    )
+    xgboost = importlib.import_module("xgboost")
+    build = xgboost.build_info()
+    if build["USE_CUDA"] or xgboost.__version__ != importlib.metadata.version("xgboost-cpu"):
+        raise AssertionError("The loaded XGBoost runtime does not match the CPU-only profile")
     packages = (
         "numpy", "scipy", "pandas", "pyarrow", "polars", "polars-runtime-32",
         "statsforecast", "mlforecast", "hierarchicalforecast", "lightgbm",
@@ -101,7 +125,22 @@ def check_profile(profile: str, output: Path) -> None:
         "interpreter_platform": sysconfig.get_platform(),
         "polars_runtime": importlib.import_module("polars._plr").RUNTIME_REPR,
         "packages": {name: importlib.metadata.version(name) for name in packages},
+        "input_sha256": hashlib.sha256(
+            json.dumps(data.to_dicts(), sort_keys=True, default=str).encode()
+        ).hexdigest(),
+        "input_scale": {
+            "observations": data.height,
+            "series": data["series_id"].n_unique(),
+            "target_min": data["quantity"].min(),
+            "target_max": data["quantity"].max(),
+        },
+        "xgboost_build": {
+            key: build[key]
+            for key in ("USE_CUDA", "USE_OPENMP", "GCC_VERSION", "MSVC_VERSION")
+            if key in build
+        },
         "synthetic_native_outputs": results,
+        "diagnostics": {"xgboost_without_sampling": collect(diagnostic)},
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8")

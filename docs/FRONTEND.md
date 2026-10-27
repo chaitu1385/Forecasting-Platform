@@ -295,3 +295,18 @@ reported as a warning for existing effect-driven state handoffs. This migration
 does not rewrite authentication, cache invalidation or pipeline ownership merely
 to satisfy a new style/performance rule. Rules of Hooks, other Next/React errors,
 type checking and behavioral tests remain enforced.
+
+Two upstream-required **development-only** release-label exceptions are explicit:
+`eslint-plugin-react` 7.37.5 requires `resolve ^2.0.0-next.5`, resolving to
+`2.0.0-next.6`; the available stable `resolve` 1.x does not satisfy that API range.
+Babel 7.29.7 requires `gensync ^1.0.0-beta.2`, whose published latest is still
+`1.0.0-beta.2`. Neither is in the production npm dependency closure. The Vite
+React plugin is updated normally to 6.1.2 to use stable Rolldown plugin utilities,
+without enabling optional compiler peers.
+
+Repository dependency maintainers own revisiting these two exceptions when
+compatible stable upstream dependencies exist. Dependency-policy tests enforce
+the exact labels, direct-parent requirements, dev-only graph placement and
+artifact integrity. This is not a CVE/yanked-release waiver, a global `--pre`
+policy, or an assertion about vendored code embedded inside framework packages;
+the normal security audits, lint/type checks and behavioral gates still apply.

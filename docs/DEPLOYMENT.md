@@ -150,12 +150,22 @@ python -m pip install pip==26.2.2 pip-tools==7.6.2 setuptools==84.2.0 wheel==0.4
 cd forecasting-product
 python scripts/lock_dependencies.py --wheelhouse /absolute/private/cache/wheels
 python scripts/lock_dependencies.py --check
+# CI also checks current upstream release/yank policy, independently of CVE audits:
+python scripts/lock_dependencies.py --check --upstream
 ```
 
 On Windows, pass an absolute Windows path for `--wheelhouse`. The generator
 resolves from the manifest, stages only the supported Windows/Linux artifacts,
 and runs pip-tools' hash generation against that bounded local wheelhouse.
 The dev resolution constrains shared dependencies in every smaller profile.
+The hash-export pass is constrained to the resolver's exact versions and markers:
+a shared wheel cache must not promote a different cached version. Generation
+rejects prerelease/development versions and yanked upstream artifacts, and verifies
+every selected hash against PyPI metadata before replacing an export. CI repeats
+the online policy check; hashes and a clean CVE audit alone do not prove release
+quality. In particular, pytest-timeout 2.5.0 was yanked for an accidental breaking
+change and wrapt 2.5.2rc1 is a prerelease; the qualified bounds retain stable
+pytest-timeout 2.4 and wrapt 2.5.1 instead.
 `requirements/manifest.json` records the interpreter, generator and content
 hashes; `--check` is offline and rejects missing/stale/modified exports.
 Installation never needs that private wheelhouse: the committed exports contain
@@ -202,6 +212,12 @@ consistency, imports the actual native stack, and records bounded synthetic
 LightGBM/XGBoost point and interval outputs. It refuses to call ARM-host x64
 emulation native qualification. Spark checks cover the Python SDK import, not a
 distributed cluster, Java security posture or managed Fabric certification.
+The numerical report retains the original seeded/sampled probe and a separate
+fully sampled XGBoost diagnostic, input hash/scale, actual parameters and CPU
+build identity. Same-platform repeatability, same-platform profile upgrades and
+cross-OS variation are distinct comparisons: a seed is not a cross-compiler
+bitwise guarantee. These fixture-scoped compatibility probes do not replace
+independently derived mathematical oracles or justify relaxed tolerances.
 
 ### Dependency advisory review (October 27, 2026)
 
@@ -300,6 +316,20 @@ The lock retains exact versions and integrity hashes but omits registry-specific
 `resolved` URLs, so a developer's configured package mirror cannot leak into
 deployment artifacts. npm resolves the pinned artifact through the configured
 registry and still verifies its integrity; it does not reselect package versions.
+If a mirror emits legacy SHA-1 integrity metadata, the bounded
+`npm run lock:integrity -- --refresh` tool fetches only those exact existing
+tarballs with their original integrity enforced, records SHA-512 using the
+pinned npm tooling, and asserts that every package/version/dependency/platform
+field is unchanged. Set `npm_config_cache` to an absolute task-owned directory.
+The generated normalization record contains no tarballs or private feed URLs.
+
+Hash strengthening over mirror bytes is **not** independent upstream
+authentication. Acceptance requires `npm run lock:integrity -- --check-upstream`
+on the native CI host: every normalized digest must match authoritative public
+registry SHA-512 metadata or the exact official HTTPS tarball if metadata is
+legacy. Any discrepancy fails the gate; expected hashes are never rewritten to
+make it pass. Corrupted-original, upstream-mismatch and graph-change negative
+controls remain required, followed by a clean `npm ci` and the normal checks.
 `npm run test:runtime-browser` requires a production build and exercises the
 actual fan-chart and sunburst React components, including series updates,
 legend toggling and drilldown, against an isolated standalone server and

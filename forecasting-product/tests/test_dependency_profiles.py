@@ -81,15 +81,66 @@ def test_generated_profiles_match_manifest_and_recorded_content():
     )
 
 
-def test_lock_check_rejects_modified_content(tmp_path, monkeypatch):
+@pytest.fixture
+def lock_module():
     spec = importlib.util.spec_from_file_location("lock_dependencies", ROOT / "scripts" / "lock_dependencies.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module, "LOCK_ROOT", tmp_path)
-    monkeypatch.setattr(module, "RECORD", ROOT / "requirements" / "manifest.json")
+    return module
+
+
+def test_lock_check_rejects_modified_content(tmp_path, monkeypatch, lock_module):
+    monkeypatch.setattr(lock_module, "LOCK_ROOT", tmp_path)
+    monkeypatch.setattr(lock_module, "RECORD", ROOT / "requirements" / "manifest.json")
     target = tmp_path / "py311" / "dev.txt"
     target.parent.mkdir()
     target.write_text("# corrupted generated content\n", encoding="utf-8")
     with pytest.raises(ValueError, match="generated content changed"):
-        module.verify()
+        lock_module.verify()
+
+
+@pytest.mark.parametrize("version", ["2.5.2rc1", "2.6.0.dev1"])
+def test_release_policy_rejects_prerelease_pins(tmp_path, lock_module, version):
+    path = tmp_path / "prerelease.txt"
+    path.write_text(f"wrapt=={version}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Unqualified prerelease"):
+        lock_module._read_pins(path)
+
+
+@pytest.mark.parametrize("include_valid_alternative", [False, True])
+def test_release_policy_rejects_yanked_artifacts(lock_module, include_valid_alternative):
+    urls = [{"digests": {"sha256": "0" * 64}, "yanked": True}]
+    if include_valid_alternative:
+        urls.append({"digests": {"sha256": "1" * 64}, "yanked": False})
+    with pytest.raises(ValueError, match="yanked"):
+        lock_module._check_release_artifacts("example", "1.0", ("0" * 64,), urls)
+
+
+def test_release_policy_rejects_non_upstream_hash(lock_module):
+    urls = [{"digests": {"sha256": "0" * 64}, "yanked": False}]
+    with pytest.raises(ValueError, match="not an upstream artifact"):
+        lock_module._check_release_artifacts("example", "1.0", ("1" * 64,), urls)
+
+
+def test_release_policy_accepts_published_non_yanked_hash(lock_module):
+    urls = [{"digests": {"sha256": "0" * 64}, "yanked": False}]
+    lock_module._check_release_artifacts("example", "1.0", ("0" * 64,), urls)
+
+
+@pytest.mark.parametrize("replacement", ["example==1.1", 'example==1.0; sys_platform == "win32"'])
+def test_hash_export_cannot_promote_cached_versions_or_change_markers(tmp_path, lock_module, replacement):
+    resolved = tmp_path / "resolved.txt"
+    exported = tmp_path / "hashed.txt"
+    resolved.write_text("example==1.0\n", encoding="utf-8")
+    exported.write_text(replacement + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="changed the resolved versions or platform markers"):
+        lock_module._check_resolution_preserved(resolved, exported)
+
+
+def test_hash_export_preserves_resolution_while_adding_hashes(tmp_path, lock_module):
+    resolved = tmp_path / "resolved.txt"
+    exported = tmp_path / "hashed.txt"
+    resolved.write_text('example==1.0; sys_platform != "darwin"\n', encoding="utf-8")
+    exported.write_text('example==1.0; sys_platform != "darwin" --hash=sha256:' + "0" * 64 + "\n", encoding="utf-8")
+    lock_module._check_resolution_preserved(resolved, exported)

@@ -114,7 +114,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 1711 tests (pytest)
+├── tests/                  # 1720 tests (pytest)
 ├── configs/                # YAML configuration files
 ├── requirements/           # Hash-locked CPU/API/dev/AI/Fabric/Spark profiles per Python minor
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
@@ -194,6 +194,9 @@ Only explicit demo renders role simulation; production seeding is disabled.
 Install the matching committed `requirements/py311`, `py312` or `py313` dev
 profile with `--require-hashes --only-binary=:all:`. Python 3.10 is EOL.
 `scripts/lock_dependencies.py --check` verifies generated provenance offline;
+CI adds `--upstream` to reject yanked/non-upstream artifacts independently of CVEs.
+The hash-export pass must preserve the resolver's exact versions and markers;
+never let a shared wheel cache promote an unrequested prerelease.
 regenerate using the pinned pip/pip-tools and a private Windows/Linux wheel cache.
 Polars 2.0 is the supported application floor. The CPU profile intentionally
 uses `xgboost-cpu`, not a GPU/NCCL distribution; provenance must record the actual
@@ -202,7 +205,7 @@ distribution version. Never replace locks with unconstrained installs to make CI
 - Framework: pytest
 - Test files mirror source structure with `test_` prefix
 - Helper fixtures use `_make_*` factory functions (e.g., `_make_weekly_actuals`)
-- 1711 cases across 65 test modules; run the full suite without module exclusions
+- 1720 cases across 65 test modules; run the full suite without module exclusions
 - Key test modules: `test_platform.py` (85 tests), `test_sku_mapping.py` (81), `test_ai_*.py` (73), `test_forecast_explainability.py` (59), `test_intermittent_demand.py` (55), `test_observability.py` (41), `test_file_classifier.py` (26), `test_file_merger.py` (20)
 - Focused forecast-intent coverage: `test_forecast_intent.py` (108 real ASGI cases),
   plus frontend `e2e/pipeline-execution.test.tsx` and `e2e/data-onboarding-state.test.tsx`

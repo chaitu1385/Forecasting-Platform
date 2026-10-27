@@ -143,7 +143,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 1711 unit + integration tests
+├── tests/                  # 1720 unit + integration tests
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 ├── notebooks/              # Jupyter notebooks for exploration
@@ -1011,7 +1011,7 @@ only mocked chart component tests.
 | Test file | Tests | Covers |
 |-----------|------:|--------|
 | `test_platform.py` | 85 | Config, hierarchy, reconciliation, metrics, transitions, registry, backtest, REST API, deployment, drift |
-| `test_dependency_profiles.py` | 20 | All Python/profile locks, hashes, CPU-only boundaries, shared versions and stale/tampered export rejection |
+| `test_dependency_profiles.py` | 29 | All Python/profile locks, hashes, CPU-only boundaries, audited closure/marker coverage, release policy and stale/tampered export rejection |
 | `test_forecast_intent.py` | 107 | Real ASGI champion/horizon/config handoff, aliases, safe execution settings, invalid-input no-publication guarantees |
 | `test_forecast_explainability.py` | 59 | Comparator, ExceptionEngine, Explainer (STL+SHAP+narrative), ModelCard, Registry, DriftDetector, Lineage |
 | `test_intermittent_demand.py` | 55 | SparseDetector, Croston, CrostonSBA, TSB, backtest routing |
