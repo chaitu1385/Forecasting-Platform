@@ -25,7 +25,8 @@ from typing import Dict, List, Optional, Tuple
 
 import polars as pl
 
-from ..config.schema import TransitionConfig, freq_timedelta
+from ..config.schema import TransitionConfig
+from ..utils.calendar import advance_date
 
 VALID_RAMP_SHAPES = frozenset({"linear", "scurve", "step"})
 
@@ -113,7 +114,7 @@ class TransitionEngine:
                 key = (row["old_sku"], row["new_sku"])
                 override_map[key] = row
 
-        horizon_end = forecast_origin + freq_timedelta(self.frequency, horizon_weeks)
+        horizon_end = advance_date(forecast_origin, self.frequency, horizon_weeks)
         plans: List[TransitionPlan] = []
 
         for row in mapping_table.iter_rows(named=True):
@@ -147,11 +148,11 @@ class TransitionEngine:
                 ))
             elif new_launch <= horizon_end:
                 # Scenario B — launches within horizon
-                ramp_start = new_launch - freq_timedelta(
-                    self.frequency, self.window_periods // 2
+                ramp_start = advance_date(
+                    new_launch, self.frequency, -(self.window_periods // 2)
                 )
-                ramp_end = new_launch + freq_timedelta(
-                    self.frequency, self.window_periods // 2
+                ramp_end = advance_date(
+                    new_launch, self.frequency, self.window_periods // 2
                 )
                 plans.append(TransitionPlan(
                     old_sku=old_sku,

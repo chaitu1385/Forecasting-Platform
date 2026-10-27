@@ -165,7 +165,19 @@ backtest:
   val_periods: 3          # alias for val_weeks (backward-compat)
 ```
 
-Helper functions: `get_frequency_profile(freq)` returns the profile dict; `freq_timedelta(freq, periods)` returns a `timedelta` for date arithmetic. All models, backtesting, validation, and data processing use these instead of hardcoded weekly values.
+`get_frequency_profile(freq)` returns defaults. `utils.calendar.PeriodCalendar`
+validates the explicitly configured frequency and preserves observed weekday,
+month-start/end and quarter-start/end anchors. It drives model, feature, gap-fill
+and CV dates. `freq_timedelta` is only valid for fixed D/W periods; M/Q raise
+instead of approximating months as 30 days. Explicit seasonal parameters are
+never replaced by frequency defaults.
+
+Selection and leaderboards use `metrics.aggregation` on complete raw observation
+keys, not means of cached metric columns. Default `wmape` is volume-weighted;
+`macro_wmape` explicitly requests equal series/fold weighting. Bias is positive
+for over-forecasting and ranks by absolute magnitude. See
+[the numerical contract](docs/NUMERICAL_RELIABILITY.md), including undefined
+scores, gap lead times, preprocessing restrictions and historical-run migration.
 
 ## Authentication contract
 

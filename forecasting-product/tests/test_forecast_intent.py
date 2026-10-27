@@ -226,17 +226,23 @@ def test_period_alias_precedence_and_configured_columns(client):
     assert backtest.json()["execution"]["config"]["backtest_gap_periods"] == 0
 
 
-@pytest.mark.parametrize("frequency,days", [("D", 1), ("W", 7), ("M", 30), ("Q", 91)])
-def test_configured_frequency_and_horizon_reach_forecast(client, frequency, days):
+@pytest.mark.parametrize("frequency", ["D", "W", "M", "Q"])
+def test_configured_frequency_and_horizon_reach_forecast(client, frequency):
     config = _config()
     config["forecast"].update({"frequency": frequency, "forecasters": ["naive_seasonal"]})
-    df = _actuals().with_columns(
-        pl.Series("week", [date(2024, 1, 1) + timedelta(days=days * i) for i in range(60)])
-    )
+    if frequency in ("M", "Q"):
+        months = [i * (3 if frequency == "Q" else 1) for i in range(65)]
+        dates = [date(2024 + month // 12, month % 12 + 1, 1) for month in months]
+    else:
+        dates = [date(2024, 1, 1) + timedelta(days=i * (7 if frequency == "W" else 1)) for i in range(65)]
+    df = _actuals().with_columns(pl.Series("week", dates[:60]))
     response = _run(client, config=config, actuals=df)
     assert response.status_code == 200, response.text
     assert response.json()["forecast_rows"] == 5
     assert response.json()["execution"]["config"]["frequency"] == frequency
+    assert sorted(row["week"] for row in response.json()["forecast_preview"]) == [
+        value.isoformat() for value in dates[60:]
+    ]
 
 
 INVALID_CONFIGS = [

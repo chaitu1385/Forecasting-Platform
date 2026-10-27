@@ -618,9 +618,8 @@ class DataAnalyzer:
         try:
             d0 = date.fromisoformat(schema.date_range[0][:10])
             d1 = date.fromisoformat(schema.date_range[1][:10])
-            td_kwargs = profile["timedelta_kwargs"]
-            period_days = sum(v * (7 if k == "weeks" else 1) for k, v in td_kwargs.items())
-            data_periods = max(1, (d1 - d0).days // period_days)
+            from ..utils.calendar import PeriodCalendar
+            data_periods = max(1, PeriodCalendar.from_dates([d0, d1], freq).index(d1))
         except (ValueError, IndexError):
             data_periods = profile["min_series_length"]
         data_weeks = data_periods  # backward-compat alias for threshold logic

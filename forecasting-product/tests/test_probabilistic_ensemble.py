@@ -10,6 +10,7 @@ Covers:
   - ForecastPipeline: quantile columns emitted when config.forecast.quantiles set
 """
 
+from datetime import date, timedelta
 from typing import List
 
 import polars as pl
@@ -219,6 +220,12 @@ class TestComputeEnsembleWeights:
                         "series_id": sid,
                         "wmape": wmape + 0.01 * fold,
                         "normalized_bias": 0.0,
+                        "run_id": "ensemble-oracle",
+                        "lob": "test",
+                        "target_week": date(2024, 1, 1) + timedelta(weeks=fold),
+                        "forecast_step": 1,
+                        "actual": 100.0,
+                        "forecast": 100.0 * (1 + wmape + 0.01 * fold),
                     })
         return pl.DataFrame(rows)
 
@@ -253,6 +260,12 @@ class TestComputeEnsembleWeights:
             "series_id": ["A", "B"] * 2,
             "wmape": [0.10] * 4,
             "normalized_bias": [0.0] * 4,
+            "run_id": ["single-model"] * 4,
+            "lob": ["test"] * 4,
+            "target_week": [date(2024, 1, 1)] * 2 + [date(2024, 1, 8)] * 2,
+            "forecast_step": [1] * 4,
+            "actual": [100.0] * 4,
+            "forecast": [110.0] * 4,
         })
         weights = sel.compute_ensemble_weights(results)
         assert weights["lgbm_direct"] == pytest.approx(1.0, abs=1e-9)

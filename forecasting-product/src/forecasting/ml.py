@@ -12,7 +12,8 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import polars as pl
 
-from ..config.schema import freq_timedelta, get_frequency_profile
+from ..config.schema import get_frequency_profile
+from ..utils.calendar import PeriodCalendar
 from .base import BaseForecaster
 from .feature_manager import MLForecastFeatureManager
 from .registry import registry
@@ -52,7 +53,8 @@ class _DirectMLBase(BaseForecaster):
         self.lags = lags or list(profile["default_lags"])
         self.lag_transforms = lag_transforms or self._default_lag_transforms()
         self.num_threads = num_threads
-        self._freq = freq  # auto-detected from data if None
+        self._freq = freq  # explicit backend offset, or the validated configured calendar
+        self._calendar: Optional[PeriodCalendar] = None
         self._id_col: str = "series_id"
         self._time_col: str = "week"
         self._target_col: str = "quantity"
@@ -64,7 +66,7 @@ class _DirectMLBase(BaseForecaster):
         self._mlf: Optional[Any] = None
 
         # Feature manager handles external feature lifecycle
-        self._feature_mgr = MLForecastFeatureManager()
+        self._feature_mgr = MLForecastFeatureManager(frequency=frequency)
 
         # Manual fallback state
         self._fitted_data: Optional[pl.DataFrame] = None
@@ -126,6 +128,7 @@ class _DirectMLBase(BaseForecaster):
         self._quantile_mlfs.clear()
 
         df = self.validate_and_prepare(df, target_col, time_col, id_col)
+        self._calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), self.frequency)
 
         if _HAS_MLFORECAST:
             self._fit_mlforecast(df, target_col, time_col, id_col)
@@ -160,23 +163,8 @@ class _DirectMLBase(BaseForecaster):
         return dates.quarter
 
     def _detect_freq(self, df: pl.DataFrame, time_col: str) -> str:
-        """Detect the pandas-compatible frequency string from data dates.
-
-        For weekly data, infers the correct ``W-<DAY>`` anchor from actual
-        dates.  For other frequencies, returns the statsforecast freq string
-        from the frequency profile.
-        """
-        profile = get_frequency_profile(self.frequency)
-        if self.frequency != "W":
-            return profile["statsforecast_freq"]
-        dates = df[time_col].unique().sort()
-        if len(dates) < 2:
-            return "W"
-        first_date = dates[0]
-        if hasattr(first_date, "weekday"):
-            day_name = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"][first_date.weekday()]
-            return f"W-{day_name}"
-        return "W"
+        """Resolve the observed anchor within the explicitly configured frequency."""
+        return PeriodCalendar.from_dates(df[time_col].unique().to_list(), self.frequency).pandas_frequency
 
     def _get_date_features(self) -> List:
         """Return date feature extractors appropriate for the frequency."""
@@ -281,8 +269,8 @@ class _DirectMLBase(BaseForecaster):
                         how="left",
                     )
                     continue
-                except (NotImplementedError, Exception):
-                    pass  # fall through to residual fallback
+                except NotImplementedError:
+                    pass  # This learner does not implement quantile regression.
 
             # Residual fallback: use empirical quantile of historical errors
             q_preds = self._predict_quantile_residual(
@@ -307,10 +295,14 @@ class _DirectMLBase(BaseForecaster):
                 date_features=self._get_date_features(),
                 num_threads=self.num_threads,
             )
-            mlf_q.fit(self._feature_mgr.train_pdf, validate_data=False)
+            if self._feature_mgr.has_features:
+                mlf_q.fit(self._feature_mgr.train_pdf, validate_data=False, static_features=[])
+            else:
+                mlf_q.fit(self._feature_mgr.train_pdf, validate_data=False)
             self._quantile_mlfs[q] = mlf_q
 
-        result_pdf = self._quantile_mlfs[q].predict(h=horizon)
+        future_X = self._feature_mgr.prepare_predict(horizon)
+        result_pdf = self._quantile_mlfs[q].predict(h=horizon, X_df=future_X)
         if "unique_id" not in result_pdf.columns or "ds" not in result_pdf.columns:
             result_pdf = result_pdf.reset_index()
         result = pl.from_pandas(result_pdf)
@@ -387,7 +379,7 @@ class _DirectMLBase(BaseForecaster):
                 val = values[min(idx, n - 1)]
                 results.append({
                     id_col: sid,
-                    time_col: max_date + freq_timedelta(self.frequency, h),
+                    time_col: self._calendar.shift(max_date, h),
                     "forecast": float(val),
                 })
 
@@ -433,7 +425,7 @@ class LGBMDirectForecaster(_DirectMLBase):
         return lgb.LGBMRegressor(**params)
 
     def get_params(self) -> Dict[str, Any]:
-        return {"model": "LightGBM", "lags": self.lags, **self._lgbm_params}
+        return {"model": "LightGBM", "lags": self.lags, "frequency": self.frequency, **self._lgbm_params}
 
 
 @registry.register("xgboost_direct")
@@ -478,4 +470,4 @@ class XGBoostDirectForecaster(_DirectMLBase):
             return xgb.XGBRegressor(**self._xgb_params)
 
     def get_params(self) -> Dict[str, Any]:
-        return {"model": "XGBoost", "lags": self.lags, **self._xgb_params}
+        return {"model": "XGBoost", "lags": self.lags, "frequency": self.frequency, **self._xgb_params}

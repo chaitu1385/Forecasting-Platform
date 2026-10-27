@@ -438,10 +438,8 @@ class TestMetrics:
         forecast = pl.Series([1.0, 2.0, 3.0])
         assert wmape(actual, forecast) is None
 
-    def test_leaderboard_aggregate_ignores_undefined_wmape(self):
-        """Regression: a single all-zero-actuals series must not poison the
-        per-model WMAPE aggregate. Polars .mean() skips nulls, so as long as
-        wmape() returns None (not inf) the aggregate stays finite."""
+    def test_leaderboard_aggregate_counts_zero_volume_errors(self):
+        """Zero-volume series contribute their errors to aggregate WMAPE."""
         from src.metrics.store import MetricStore, METRIC_SCHEMA
         with tempfile.TemporaryDirectory() as tmpdir:
             store = MetricStore(tmpdir)
@@ -466,13 +464,14 @@ class TestMetrics:
                 "mae": [10.0, 20.0, 5.0],
                 "rmse": [10.0, 20.0, 5.0],
                 "mase": [None, None, None],
+                "mase_scale": [None, None, None],
             }, schema=METRIC_SCHEMA)
             store.write(records, run_type="backtest", lob="retail")
             board = store.leaderboard(run_type="backtest", lob="retail")
             assert not board.is_empty()
             assert board["wmape"][0] is not None
-            # Mean of 0.10 and 0.20 = 0.15 (None skipped by Polars .mean())
-            assert abs(board["wmape"][0] - 0.15) < 1e-9
+            # All errors count, including five units forecast for zero demand.
+            assert abs(board["wmape"][0] - 35.0 / 300.0) < 1e-9
 
 
 class TestMetricStore:
@@ -875,6 +874,11 @@ class TestChampionSelector:
             "wmape": [0.15, 0.18, 0.10, 0.12],
             "normalized_bias": [0.05, 0.03, -0.02, 0.01],
             "series_id": ["A"] * 4,
+            "run_id": ["r1"] * 4,
+            "target_week": [date(2024, 1, 1), date(2024, 1, 8)] * 2,
+            "forecast_step": [1] * 4,
+            "actual": [100.0] * 4,
+            "forecast": [115.0, 118.0, 110.0, 112.0],
         })
 
         champions = selector.select(results)

@@ -12,6 +12,7 @@ from typing import Tuple
 import polars as pl
 
 from ..config.schema import CleansingConfig, get_frequency_profile
+from ..utils.calendar import PeriodCalendar
 
 # --------------------------------------------------------------------------- #
 #  Result types
@@ -57,8 +58,10 @@ class DemandCleanser:
     >>> print(result.report)
     """
 
-    def __init__(self, config: CleansingConfig):
+    def __init__(self, config: CleansingConfig, frequency: str = "W"):
         self.config = config
+        get_frequency_profile(frequency)
+        self.frequency = frequency
 
     # ------------------------------------------------------------------ #
     #  Main entry point
@@ -299,7 +302,7 @@ class DemandCleanser:
             return df
 
         if method == "seasonal":
-            return self._impute_seasonal(df, time_col, value_col, sid_col)
+            return self._impute_seasonal(df, time_col, value_col, sid_col, self.frequency)
         elif method == "interpolate":
             return self._interpolate_flagged(
                 df, time_col, value_col, sid_col, "_stockout_flag",
@@ -317,16 +320,16 @@ class DemandCleanser:
     ) -> pl.DataFrame:
         """Replace stockout zeros with same-period-prior-year value."""
         sl = get_frequency_profile(frequency)["season_length"]
-        td_kwargs = get_frequency_profile(frequency)["timedelta_kwargs"]
-        seasonal_lookback = {k: v * sl for k, v in td_kwargs.items()}
-        one_period = td_kwargs
-        df = df.with_columns(
-            (pl.col(time_col) - pl.duration(**seasonal_lookback)).alias("_lookup_date"),
+        dates = df[time_col].unique().sort().to_list()
+        calendar = PeriodCalendar.from_dates(dates, frequency)
+        indices = pl.DataFrame({time_col: dates, "_period": [calendar.index(value) for value in dates]})
+        df = df.join(indices, on=time_col, validate="m:1").with_columns(
+            (pl.col("_period") - sl).alias("_lookup_date")
         )
 
         lookup = df.select(
             pl.col(sid_col),
-            pl.col(time_col).alias("_lookup_date"),
+            pl.col("_period").alias("_lookup_date"),
             pl.col(value_col).alias("_prior_year_val"),
         )
 
@@ -335,12 +338,12 @@ class DemandCleanser:
         # Fall back to ±1 period neighbors from prior year
         lookup_minus1 = df.select(
             pl.col(sid_col),
-            (pl.col(time_col) + pl.duration(**one_period)).alias("_lookup_date"),
+            (pl.col("_period") + 1).alias("_lookup_date"),
             pl.col(value_col).alias("_py_minus1"),
         )
         lookup_plus1 = df.select(
             pl.col(sid_col),
-            (pl.col(time_col) - pl.duration(**one_period)).alias("_lookup_date"),
+            (pl.col("_period") - 1).alias("_lookup_date"),
             pl.col(value_col).alias("_py_plus1"),
         )
 
@@ -367,7 +370,7 @@ class DemandCleanser:
             .alias(value_col),
         )
 
-        return df.drop(["_lookup_date", "_prior_year_val", "_py_minus1", "_py_plus1"])
+        return df.drop(["_period", "_lookup_date", "_prior_year_val", "_py_minus1", "_py_plus1"])
 
     # ------------------------------------------------------------------ #
     #  Shared interpolation helper

@@ -17,6 +17,7 @@ import polars as pl
 
 from ..backtesting.champion import ChampionSelector
 from ..backtesting.engine import BacktestEngine
+from ..backtesting.scoring import require_fold_local_preprocessing
 from ..config.schema import PlatformConfig
 from ..forecasting.ensemble import WeightedEnsembleForecaster
 from ..forecasting.registry import registry
@@ -74,6 +75,7 @@ class BacktestPipeline:
           - "leaderboard": aggregated model ranking
         """
         fc = self.config.forecast
+        require_fold_local_preprocessing(self.config)
 
         run_id = self.context.run_id
 
@@ -116,7 +118,7 @@ class BacktestPipeline:
         logger.info("[%s] Running backtesting (%d folds)...", run_id, self.config.backtest.n_folds)
         with self._emitter.timer("backtest_run"):
             results = self._backtest_engine.run(
-                series, forecasters, sparse_forecasters=sparse_forecasters
+                series, forecasters, sparse_forecasters=sparse_forecasters, run_id=run_id,
             )
         self._emitter.counter("backtest_folds_completed", self.config.backtest.n_folds)
 
@@ -144,15 +146,15 @@ class BacktestPipeline:
             logger.info("Building weighted ensemble from backtest results...")
             weights = self._champion_selector.compute_ensemble_weights(results)
             ensemble = WeightedEnsembleForecaster(
-                forecasters=forecasters,
+                forecasters=[model for model in forecasters if weights.get(model.name, 0) > 0],
                 weights=weights,
             )
             # Create a synthetic champion row describing the ensemble
             champions = pl.DataFrame({
                 "group_key": [self.config.lob],
                 "model_id": ["weighted_ensemble"],
-                self.config.backtest.primary_metric: [0.0],
-                self.config.backtest.secondary_metric: [0.0],
+                self.config.backtest.primary_metric: [None],
+                self.config.backtest.secondary_metric: [None],
             })
             logger.info("Ensemble: %s", ensemble)
         elif self.config.backtest.horizon_buckets:
@@ -165,9 +167,8 @@ class BacktestPipeline:
             champions = self._champion_selector.select(results)
 
         # Step 5: Build leaderboard
-        leaderboard = self._metric_store.leaderboard(
-            run_type="backtest",
-            lob=self.config.lob,
+        leaderboard = self._metric_store.leaderboard_from_records(
+            results,
             primary_metric=self.config.backtest.primary_metric,
             secondary_metric=self.config.backtest.secondary_metric,
         )

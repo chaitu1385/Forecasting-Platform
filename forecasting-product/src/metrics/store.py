@@ -11,6 +11,8 @@ from typing import Optional
 
 import polars as pl
 
+from .aggregation import aggregate_metrics, rank_metrics
+
 # The canonical schema for all metric records
 METRIC_SCHEMA = {
     "run_id": pl.Utf8,
@@ -32,6 +34,7 @@ METRIC_SCHEMA = {
     "mae": pl.Float64,
     "rmse": pl.Float64,
     "mase": pl.Float64,
+    "mase_scale": pl.Float64,
 }
 
 
@@ -118,6 +121,15 @@ class MetricStore:
         Returns one row per model with aggregated metric values.
         """
         df = self.read(run_type=run_type, lob=lob, grain_level=grain_level)
+        return self.leaderboard_from_records(df, primary_metric, secondary_metric)
+
+    @staticmethod
+    def leaderboard_from_records(
+        df: pl.DataFrame,
+        primary_metric: str = "wmape",
+        secondary_metric: str = "normalized_bias",
+    ) -> pl.DataFrame:
+        """Compute a run-scoped leaderboard from validated raw observations."""
 
         if df.is_empty():
             return pl.DataFrame(schema={
@@ -127,16 +139,8 @@ class MetricStore:
                 "n_series": pl.UInt32,
             })
 
-        board = (
-            df.group_by("model_id")
-            .agg([
-                pl.col(primary_metric).mean().alias(primary_metric),
-                pl.col(secondary_metric).mean().alias(secondary_metric),
-                pl.col("series_id").n_unique().alias("n_series"),
-            ])
-            .sort(primary_metric)
-        )
-        return board
+        board = aggregate_metrics(df, [primary_metric, secondary_metric])
+        return rank_metrics(board, primary_metric, secondary_metric)
 
     def accuracy_over_time(
         self,
@@ -156,8 +160,4 @@ class MetricStore:
         if df.is_empty():
             return pl.DataFrame(schema={time_column: pl.Date, metric: pl.Float64})
 
-        return (
-            df.group_by(time_column)
-            .agg(pl.col(metric).mean().alias(metric))
-            .sort(time_column)
-        )
+        return aggregate_metrics(df, [metric], [time_column]).select(time_column, metric).sort(time_column)

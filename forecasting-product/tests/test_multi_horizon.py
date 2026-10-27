@@ -209,7 +209,7 @@ class TestSelectByHorizon:
         champions = selector.select_by_horizon(results, [])
         assert "horizon_bucket" not in champions.columns
 
-    def test_missing_forecast_step_falls_back(self):
+    def test_missing_forecast_step_is_not_silently_a_global_champion(self):
         config = BacktestConfig(
             primary_metric="wmape",
             secondary_metric="normalized_bias",
@@ -218,9 +218,8 @@ class TestSelectByHorizon:
         results = _make_backtest_results().drop("forecast_step")
         buckets = [HorizonBucket(name="short", start_step=1, end_step=4)]
 
-        champions = selector.select_by_horizon(results, buckets)
-        # Should fall back to single champion
-        assert "horizon_bucket" not in champions.columns
+        with pytest.raises(ValueError, match="forecast_step"):
+            selector.select_by_horizon(results, buckets)
 
     def test_three_buckets(self):
         buckets = [

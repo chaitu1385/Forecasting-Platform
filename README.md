@@ -391,10 +391,10 @@ Tikhonov regularisation (lambda = 1e-6) applied for numerical stability.
 
 | Class | Description |
 |-------|-------------|
-| `BacktestEngine` | Orchestrates walk-forward folds; writes per-fold, per-series metrics to MetricStore |
+| `BacktestEngine` | Orchestrates walk-forward folds; validates full series/date/lead coverage and records raw errors; incomplete models cannot win |
 | `WalkForwardCV` | Expanding-window fold generator; configurable `n_folds`, `horizon_weeks`, `step_weeks` |
 | `CVFold` | Dataclass for one fold: train indices, test indices, fold number |
-| `ChampionSelector` | Ranks models by WMAPE; promotes lowest-error model; `compute_ensemble_weights()` |
+| `ChampionSelector` | Recomputes volume WMAPE (or an explicit alternative) over comparable raw rows and horizon buckets; `compute_ensemble_weights()` |
 
 ### `src/metrics/` — Metric Store & Drift
 
@@ -635,7 +635,12 @@ YAML-driven config system with dataclass schema validation. `FREQUENCY_PROFILES`
 | `load_config(path)` | Load and parse YAML config into `PlatformConfig` |
 | `load_config_with_overrides(path, overrides)` | Load config with LOB-level overrides merged |
 | `get_frequency_profile(freq)` | Get temporal properties for `"D"` / `"W"` / `"M"` / `"Q"` |
-| `freq_timedelta(freq, periods)` | Convert frequency + periods to `timedelta` |
+| `freq_timedelta(freq, periods)` | Fixed D/W durations only; M/Q require an anchored calendar |
+| `utils.calendar.PeriodCalendar` | Exact D/W/M/Q grids, preserving weekday and calendar start/end labels |
+
+See [Numerical reliability and score migration](docs/NUMERICAL_RELIABILITY.md)
+for scoring definitions, explicit macro weighting, missing-prediction failures,
+gap semantics, fold-local preprocessing restrictions, and historical rankings.
 
 Pipeline upload precedence is explicit model/horizon override, then valid YAML,
 then platform defaults. The UI carries the current backtest winner into forecasting

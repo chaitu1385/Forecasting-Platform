@@ -44,7 +44,7 @@ from typing import Any, Dict, List, Optional
 
 import polars as pl
 
-from ..config.schema import freq_timedelta, get_frequency_profile
+from ..utils.calendar import PeriodCalendar
 from .base import BaseForecaster
 from .registry import registry
 
@@ -125,6 +125,7 @@ class ChronosForecaster(BaseForecaster):
         self._time_col = time_col
         self._context.clear()
         self._last_dates.clear()
+        self._calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), self.frequency)
 
         for sid in df[id_col].unique().to_list():
             series = df.filter(pl.col(id_col) == sid).sort(time_col)
@@ -168,6 +169,7 @@ class ChronosForecaster(BaseForecaster):
             "model_name": self.model_name,
             "device": self.device,
             "num_samples": self.num_samples,
+            "frequency": self.frequency,
         }
 
     # ── Internal ───────────────────────────────────────────────────────────
@@ -255,7 +257,7 @@ class ChronosForecaster(BaseForecaster):
             series_samples = samples_np[i]
 
             for h in range(horizon):
-                forecast_date = last_date + freq_timedelta(self.frequency, h + 1)
+                forecast_date = self._calendar.shift(last_date, h + 1)
                 row: Dict[str, Any] = {id_col: sid, time_col: forecast_date}
 
                 if quantiles is None:
@@ -336,6 +338,7 @@ class TimeGPTForecaster(BaseForecaster):
         self._id_col = id_col
         self._time_col = time_col
         self._target_col = target_col
+        self._calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), self.frequency)
 
         self._train_df = (
             df.select([id_col, time_col, target_col])
@@ -384,7 +387,7 @@ class TimeGPTForecaster(BaseForecaster):
         )
 
     def get_params(self) -> Dict[str, Any]:
-        return {"model": "TimeGPT", "timegpt_model": self.model}
+        return {"model": "TimeGPT", "timegpt_model": self.model, "frequency": self.frequency}
 
     # ── Internal ───────────────────────────────────────────────────────────
 
@@ -435,7 +438,7 @@ class TimeGPTForecaster(BaseForecaster):
         kwargs: Dict[str, Any] = {
             "df": train_pdf,
             "h": horizon,
-            "freq": get_frequency_profile(self.frequency)["statsforecast_freq"],
+            "freq": self._calendar.pandas_frequency,
             "model": self.model,
             "time_col": "ds",
             "target_col": "y",

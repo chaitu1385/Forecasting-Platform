@@ -10,12 +10,14 @@ Handles:
   4. Accepting user-provided future features via ``set_future_features``.
 """
 
-import datetime
 import logging
 from typing import Dict, List, Optional
 
 import pandas as pd  # noqa: F401 — required for .to_pandas() and type hints
 import polars as pl
+
+from ..config.schema import get_frequency_profile
+from ..utils.calendar import PeriodCalendar
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +32,10 @@ class MLForecastFeatureManager:
     so that ``_DirectMLBase`` doesn't need inline feature plumbing.
     """
 
-    def __init__(self, feature_types: Optional[Dict[str, str]] = None) -> None:
+    def __init__(self, feature_types: Optional[Dict[str, str]] = None, frequency: str = "W") -> None:
+        get_frequency_profile(frequency)
+        self.frequency = frequency
+        self._calendar: Optional[PeriodCalendar] = None
         self._feature_cols: List[str] = []
         self._train: Optional[pl.DataFrame] = None
         self._future_features: Optional[pl.DataFrame] = None
@@ -108,6 +113,9 @@ class MLForecastFeatureManager:
         training to prevent the model from learning on features that
         won't be available at prediction time.
         """
+        self._calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), self.frequency)
+        if df.select([id_col, time_col]).is_duplicated().any():
+            raise ValueError("Duplicate series/date keys in feature training data")
         self.detect_features(df, id_col, time_col, target_col)
 
         # Core columns (keep in Polars)
@@ -198,7 +206,6 @@ class MLForecastFeatureManager:
         if self._train is None:
             return None
 
-        last_ds = self._train.select(pl.col("ds").max()).item()
         # Get the last row per unique_id with eligible feature values
         last_per_series = (
             self._train
@@ -208,21 +215,14 @@ class MLForecastFeatureManager:
         )
 
         # Build future rows for each series and horizon step
-        future_frames = []
-        for h in range(1, horizon + 1):
-            future_ds = last_ds + datetime.timedelta(weeks=h)
-            frame = last_per_series.select(
-                [pl.col("unique_id"), pl.lit(future_ds).alias("ds")]
-                + [
-                    pl.col(c).fill_null(0.0).cast(pl.Float64).alias(c)
-                    if c in last_per_series.columns
-                    else pl.lit(0.0).alias(c)
-                    for c in eligible_cols
-                ]
-            )
-            future_frames.append(frame)
-
-        future_pl = pl.concat(future_frames)
+        rows = []
+        for last in last_per_series.iter_rows(named=True):
+            for future_ds in self._calendar.future_dates(last["ds"], horizon):
+                rows.append({
+                    "unique_id": last["unique_id"], "ds": future_ds,
+                    **{col: float(last[col]) if last.get(col) is not None else 0.0 for col in eligible_cols},
+                })
+        future_pl = pl.DataFrame(rows)
 
         # External library (mlforecast) requires pandas DataFrame
         pdf = future_pl.to_pandas()
