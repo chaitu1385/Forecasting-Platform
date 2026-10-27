@@ -2,13 +2,23 @@
 
 const assert = require("node:assert/strict");
 const { execFileSync } = require("node:child_process");
-const { mkdtempSync, rmSync, writeFileSync } = require("node:fs");
+const { mkdtempSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
 const { tmpdir } = require("node:os");
 const { join } = require("node:path");
 const { test } = require("node:test");
 const { cleanupMergedBranch, deleteWithLease } = require("./cleanup-merged-branch.cjs");
 
 const sha = "a".repeat(40);
+
+test("manual cleanup pins reviewed Node24 actions", () => {
+  const workflow = readFileSync(join(__dirname, "..", "workflows", "cleanup-branches.yml"), "utf8");
+  const actions = [...workflow.matchAll(/^\s*(?:-\s*)?uses:\s+([^\s#]+)/gm)]
+    .map((match) => match[1]);
+  assert.deepEqual(actions, [
+    "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3",
+  ]);
+});
 
 function fixture() {
   const repository = { id: 1, default_branch: "trunk" };
