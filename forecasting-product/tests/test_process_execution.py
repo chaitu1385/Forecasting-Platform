@@ -1,6 +1,7 @@
 """Bounded subprocess regressions for native-pool/process-pool interaction."""
 
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -30,7 +31,21 @@ def test_parallel_execution_after_polars_initialization(scenario, tmp_path):
         start_new_session=os.name != "nt",
     )
     try:
-        output, _ = process.communicate(timeout=90)
+        try:
+            output, _ = process.communicate(timeout=45)
+        except subprocess.TimeoutExpired as pending:
+            if os.name != "nt":
+                partial = pending.output or b""
+                if isinstance(partial, bytes):
+                    partial = partial.decode(errors="replace")
+                pids = {process.pid, *(int(pid) for pid in re.findall(r"worker pid=(\d+)", partial))}
+                for pid in pids:
+                    try:
+                        if os.getpgid(pid) == process.pid:
+                            os.kill(pid, signal.SIGUSR1)
+                    except ProcessLookupError:
+                        pass
+            output, _ = process.communicate(timeout=45)
     except subprocess.TimeoutExpired:
         if os.name == "nt":
             subprocess.run(

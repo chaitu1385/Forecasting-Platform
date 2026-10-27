@@ -3,8 +3,10 @@
 import faulthandler
 import functools
 import json
+import logging
 import multiprocessing
 import os
+import signal
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -13,18 +15,27 @@ import polars as pl
 
 
 def worker_diagnostics() -> None:
+    if os.name == "nt":
+        faulthandler.dump_traceback_later(30, repeat=True)
+    else:
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
     print(
         f"worker pid={os.getpid()} start_method={multiprocessing.get_start_method()}",
         flush=True,
     )
-    faulthandler.dump_traceback_later(15, repeat=True)
 
 
 def main() -> None:
     import src.backtesting.engine as engine_module
     import src.pipeline.batch_runner as batch_module
 
-    faulthandler.dump_traceback_later(20, repeat=True)
+    logging.basicConfig(level=logging.INFO)
+    # Do not start a watchdog thread before fork: the probe must not introduce
+    # another inherited native lock. The supervising test signals owned PIDs.
+    if os.name == "nt":
+        faulthandler.dump_traceback_later(30, repeat=True)
+    else:
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
     for module in (engine_module, batch_module):
         module.ProcessPoolExecutor = functools.partial(
             module.ProcessPoolExecutor, initializer=worker_diagnostics,
@@ -34,7 +45,7 @@ def main() -> None:
     output = Path(output_dir)
     data = pl.DataFrame({
         "series_id": [f"S{s}" for s in range(2) for _ in range(80)],
-        "week": [date(2022, 1, 3) + timedelta(weeks=w) for _ in range(2) for w in range(80)],
+        "week": [date(2022, 1, 2) + timedelta(weeks=w) for _ in range(2) for w in range(80)],
         "quantity": [float(30 + s * 10 + w % 13) for s in range(2) for w in range(80)],
     })
     # Initialize the native pool and file reader before creating any workers.
