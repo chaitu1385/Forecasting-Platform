@@ -12,6 +12,7 @@ from typing import Literal
 
 import polars as pl
 
+from ..config.schema import get_frequency_profile
 from .calendar import PeriodCalendar
 
 
@@ -52,6 +53,7 @@ def fill_gaps(
         DataFrame with one row per (id, period) combination, sorted by
         ``[id_col, time_col]``.
     """
+    get_frequency_profile(freq)
     if df.is_empty():
         return df
 

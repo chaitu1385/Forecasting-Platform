@@ -179,11 +179,12 @@ class TestFillGaps:
         result = fill_gaps(df, freq="D", strategy="zero")
         assert result.filter(pl.col("series_id") == "A").shape[0] == 3
 
-    def test_unknown_freq_defaults_to_weekly(self):
-        """Unknown freq falls back to '1w' interval without error."""
+    def test_unknown_frequency_is_not_guessed_as_weekly(self):
+        """An invalid configured frequency must not silently become weekly."""
         start = date(2023, 1, 2)
         dates = [start, start + timedelta(weeks=1)]
         df = _make_weekly_df(["A"] * 2, dates, [1.0, 2.0])
-        # Should not raise
-        result = fill_gaps(df, freq="UNKNOWN")
-        assert result.shape[0] >= 2
+        with pytest.raises(ValueError, match="Unsupported frequency"):
+            fill_gaps(df, freq="UNKNOWN")
+        with pytest.raises(ValueError, match="Unsupported frequency"):
+            fill_gaps(df.head(0), freq="UNKNOWN")

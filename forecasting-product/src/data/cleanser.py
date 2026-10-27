@@ -12,7 +12,7 @@ from typing import Tuple
 import polars as pl
 
 from ..config.schema import CleansingConfig, get_frequency_profile
-from ..utils.calendar import PeriodCalendar
+from ..utils.calendar import PeriodCalendar, advance_date
 
 # --------------------------------------------------------------------------- #
 #  Result types
@@ -318,18 +318,30 @@ class DemandCleanser:
         sid_col: str,
         frequency: str = "W",
     ) -> pl.DataFrame:
-        """Replace stockout zeros with same-period-prior-year value."""
+        """Look up the configured prior season by date, including on raw/gapped data."""
         sl = get_frequency_profile(frequency)["season_length"]
+        if df.is_empty():
+            return df
         dates = df[time_col].unique().sort().to_list()
-        calendar = PeriodCalendar.from_dates(dates, frequency)
-        indices = pl.DataFrame({time_col: dates, "_period": [calendar.index(value) for value in dates]})
-        df = df.join(indices, on=time_col, validate="m:1").with_columns(
-            (pl.col("_period") - sl).alias("_lookup_date")
+        if frequency in ("M", "Q"):
+            PeriodCalendar.from_dates(dates, frequency)
+        # A fixed D/W lookup need not impose a model grid on diagnostic data.
+        # For example, the legacy audit uses a weekly lookback on daily rows.
+        lookup_columns = {
+            time_col: dates,
+            "_lookup_date": [advance_date(value, frequency, -sl) for value in dates],
+            "_previous_date": [advance_date(value, frequency, -1) for value in dates],
+            "_next_date": [advance_date(value, frequency, 1) for value in dates],
+        }
+        offsets = pl.DataFrame(
+            lookup_columns,
+            schema_overrides={column: df[time_col].dtype for column in lookup_columns},
         )
+        df = df.join(offsets, on=time_col, validate="m:1")
 
         lookup = df.select(
             pl.col(sid_col),
-            pl.col("_period").alias("_lookup_date"),
+            pl.col(time_col).alias("_lookup_date"),
             pl.col(value_col).alias("_prior_year_val"),
         )
 
@@ -338,12 +350,12 @@ class DemandCleanser:
         # Fall back to ±1 period neighbors from prior year
         lookup_minus1 = df.select(
             pl.col(sid_col),
-            (pl.col("_period") + 1).alias("_lookup_date"),
+            pl.col("_next_date").alias("_lookup_date"),
             pl.col(value_col).alias("_py_minus1"),
         )
         lookup_plus1 = df.select(
             pl.col(sid_col),
-            (pl.col("_period") - 1).alias("_lookup_date"),
+            pl.col("_previous_date").alias("_lookup_date"),
             pl.col(value_col).alias("_py_plus1"),
         )
 
@@ -370,7 +382,7 @@ class DemandCleanser:
             .alias(value_col),
         )
 
-        return df.drop(["_period", "_lookup_date", "_prior_year_val", "_py_minus1", "_py_plus1"])
+        return df.drop(["_previous_date", "_next_date", "_lookup_date", "_prior_year_val", "_py_minus1", "_py_plus1"])
 
     # ------------------------------------------------------------------ #
     #  Shared interpolation helper

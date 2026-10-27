@@ -91,6 +91,35 @@ options. Defaults remain disabled and are not characterized as leaky.
 Validation scores refer to the input target after the explicitly configured
 non-learned series preparation, not retrospectively cleansed demand.
 
+`POST /series/cleansing-audit` accepts explicit `frequency=D|W|M|Q` and returns
+the effective frequency. Its existing default remains `W`; daily callers must
+send `D` rather than relying on inference. The Python series builder passes its
+configured forecast frequency to the cleanser. A diagnostic seasonal lookup uses
+date offsets on raw/gapped data; it does not impose a forecast grid on that data.
+Month/quarter lookups retain calendar anchors rather than fixed-day offsets.
+
+## Exact M5 reference and empirical baseline qualification
+
+`tests/integration/baselines/m5_daily_reference.json` is an input-only arithmetic
+reference, not a learned-model golden. The independent standard-library oracle
+uses the complete 105-series, 76,755-row fixture and both 28-period validation
+folds. Seasonal-naive absolute error is 7,921 over absolute actual volume 7,945;
+signed error is +479. Thus WMAPE is exactly `7921/7945` and bias `479/7945`.
+These totals include zero-demand observations. Input identities normalize only
+CRLF/LF checkout differences; model-run provenance also records raw byte hashes.
+
+The full M5 fixture still fits all three configured models once. It checks every
+raw key and actual against the independent reference, checks naive predictions
+point-for-point, and recomputes model metrics with scalar arithmetic. Its JUnit
+property `m5_daily_unapproved_candidate` records actual Python/library versions,
+runner information and observed scores. Capture is not approval or locked-profile
+qualification; no seed override or accepted lock is invented.
+
+The original empirical per-model regression and FVA gates remain separate.
+They must be completed using reviewed results from accepted native locked profiles;
+the exact naive reference does not replace either empirical gate. An emulated
+runtime loader/CPU-feature failure is not evidence of incorrect model mathematics.
+
 ## Historical rankings are immutable evidence
 
 New leaderboards are computed from the current run's frame and carry

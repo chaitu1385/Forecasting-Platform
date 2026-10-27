@@ -134,11 +134,13 @@ def evaluate_model_fold(
             forecaster.predict_quantiles(horizon, quantiles, id_col=id_col, time_col=time_col),
             id_col, time_col, q_cols, "Quantile predictions",
         )
-        predictions = predictions.join(qdf.select([id_col, time_col] + q_cols), on=[id_col, time_col], validate="1:1")
+        predictions = predictions.join(qdf.select([id_col, time_col] + q_cols), on=[id_col, time_col])
 
+    # Exact coverage and uniqueness were checked above. Polars 0.20 cannot use
+    # join(validate="1:1") on composite keys; correctness must not depend on it.
     merged = (
-        expected_val.join(val.select(id_col, time_col, target_col), on=[id_col, time_col], validate="1:1")
-        .join(predictions, on=[id_col, time_col], validate="1:1")
+        expected_val.join(val.select(id_col, time_col, target_col), on=[id_col, time_col])
+        .join(predictions, on=[id_col, time_col])
         .sort([id_col, time_col])
     )
     records = merged.select(

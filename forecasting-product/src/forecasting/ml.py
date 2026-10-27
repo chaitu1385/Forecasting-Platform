@@ -126,9 +126,13 @@ class _DirectMLBase(BaseForecaster):
         self._target_col = target_col
         # Quantile models belong to the previous training window, not this refit.
         self._quantile_mlfs.clear()
+        self._mlf = None
+        self._fitted_data = None
+        self._calendar = None
 
         df = self.validate_and_prepare(df, target_col, time_col, id_col)
-        self._calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), self.frequency)
+        if not df.is_empty():
+            self._calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), self.frequency)
 
         if _HAS_MLFORECAST:
             self._fit_mlforecast(df, target_col, time_col, id_col)

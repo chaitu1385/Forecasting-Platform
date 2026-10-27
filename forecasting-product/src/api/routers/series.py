@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
-from typing import Optional
+from typing import Literal, Optional
 
 import polars as pl
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
@@ -145,6 +145,7 @@ async def cleansing_audit(
     request: Request,
     file: Optional[UploadFile] = File(None),
     lob: Optional[str] = Query(None),
+    frequency: Literal["D", "W", "M", "Q"] = Query("W", description="Input period frequency; weekly legacy default"),
     outlier_method: str = Query("iqr", description="'iqr' or 'zscore'"),
     iqr_multiplier: float = Query(1.5),
     zscore_threshold: float = Query(3.0),
@@ -168,7 +169,7 @@ async def cleansing_audit(
         stockout_detection=stockout_detection,
         min_zero_run=min_zero_run,
     )
-    cleanser = DemandCleanser(config)
+    cleanser = DemandCleanser(config, frequency=frequency)
     id_col, time_col, target_col = _detect_columns(df)
 
     result = cleanser.cleanse(df, time_col=time_col, value_col=target_col, sid_col=id_col)
@@ -179,6 +180,7 @@ async def cleansing_audit(
         per_series_dicts = report.per_series.to_dicts()
 
     return {
+        "frequency": frequency,
         "total_series": report.total_series,
         "series_with_outliers": report.series_with_outliers,
         "total_outliers": report.total_outliers,

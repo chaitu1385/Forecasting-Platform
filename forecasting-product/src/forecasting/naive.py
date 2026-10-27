@@ -55,7 +55,10 @@ class SeasonalNaiveForecaster(BaseForecaster):
         time_col: str = "week",
         id_col: str = "series_id",
     ) -> None:
-        self._calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), self.frequency)
+        self._fitted_data = df.head(0).select([id_col, time_col, target_col])
+        self._calendar = None
+        if not df.is_empty():
+            self._calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), self.frequency)
         self._fitted_data = df.select([id_col, time_col, target_col])
         self._target_col = target_col
         self._time_col = time_col

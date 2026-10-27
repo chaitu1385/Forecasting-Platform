@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "kind": "library_independent_daily_seasonal_naive",
+  "hash_format": "sha256_utf8_bytes_with_crlf_normalized_to_lf",
+  "fixture": "m5_daily_sample.csv",
+  "fixture_sha256": "ed18b1c8a58efb5cc395be324f0dabc7aa4273acf50ffe40542519f57e514099",
+  "config": "m5_daily_config.yaml",
+  "config_sha256": "36e4a140df12cfd173359d74a3c0d432ccabb620d047263fbcb422f36cfdfcfe",
+  "series_count": 105,
+  "input_rows": 76755,
+  "models": ["naive_seasonal", "auto_arima", "lgbm_direct"],
+  "n_folds": 2,
+  "val_periods": 28,
+  "gap_periods": 0,
+  "season_length": 7,
+  "totals": {
+    "observations": 5880,
+    "absolute_error": "7921",
+    "absolute_actual": "7945",
+    "signed_error": "479"
+  },
+  "folds": [
+    {
+      "fold": 0,
+      "first_target": "2016-02-29",
+      "last_target": "2016-03-27",
+      "observations": 2940,
+      "absolute_error": "3927",
+      "absolute_actual": "4023",
+      "signed_error": "-123"
+    },
+    {
+      "fold": 1,
+      "first_target": "2016-03-28",
+      "last_target": "2016-04-24",
+      "observations": 2940,
+      "absolute_error": "3994",
+      "absolute_actual": "3922",
+      "signed_error": "602"
+    }
+  ],
+  "notes": "Exact input-only arithmetic, not an approved learned-model accuracy baseline. Both fold numerators and denominators include every validation row, including zero-demand rows. Native locked-profile learned-model baselines require separate provenance and review."
+}

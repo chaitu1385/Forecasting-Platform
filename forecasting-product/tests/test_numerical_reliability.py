@@ -392,3 +392,102 @@ def test_shared_run_identity_and_deferred_publication_survive_scoring(tmp_path, 
     assert result["run_id"].unique().to_list() == ["caller-owned-run"]
     assert result.height == 4
     assert engine.failures == []
+
+
+@pytest.mark.parametrize("frequency,scale", [("D", 7.0), ("M", 12.0), ("Q", 4.0)])
+def test_horizon_mase_uses_each_training_fold_and_configured_periods(tmp_path, frequency, scale):
+    config = _config(tmp_path, frequency=frequency)
+    config.metrics = ["wmape", "normalized_bias", "mase"]
+    config.backtest.primary_metric = "mase"
+    if frequency == "D":
+        dates = [date(2024, 1, i + 1) for i in range(30)]
+    else:
+        months = [i * (3 if frequency == "Q" else 1) for i in range(30)]
+        dates = [date(2022 + month // 12, month % 12 + 1, 1) for month in months]
+    engine = BacktestEngine(config)
+    result = engine.run(
+        _panel(dates, [float(i + 1) for i in range(30)]),
+        [SeasonalNaiveForecaster(season_length=1, frequency=frequency)],
+        run_id="mase-oracle", persist=False,
+    )
+    assert result["mase_scale"].to_list() == [scale] * 4
+    selected = ChampionSelector(config.backtest).select_by_horizon(
+        result, [HorizonBucket("one", 1, 1), HorizonBucket("two", 2, 2)],
+    )
+    assert selected["mase"].to_list() == pytest.approx([1.0 / scale, 2.0 / scale])
+
+
+def test_undefined_training_scale_cannot_be_a_perfect_mase_champion(tmp_path):
+    config = _config(tmp_path)
+    config.metrics = ["wmape", "normalized_bias", "mase"]
+    config.backtest.primary_metric = "mase"
+    result = BacktestEngine(config).run(
+        _panel([date(2024, 1, i + 1) for i in range(30)]),
+        [SeasonalNaiveForecaster(frequency="D")], persist=False,
+    )
+    assert result["mase"].null_count() == result.height
+    with pytest.raises(ValueError, match="mase.*undefined"):
+        ChampionSelector(config.backtest).select(result)
+
+
+@pytest.mark.parametrize(
+    "frequency,dates,values",
+    [
+        ("M", [date(2023, 2, 28), date(2023, 3, 31), date(2023, 4, 30), date(2023, 5, 31),
+               date(2023, 6, 30), date(2023, 7, 31), date(2023, 8, 31), date(2023, 9, 30),
+               date(2023, 10, 31), date(2023, 11, 30), date(2023, 12, 31), date(2024, 1, 31),
+               date(2024, 2, 29)], [70.0] + [10.0] * 11 + [0.0]),
+        ("Q", [date(2019, 11, 30), date(2020, 2, 29), date(2020, 5, 31),
+               date(2020, 8, 31), date(2020, 11, 30)], [70.0, 10.0, 10.0, 10.0, 0.0]),
+    ],
+)
+def test_seasonal_cleanse_date_lookup_preserves_calendar_anchors(frequency, dates, values):
+    from src.config.schema import CleansingConfig
+    from src.data.cleanser import DemandCleanser
+    source = _panel(dates, values).with_columns(pl.col("quantity").eq(0).alias("_stockout_flag"))
+    cleaned = DemandCleanser(CleansingConfig(), frequency=frequency)._impute_seasonal(
+        source, "week", "quantity", "series_id", frequency=frequency,
+    )
+    assert cleaned.filter(pl.col("week") == dates[-1])["quantity"].item() == 70.0
+    assert cleaned.sort("week")["week"].to_list() == dates
+    assert source["quantity"][-1] == 0.0
+
+
+def test_diagnostic_weekly_lookback_does_not_infer_a_daily_model_grid():
+    from src.config.schema import CleansingConfig
+    from src.data.cleanser import DemandCleanser
+    dates = [date(2023, 1, 1) + timedelta(days=index) for index in range(365)]
+    source = _panel(dates, [70.0] + [10.0] * 363 + [0.0]).with_columns(
+        pl.col("quantity").eq(0).alias("_stockout_flag")
+    )
+    cleaned = DemandCleanser(CleansingConfig())._impute_seasonal(
+        source, "week", "quantity", "series_id",
+    )
+    assert cleaned.filter(pl.col("week") == dates[-1])["quantity"].item() == 70.0
+    assert cleaned.height == source.height == 365
+
+
+def test_empty_naive_refit_cannot_reuse_previous_predictions():
+    source = _panel([date(2024, 1, i) for i in range(1, 11)])
+    model = SeasonalNaiveForecaster(frequency="D")
+    model.fit(source)
+    assert model.predict(2).height == 2
+    model.fit(source.head(0))
+    assert model.predict(2).is_empty()
+    assert model.predict_quantiles(2, [0.1, 0.9]).is_empty()
+
+
+def test_failed_ml_refit_invalidates_previous_fitted_state():
+    from src.forecasting.ml import LGBMDirectForecaster
+    source = _panel([date(2024, 1, i) for i in range(1, 11)])
+    model = LGBMDirectForecaster(
+        frequency="D", lags=[1], lag_transforms={1: []},
+        lgbm_params={"n_estimators": 2, "min_child_samples": 1},
+    )
+    model.fit(source)
+    assert model.predict(2).height == 2
+    with pytest.raises(ValueError, match="date labels"):
+        model.fit(source.with_columns(pl.col("week").cast(pl.String)))
+    assert model._quantile_mlfs == {}
+    with pytest.raises(RuntimeError, match="fit"):
+        model.predict(2)

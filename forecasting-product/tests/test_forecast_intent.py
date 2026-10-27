@@ -257,6 +257,33 @@ def test_explicit_macro_wmape_is_a_valid_configured_selection_criterion(client):
     assert all(row["scoring_policy"] == "raw-observations-v1" for row in result["leaderboard"])
 
 
+@pytest.mark.parametrize("frequency,expected", [("D", 70.0), ("W", 0.0), (None, 0.0)])
+def test_cleansing_audit_uses_explicit_frequency_and_preserves_legacy_default(client, frequency, expected):
+    source = pl.DataFrame({
+        "series_id": ["sku"] * 9,
+        "week": [date(2024, 1, index) for index in range(1, 10)],
+        "quantity": [70.0] + [10.0] * 6 + [0.0, 10.0],
+    })
+    params = {"outlier_action": "flag_only", "stockout_detection": True, "min_zero_run": 1}
+    if frequency is not None:
+        params["frequency"] = frequency
+    response = client.post(
+        "/series/cleansing-audit", params=params,
+        files={"file": ("actuals.csv", source.write_csv().encode(), "text/csv")},
+    )
+    assert response.status_code == 200, response.text
+    result = response.json()
+    day_eight = next(row for row in result["cleansed_preview"] if row["week"] == "2024-01-08")
+    assert day_eight["quantity"] == expected
+    assert result["frequency"] == (frequency or "W")
+
+
+def test_cleansing_audit_rejects_an_unsupported_frequency(client):
+    response = client.post("/series/cleansing-audit", params={"frequency": "UNKNOWN"})
+    assert response.status_code == 422, response.text
+    assert any("frequency" in error["loc"] for error in response.json()["detail"])
+
+
 INVALID_CONFIGS = [
     pytest.param(b"forecast: [", id="syntax"),
     pytest.param(b"", id="empty-upload"),
