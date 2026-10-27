@@ -1,82 +1,46 @@
-name: Cleanup Old Branches
+name: Cleanup merged branch
 
 on:
-  push:
-    branches: [master]
   workflow_dispatch:
     inputs:
+      pull_number:
+        description: "One merged PR whose unchanged head branch should be inspected"
+        required: true
+        type: string
       dry_run:
-        description: "Dry run (list branches to delete without actually deleting)"
-        required: false
-        default: "false"
-        type: choice
-        options:
-          - "true"
-          - "false"
+        description: "Inspect only; explicitly uncheck to allow conditional deletion"
+        required: true
+        default: true
+        type: boolean
+
+concurrency:
+  group: cleanup-merged-branch-${{ inputs.pull_number }}
+  cancel-in-progress: false
 
 jobs:
   cleanup:
-    name: Delete Old Branches
+    name: Inspect or delete one merged PR branch
+    if: github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: write
-
+      pull-requests: read
     steps:
-      - name: Delete old branches (keep master/main only)
-        uses: actions/github-script@v7
+      - uses: actions/checkout@v4
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # Never execute code from the PR head being considered for deletion.
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Verify live eligibility and conditionally delete
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ inputs.pull_number }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        with:
           script: |
-            const dryRun = '${{ github.event.inputs.dry_run }}' === 'true';
-            const keepBranches = ['master', 'main'];
-
-            // Fetch all branches (paginated)
-            const branches = await github.paginate(
-              github.rest.repos.listBranches,
-              {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                per_page: 100,
-              }
-            );
-
-            console.log(`Found ${branches.length} branches total.`);
-
-            const toDelete = branches
-              .map(b => b.name)
-              .filter(name => !keepBranches.includes(name));
-
-            if (toDelete.length === 0) {
-              console.log('No branches to delete.');
-              return;
-            }
-
-            console.log(`\nBranches to delete (${toDelete.length}):`);
-            for (const branch of toDelete) {
-              console.log(`  - ${branch}`);
-            }
-
-            if (dryRun) {
-              console.log('\nDry run enabled — no branches were deleted.');
-              return;
-            }
-
-            console.log('\nDeleting branches...');
-            let deleted = 0;
-            let failed = 0;
-            for (const branch of toDelete) {
-              try {
-                await github.rest.git.deleteRef({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  ref: `heads/${branch}`,
-                });
-                console.log(`  ✓ Deleted: ${branch}`);
-                deleted++;
-              } catch (err) {
-                console.error(`  ✗ Failed to delete ${branch}: ${err.message}`);
-                failed++;
-              }
-            }
-
-            console.log(`\nDone. Deleted: ${deleted}, Failed: ${failed}.`);
+            const { cleanupMergedBranch } = require("./.github/scripts/cleanup-merged-branch.cjs");
+            await cleanupMergedBranch({
+              github, context, core,
+              pullNumber: process.env.PR_NUMBER,
+              dryRun: process.env.DRY_RUN,
+            });
