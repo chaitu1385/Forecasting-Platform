@@ -3,6 +3,11 @@
   "baseline_workflow_run": 40495424128,
   "supported_commit": "6b9848d46dd536a8b2e6ffffcbbf917bcfbe8863",
   "scope": "Controlled replay of the actual recorded master numerical/model tuple, using current common nonnumerical dependencies and one common native OS/Python patch per pair. This is not a full historical environment replay or mathematical oracle.",
+  "recorded_versions_source_platform": "Linux; using the recorded versions with native Windows wheels does not establish a historically qualified Windows environment.",
+  "platform_markers": {
+    "nvidia-nccl-cu12": "platform_system == \"Linux\"",
+    "nvidia-nccl-cu13": "platform_system == \"Linux\""
+  },
   "common_science": {
     "pandas": "2.3.3",
     "polars": "2.1.0",

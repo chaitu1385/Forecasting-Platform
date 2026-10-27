@@ -7,9 +7,11 @@ import hashlib
 import importlib.metadata
 import json
 import math
+import os
 import platform
 import subprocess
 import sys
+import sysconfig
 import tempfile
 from datetime import date, timedelta
 from pathlib import Path
@@ -18,6 +20,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 REFERENCE = ROOT / "scripts" / "recorded_science_tuple.json"
+
+
+def reference_science(manifest: dict, minor: str) -> dict[str, str]:
+    from packaging.markers import Marker
+
+    packages = {**manifest["common_science"], **manifest["interpreters"][minor]["science"]}
+    markers = manifest["platform_markers"]
+    return {
+        name: version for name, version in packages.items()
+        if name not in markers or Marker(markers[name]).evaluate()
+    }
 
 
 def fixture() -> list[dict]:
@@ -44,7 +57,7 @@ def capture(variant: str, output: Path) -> None:
     manifest = json.loads(REFERENCE.read_text())
     minor = f"py{sys.version_info.major}{sys.version_info.minor}"
     expected = (
-        {**manifest["common_science"], **manifest["interpreters"][minor]["science"]}
+        reference_science(manifest, minor)
         if variant == "recorded-master-tuple"
         else {name: pin[0] for name, pin in _read_pins(ROOT / "requirements" / minor / "core.txt").items()}
     )
@@ -87,12 +100,17 @@ def capture(variant: str, output: Path) -> None:
         "variant": variant,
         "python": platform.python_version(),
         "os": platform.platform(),
+        "sys_platform": sys.platform,
         "architecture": platform.machine(),
+        "interpreter_platform": sysconfig.get_platform(),
         "input_sha256": hashlib.sha256(json.dumps(rows, sort_keys=True, default=str).encode()).hexdigest(),
         "input_scale": {"rows": 160, "series": 2, "target_min": 100, "target_max": 138},
         "installed_expected_versions": expected,
         "xgboost_distribution": distribution,
-        "xgboost_build": {key: build[key] for key in ("USE_CUDA", "USE_OPENMP", "GCC_VERSION") if key in build},
+        "xgboost_build": {
+            key: build[key] for key in ("USE_CUDA", "USE_OPENMP", "GCC_VERSION", "MSVC_VERSION")
+            if key in build
+        },
         "outputs": outputs,
     }
     output.write_text(json.dumps(report, indent=2, default=str) + "\n")
@@ -133,8 +151,8 @@ def run(output: Path) -> None:
     )
 
     require_native_runtime()
-    if sys.platform != "linux" or sys.version_info[:2] not in ((3, 11), (3, 12)):
-        raise RuntimeError("This controlled reference experiment is limited to native Linux Python 3.11/3.12")
+    if sys.version_info[:2] not in ((3, 11), (3, 12)):
+        raise RuntimeError("This controlled experiment is limited to native Linux/Windows Python 3.11/3.12")
     output.mkdir(parents=True, exist_ok=True)
     reference = json.loads(REFERENCE.read_text())
     minor = f"py{sys.version_info.major}{sys.version_info.minor}"
@@ -153,8 +171,7 @@ def run(output: Path) -> None:
     baseline = {name: pin[0] for name, pin in _read_pins(current_lock).items()}
     for replaced in ("xgboost-cpu", "polars", "polars-runtime-32"):
         baseline.pop(replaced)
-    baseline.update(reference["common_science"])
-    baseline.update(reference["interpreters"][minor]["science"])
+    baseline.update(reference_science(reference, minor))
     input_path = output / "baseline-input.in"
     input_path.write_text("\n".join(f"{name}=={version}" for name, version in sorted(baseline.items())) + "\n")
     resolved = output / "baseline-resolved.txt"
@@ -162,7 +179,13 @@ def run(output: Path) -> None:
     metadata = {
         **reference, "interpreter_profile": minor, "source_hashes": source_hashes,
         "experiment_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT.parent, text=True).strip(),
-        "limitation": "Recorded numerical tuple only; current common nonnumerical dependencies, current tooling, common native OS/Python patch. Not a full historical environment replay.",
+        "active_reference_science": reference_science(reference, minor),
+        "native_platform": sys.platform,
+        "runner_identity": {
+            key: os.environ[key] for key in ("RUNNER_OS", "RUNNER_ARCH", "ImageOS", "ImageVersion")
+            if key in os.environ
+        },
+        "limitation": "Recorded numerical tuple only; current common nonnumerical dependencies, current tooling, common native OS/Python patch. Not a full historical environment replay. Windows uses applicable native artifacts for versions recorded on Linux, not a historically qualified Windows environment.",
     }
     (output / "experiment-identity.json").write_text(json.dumps(metadata, indent=2) + "\n")
     with tempfile.TemporaryDirectory(prefix="controlled-science-") as work:
@@ -175,6 +198,8 @@ def run(output: Path) -> None:
             "--no-annotate", "--quiet",
         ]
         subprocess.run([*compile_command, "--output-file", str(resolved)], check=True)
+        if {name: pin[0] for name, pin in _read_pins(resolved).items()} != baseline:
+            raise AssertionError("Reference resolution added an unpinned package or changed a recorded/common version")
         release_cache = {}
         _check_upstream(resolved, release_cache)
         subprocess.run([
@@ -197,9 +222,27 @@ def run(output: Path) -> None:
         ):
             environment = work / variant
             subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(environment)], check=True)
-            python = environment / "bin" / "python"
+            python = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
             pip = [sys.executable, "-m", "pip", "--python", str(python)]
-            subprocess.run([*pip, "install", "--require-hashes", "--only-binary=:all:", "-r", str(requirements), "--quiet"], check=True)
+            install_report = work / f"{variant}-pip-report.json"
+            subprocess.run([
+                *pip, "install", "--require-hashes", "--only-binary=:all:", "-r", str(requirements),
+                "--report", str(install_report), "--quiet",
+            ], check=True)
+            receipt = json.loads(install_report.read_text(encoding="utf-8"))
+            wheel_provenance = {
+                "environment": receipt["environment"],
+                "packages": [
+                    {
+                        "name": item["metadata"]["name"],
+                        "version": item["metadata"]["version"],
+                        "download": item["download_info"],
+                        "requires_dist": item["metadata"].get("requires_dist", []),
+                    }
+                    for item in receipt["install"]
+                ],
+            }
+            (output / f"{variant}-wheel-provenance.json").write_text(json.dumps(wheel_provenance, indent=2) + "\n")
             subprocess.run([*pip, "check"], check=True)
             frozen = subprocess.check_output([*pip, "freeze", "--all"], text=True)
             (output / f"{variant}-installed.txt").write_text(frozen)
