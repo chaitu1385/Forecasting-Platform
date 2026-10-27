@@ -143,7 +143,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 1691 unit + integration tests
+├── tests/                  # 1711 unit + integration tests
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 ├── notebooks/              # Jupyter notebooks for exploration
@@ -976,14 +976,13 @@ observability:
 ## Testing
 
 ```bash
-pip install -r forecasting-product/requirements.txt
-pip install -e "forecasting-product[dev]"
+python -m pip install --require-hashes --only-binary=:all: -r forecasting-product/requirements/py312/dev.txt
 cd forecasting-product
 POLARS_MAX_THREADS=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1 \
   python -m pytest -v --timeout=180 --timeout-method=thread \
     -o faulthandler_timeout=60
-# 1691 cases across 64 test modules; no test module exclusions
+# Use the matching py311/py313 profile with those interpreters; no module exclusions.
 ```
 
 On Windows, set the same process environment variables with PowerShell
@@ -1002,9 +1001,17 @@ and automation safety jobs. Missing, skipped, cancelled or failed constituents
 cannot produce a successful gate. Branch protection must require this context;
 workflow code alone does not configure repository protection.
 
+Runtime support and dependency reproducibility are described in the
+[deployment profiles](docs/DEPLOYMENT.md#supported-runtimes-and-locked-profiles).
+CI ships/tests supported Python releases rather than EOL 3.10, verifies generated
+profile freshness, and restores exact hashes. The frontend additionally runs
+noninteractive lint and real production-bundle Plotly browser regressions, not
+only mocked chart component tests.
+
 | Test file | Tests | Covers |
 |-----------|------:|--------|
 | `test_platform.py` | 85 | Config, hierarchy, reconciliation, metrics, transitions, registry, backtest, REST API, deployment, drift |
+| `test_dependency_profiles.py` | 20 | All Python/profile locks, hashes, CPU-only boundaries, shared versions and stale/tampered export rejection |
 | `test_forecast_intent.py` | 107 | Real ASGI champion/horizon/config handoff, aliases, safe execution settings, invalid-input no-publication guarantees |
 | `test_forecast_explainability.py` | 59 | Comparator, ExceptionEngine, Explainer (STL+SHAP+narrative), ModelCard, Registry, DriftDetector, Lineage |
 | `test_intermittent_demand.py` | 55 | SparseDetector, Croston, CrostonSBA, TSB, backtest routing |
@@ -1076,7 +1083,7 @@ All frontend features are backed by live API endpoints — no placeholder "Comin
 **Run locally:**
 ```bash
 cd forecasting-product/frontend
-npm install
+npm ci
 npm run dev
 # → Open http://localhost:3000
 ```
@@ -1094,41 +1101,45 @@ docker compose -f docker-compose.yml -f docker-compose.demo.yml up --build
 
 ## Dependencies
 
-**Core** (no pandas in the production path):
+**Supported runtime:** CPython 3.12.16 by default; separately locked/tested
+3.11.18 and 3.13.18 on Windows/glibc Linux x86-64. The numerical stack uses
+Polars internally and pandas/PyArrow at model-library boundaries. Exact versions
+and SHA-256 hashes are in `forecasting-product/requirements/py*/`, generated from
+`pyproject.toml`; the ranges below are not promises that every combination works.
+
+**Core CPU/scientific profile:**
 ```
-polars >= 0.20.0
-numpy >= 1.21.0
-statsforecast >= 1.6.0      # AutoARIMA, AutoETS, AutoTheta, MSTL
-mlforecast >= 0.12.0        # ML direct forecasting
-lightgbm >= 3.3.0
-xgboost >= 1.5.0
-scikit-learn >= 1.0.0
-rapidfuzz >= 3.0.0          # SKU name matching
-duckdb >= 0.9.0             # Override store
-pyyaml >= 5.4.0
-fastapi + uvicorn           # REST API
-pyjwt >= 2.0.0, < 3.0       # Required API JWT validation
+polars >= 2.0, < 3          # Honest whole-application floor, not the old 0.20-only smoke
+numpy / scipy / pandas / pyarrow
+statsforecast / mlforecast / hierarchicalforecast
+lightgbm / xgboost-cpu / scikit-learn
+rapidfuzz / pyyaml
 ```
 
-**Frontend** (Node.js 18+):
+The API profile adds FastAPI, patched Starlette, Uvicorn, multipart parsing,
+DuckDB, PyJWT and the optional-use Anthropic SDK. Dev adds tests, lint, packaging,
+audit and profile-generation tooling. CPU XGBoost does not provide CUDA training.
+
+**Frontend** (Node.js 24.22.1 / npm 11.19.1, installed using `npm ci`):
 ```
-next >= 15.1.0              # React framework (App Router)
-react >= 19.0.0             # UI library
-tailwindcss >= 4.0.0        # Utility-first CSS
-recharts >= 2.15.0          # Chart components
+next 16.4.2                # Supported Active LTS, existing Webpack build retained
+react 19                   # UI library
+tailwindcss 3              # Utility-first CSS
+recharts 2 / plotly.js 4    # Chart components
 @tanstack/react-query       # Server state management
-next-auth >= 4.24.0         # Legacy installed dependency; not used by the sign-in flow
 ```
 
 **Optional:**
 ```
-neuralforecast              # N-BEATS, NHITS, TFT neural forecasters
-shap                        # SHAP explainability for ML models
-bcrypt >= 4.0.0             # Legacy optional dependency; password login is not implemented
-holidays >= 0.40            # Holiday calendar generation (external regressors)
-pyspark >= 3.4.0            # Distributed execution
-delta-spark >= 2.4.0        # Delta Lake (local dev)
-azure-identity              # Fabric authentication
-pandas >= 1.3.0             # Legacy data layer + evaluation
-matplotlib / seaborn        # Visualisation
+holidays / matplotlib / seaborn / plotly   # Included in dev/Fabric candidate
+pyspark / delta-spark                     # Separate local Spark profile
+azure-identity                           # External Azure/Fabric integration
+shap / neuralforecast                    # Separate, not qualified by the CPU locks
 ```
+
+NextAuth and bcrypt were unused and are no longer installed by the declared
+profiles; operator-issued JWT authentication is unchanged. Managed Fabric is
+externally supplied: the local candidate profile does not certify or replace a
+workspace's Python/Spark/Delta/Azure runtime. See the
+[profile boundaries](docs/DEPLOYMENT.md#supported-runtimes-and-locked-profiles)
+before installing optional features.

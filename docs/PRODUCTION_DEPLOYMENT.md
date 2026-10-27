@@ -28,7 +28,11 @@ access; compile its public API URL into the frontend build. The separate
 `docker-compose.demo.yml` is only for local synthetic demonstrations and uses a
 different volume. Do not mix demo data or credentials into production.
 
-The API image is built with `python:3.10-slim` and includes `libgomp1` for LightGBM. The frontend uses a multi-stage Node.js 20 Alpine build with a non-root `nextjs` user.
+The API image uses digest-pinned `python:3.12.16-slim-bookworm`, `libgomp1`,
+and the hash-locked CPU/API profile (no GPU/NCCL installation). The frontend
+uses digest-pinned Node.js 24.22.1 / Alpine 3.24 stages, `npm ci`, and a non-root
+`nextjs` user. See [supported runtime profiles](DEPLOYMENT.md#supported-runtimes-and-locked-profiles)
+for exact package resolution, lifecycle boundaries and regeneration.
 
 ### Environment Variables
 

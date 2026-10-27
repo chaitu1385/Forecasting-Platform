@@ -1,14 +1,17 @@
-FROM python:3.10-slim AS base
+FROM python:3.12.16-slim-bookworm@sha256:6dd8b6dab6b3adc7812bab69eca5dbdc1a5cc690ad28306d234ffb4ef8ac9753 AS base
 
 WORKDIR /app
+
+RUN python -c "import platform; assert platform.machine().lower() in ('x86_64', 'amd64'), 'The locked API image supports linux/amd64 only; native ARM is not qualified'"
 
 # System deps for LightGBM, XGBoost
 RUN apt-get update && \
     apt-get install -y --no-install-recommends libgomp1 && \
     rm -rf /var/lib/apt/lists/*
 
-COPY forecasting-product/requirements.txt requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+COPY forecasting-product/requirements/ /tmp/requirements/
+RUN python -m pip install --no-cache-dir --require-hashes --only-binary=:all: \
+    -r /tmp/requirements/py312/api.txt
 
 COPY forecasting-product/ forecasting-product/
 
