@@ -143,7 +143,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 2243 unit + integration cases
+├── tests/                  # 2263 unit + integration cases
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 ├── notebooks/              # Jupyter notebooks for exploration
@@ -214,6 +214,7 @@ def predict_quantiles(self, horizon: int, quantiles: list[float]) -> pl.DataFram
 | `HierarchicalForecaster` | Forecaster that produces coherent hierarchical forecasts with built-in reconciliation |
 | `ConstrainedDemandEstimator` | Wraps any base forecaster; shared floor-preserving proportional/largest-first point budgets; element-wise quantile bounds only |
 | `apply_point_constraints` | Pure full-population bounds/budget allocation; preserves keys/order, rejects infeasible inputs and aggregate-plus-quantile requests |
+| `prepare_constraint_capacity_map` | Shared fresh capacity validation/extraction for wrappers and complete stitched point forecasts |
 | `ForecasterRegistry` | Register, retrieve, and instantiate models by name |
 
 ### `src/data/` — Data Layer
@@ -999,7 +1000,7 @@ POLARS_MAX_THREADS=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1 \
   python -m pytest -v --timeout=180 --timeout-method=thread \
     -o faulthandler_timeout=60
-# 2243 cases across 78 test modules; no test module exclusions
+# 2263 cases across 78 test modules; no test module exclusions
 # Use the matching py311/py313 profile with those interpreters; no module exclusions.
 ```
 
@@ -1056,7 +1057,7 @@ only mocked chart component tests.
 | `test_quality_report.py` | 19 | Data quality reporting |
 | `test_hierarchical_forecaster.py` | 17 | Hierarchical forecaster with reconciliation |
 | `test_constrained_demand.py` | 128 | Exact proportional/largest-first allocation, feasible floors/caps, full populations, refits, bounded quantiles |
-| `test_constraint_api_contracts.py` | 84 | Real JWT/API/helper/wrapper parity, full-population diagnostics, precise keys/metadata, errors, immutable publication |
+| `test_constraint_api_contracts.py` | 104 | Real JWT/API/helper/wrapper and stitched-pipeline parity, full-population diagnostics, precise keys/metadata, errors, immutable publication |
 | `test_rbac.py` | 14 | Role permissions, User model, AuditEvent, AuditLogger log/query/filters |
 | `test_override_store.py` | 19 | Override CRUD, approval workflow, old/current DuckDB Arrow result APIs and conversion errors |
 | `test_break_detection.py` | 14 | Structural break detection |

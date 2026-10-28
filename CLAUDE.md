@@ -116,7 +116,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 2243 cases (pytest)
+├── tests/                  # 2263 cases (pytest)
 ├── configs/                # YAML configuration files
 ├── requirements/           # Hash-locked CPU/API/dev/AI/Fabric/Spark profiles per Python minor
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
@@ -165,6 +165,13 @@ scales only headroom above floors. Largest-first removes excess by descending
 clipped value, then ascending string series ID, preserving input order and all
 nonvalue columns. Never duplicate arithmetic in the route or round away a budget
 violation. Full-population diagnostics precede the 200-row preview.
+
+Single-model and stitched inference reuse `prepare_constraint_capacity_map`.
+`ForecastPipeline._run_multi_horizon` applies the shared helper to the complete
+stitched output before publication, retaining row/model provenance. With enabled
+constraints, requested quantiles on the point-only stitched path fail explicitly:
+`unsupported_aggregate_quantiles` with a budget, `unsupported_stitched_quantiles`
+without one. Do not invent intervals or constrain only individual buckets.
 
 Refitting clears capacity state; a configured missing capacity column/map is an
 error, not permission to retain previous limits. Quantiles support the same
@@ -273,9 +280,9 @@ distribution version. Never replace locks with unconstrained installs to make CI
 - Framework: pytest
 - Test files mirror source structure with `test_` prefix
 - Helper fixtures use `_make_*` factory functions (e.g., `_make_weekly_actuals`)
-- 2243 cases across 78 test modules; run the full suite without module exclusions
+- 2263 cases across 78 test modules; run the full suite without module exclusions
 - Constraint coverage: `test_constrained_demand.py` (128 cases) and
-  `test_constraint_api_contracts.py` (84 real authenticated API/domain/publication cases)
+  `test_constraint_api_contracts.py` (104 real authenticated API/domain/publication cases)
   assert distinct hand allocations, full populations, exact keys and explicit
   infeasible/unsupported errors without changing existing immutable runs.
 - Key test modules: `test_platform.py` (85 tests), `test_sku_mapping.py` (81), `test_ai_*.py` (73), `test_forecast_explainability.py` (59), `test_intermittent_demand.py` (55), `test_observability.py` (41), `test_file_classifier.py` (26), `test_file_merger.py` (20)

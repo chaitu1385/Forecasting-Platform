@@ -10,7 +10,7 @@ Use the Forecasting Platform's Python classes directly for scripting, notebook w
 import polars as pl
 from forecasting_product.src.config.schema import PlatformConfig
 from forecasting_product.src.pipeline.backtest import BacktestPipeline
-from forecasting_product.src.pipeline.forecast import ForecastPipeline
+from src.pipeline.forecast import ForecastPipeline
 
 # Load config
 config = PlatformConfig.from_yaml("config.yaml")
@@ -76,7 +76,7 @@ results = pipeline.run(
 Production forecast: builds series, fits champion model(s) on full history, generates point + probabilistic forecasts, writes Parquet with provenance manifest.
 
 ```python
-from forecasting_product.src.pipeline.forecast import ForecastPipeline
+from src.pipeline.forecast import ForecastPipeline
 
 pipeline = ForecastPipeline(config)
 
@@ -99,7 +99,18 @@ The `champion_model` parameter accepts:
 - **BaseForecaster instance** — a pre-built model
 - **DataFrame** — multi-horizon champion table for stitched forecasts
 
-**Returns:** `pl.DataFrame` with columns `[series_id, week, forecast, forecast_p10, forecast_p50, forecast_p90]`.
+**Returns:** `pl.DataFrame` with the configured identity/time columns and `forecast`;
+single-champion inference can also return requested quantiles.
+
+Enabled point constraints use the shared allocator for both single champions and
+the **complete stitched output**, not each bucket independently. Capacity
+preparation is shared with the wrapper, and stored row/model provenance is
+preserved. Infeasible or missing-capacity inputs fail before publication.
+The existing stitched path produces points only: with enabled constraints,
+aggregate-plus-quantile configuration raises `unsupported_aggregate_quantiles`;
+element-only quantile configuration raises `unsupported_stitched_quantiles`.
+Disabled constraints retain the existing point-only stitched behavior, not new
+probabilistic support.
 
 ---
 
@@ -303,6 +314,9 @@ When `capacity_column` is configured on the wrapper, **every fit** requires that
 column and complete finite training values; its per-series maximum becomes the
 capacity. A refit clears old capacity state even when the new fit fails. To remove
 that policy, explicitly set `capacity_column=None` and refit.
+`prepare_constraint_capacity_map(prepared_history, constraints, id_col)` exposes
+this same validation/extraction for the stitched pipeline; it never retains a
+previous fit's state.
 
 `predict_quantiles` and quantile-bearing point frames support element-wise
 scalar/per-series bounds only. Requested values must already be finite and ordered;

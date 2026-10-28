@@ -90,6 +90,14 @@ finite, every cap must be at least `L`, and a budget `B` must satisfy `B >= n*L`
 Missing/null/duplicate keys, missing configured capacities and infeasible periods
 fail explicitly. The helper never edits the input frame or stored runs.
 
+Single-champion inference and multi-horizon stitching share
+`prepare_constraint_capacity_map` for fresh, validated training capacities.
+Enabled stitched constraints run the allocator on the **complete concatenated
+forecast** before publication, preserving each row's actual model tag and the
+member-model provenance. Per-bucket application alone is not the final check.
+Missing capacities, overlapping output keys or infeasible final periods fail
+without changing an earlier committed run.
+
 If `sum(x_i) <= B`, preserve the clipped values. Otherwise:
 
 - **Proportional:** `L + (x_i-L) * (B-n*L) / sum_j(x_j-L)`. The implementation
@@ -116,6 +124,13 @@ upper-tail interval. With an enabled budget, quantile-bearing input or
 distribution. Disabled constraints bypass this restriction and remain a no-op.
 Quantile algorithms, calibration formulas, scoring and historical artifacts are
 otherwise unchanged.
+
+The pre-existing horizon-stitching path generates points only. With enabled
+constraints, configured aggregate-plus-quantiles fails with
+`unsupported_aggregate_quantiles`; element-only requested quantiles fails with
+`unsupported_stitched_quantiles`. Neither mode invents or silently drops requested
+intervals. Disabled constraints retain the prior point-only stitched path and do
+not create new probabilistic capabilities.
 
 ## Metric definitions and configuration
 

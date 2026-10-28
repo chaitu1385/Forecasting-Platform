@@ -463,6 +463,180 @@ def _snapshot(root):
     return {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
 
 
+def _champions(*buckets):
+    return pl.DataFrame([
+        {"model_id": model, "horizon_bucket": name, "start_step": start, "end_step": end}
+        for name, start, end, model in (buckets or (("all", 1, 1, "naive_seasonal"),))
+    ])
+
+
+@pytest.mark.parametrize("proportional,expected", [(True, [25.0, 25.0]), (False, [0.0, 50.0])])
+def test_stitched_champion_cannot_bypass_single_model_constraints(tmp_path, proportional, expected):
+    pipeline, actuals = _pipeline(tmp_path)
+    pipeline.config.forecast.constraints = ConstraintConfig(
+        enabled=True, aggregate_max=50, proportional_redistribution=proportional,
+    )
+    single = pipeline.run(actuals, champion_model="naive_seasonal").sort("series_id")
+    assert single["forecast"].to_list() == expected
+    stitched = pipeline.run(actuals, champion_model=_champions()).sort("series_id")
+    assert pipeline.last_run is not None
+    assert RunStore(tmp_path / "runs").frame("constraint_test", pipeline.last_run.run_id, "forecast").equals(stitched)
+    assert stitched["forecast"].to_list() == expected
+    assert stitched.equals(single)
+
+
+@pytest.mark.parametrize("proportional,expected", [(True, {"a": 25.0, "b": 25.0}), (False, {"a": 10.0, "b": 40.0})])
+@pytest.mark.parametrize("custom_columns", [False, True])
+def test_stitched_constraints_use_one_complete_population_with_model_provenance(
+    tmp_path, monkeypatch, proportional, expected, custom_columns,
+):
+    pipeline, actuals = _pipeline(tmp_path)
+    config = pipeline.config.forecast
+    config.horizon_weeks = 3
+    config.constraints = ConstraintConfig(
+        enabled=True, min_demand=10, max_capacity=80, aggregate_max=50,
+        proportional_redistribution=proportional,
+    )
+    if custom_columns:
+        config.series_id_column, config.time_column = "sku", "period"
+        actuals = actuals.rename({"series_id": "sku", "week": "period"})
+    id_col, time_col = config.series_id_column, config.time_column
+    calls = []
+    original = apply_point_constraints
+
+    def tracked(frame, *args, **kwargs):
+        calls.append(frame.clone())
+        return original(frame, *args, **kwargs)
+
+    monkeypatch.setattr("src.forecasting.constrained.apply_point_constraints", tracked)
+    champions = _champions(("short", 1, 1, "naive_seasonal"), ("long", 2, 3, "croston"))
+    forecast = pipeline.run(actuals, champion_model=champions)
+    assert len(calls) == 1
+    assert calls[0].height == forecast.height == 6
+    assert calls[0][time_col].n_unique() == 3
+    assert set(calls[0]["model"]) == {"naive_seasonal", "croston"}
+    assert calls[0].drop("forecast").equals(forecast.drop("forecast"))
+    for identity, value in expected.items():
+        rows = forecast.filter(pl.col(id_col) == identity).sort(time_col)
+        assert rows["forecast"].to_list() == [value] * 3
+        assert rows["model"].to_list() == ["naive_seasonal", "croston", "croston"]
+    assert forecast.group_by(time_col).agg(pl.col("forecast").sum())["forecast"].to_list() == [50.0] * 3
+    store = RunStore(tmp_path / "runs")
+    manifest = store.get("constraint_test", pipeline.last_run.run_id)
+    assert manifest.champion_model_id == "multi_horizon"
+    assert [model["name"] for model in manifest.models] == ["naive_seasonal", "croston"]
+    assert store.frame("constraint_test", manifest.run_id, "forecast").equals(forecast)
+    assert store.frame("constraint_test", manifest.run_id, "champion_table").equals(champions)
+    assert store.json_member("constraint_test", manifest.run_id, "config")["settings"]["forecast"]["constraints"]["aggregate_max"] == 50
+
+
+@pytest.mark.parametrize("proportional,expected", [(True, {"a": 13.75, "b": 36.25}), (False, {"a": 20.0, "b": 30.0})])
+def test_stitched_scalar_and_training_capacities_use_the_tighter_bound(tmp_path, proportional, expected):
+    pipeline, actuals = _pipeline(tmp_path)
+    pipeline.config.forecast.horizon_weeks = 2
+    pipeline.config.forecast.constraints = ConstraintConfig(
+        enabled=True, min_demand=10, max_capacity=80, capacity_column="_cap",
+        aggregate_max=50, proportional_redistribution=proportional,
+    )
+    actuals = actuals.with_columns(
+        pl.when(pl.col("series_id") == "a").then(20.0).otherwise(100.0).alias("_cap"),
+    )
+    forecast = pipeline.run(
+        actuals, champion_model=_champions(("short", 1, 1, "naive_seasonal"), ("long", 2, 2, "croston")),
+    )
+    for identity, value in expected.items():
+        assert forecast.filter(pl.col("series_id") == identity)["forecast"].to_list() == [value, value]
+    assert forecast.group_by("week").agg(pl.col("forecast").sum())["forecast"].to_list() == [50.0, 50.0]
+
+
+@pytest.mark.parametrize("quantiles", [[], [0.1, 0.9]])
+def test_disabled_stitched_constraints_remain_a_point_only_noop(tmp_path, quantiles):
+    pipeline, actuals = _pipeline(tmp_path)
+    pipeline.config.forecast.horizon_weeks = 2
+    pipeline.config.forecast.quantiles = quantiles
+    pipeline.config.forecast.constraints = ConstraintConfig(
+        enabled=False, min_demand=40, max_capacity=20, capacity_column="absent",
+        aggregate_max=50, proportional_redistribution=False,
+    )
+    forecast = pipeline.run(
+        actuals, champion_model=_champions(("short", 1, 1, "naive_seasonal"), ("long", 2, 2, "croston")),
+    )
+    assert forecast["forecast"].to_list() == [100.0] * 4
+    assert not any(column.startswith("forecast_p") for column in forecast.columns)
+    assert pipeline.last_run is not None
+
+
+@pytest.mark.parametrize(
+    "failure,code",
+    [
+        ("floor", "infeasible_constraints"),
+        ("capacity-floor", "infeasible_constraints"),
+        ("missing-capacity", "invalid_capacity_data"),
+        ("nonfinite-capacity", "invalid_constraint_frame"),
+        ("null-capacity", "invalid_constraint_frame"),
+        ("aggregate-quantiles", "unsupported_aggregate_quantiles"),
+        ("element-quantiles", "unsupported_stitched_quantiles"),
+        ("overlapping-buckets", "duplicate identity/time"),
+        ("empty-bucket", "must not be empty"),
+    ],
+)
+def test_stitched_constraint_rejection_precedes_publication_and_preserves_prior_run(tmp_path, failure, code):
+    pipeline, actuals = _pipeline(tmp_path)
+    original = pipeline.run(actuals)
+    old_id = pipeline.last_run.run_id
+    store = RunStore(tmp_path / "runs")
+    before = _snapshot(store.root)
+    config = pipeline.config.forecast
+    config.constraints = ConstraintConfig(enabled=True, aggregate_max=50)
+    champions = _champions()
+    if failure == "floor":
+        config.constraints.min_demand = 40
+    elif failure == "capacity-floor":
+        config.constraints.min_demand = 10
+        config.constraints.max_capacity = 9
+    elif failure == "missing-capacity":
+        config.constraints.capacity_column = "absent"
+    elif failure in ("nonfinite-capacity", "null-capacity"):
+        config.constraints.capacity_column = "_cap"
+        actuals = actuals.with_columns(
+            pl.Series("_cap", [100.0] * (actuals.height - 1) + [float("nan") if failure == "nonfinite-capacity" else None]),
+        )
+    elif failure in ("aggregate-quantiles", "element-quantiles"):
+        config.quantiles = [0.1, 0.5, 0.9]
+        if failure == "element-quantiles":
+            config.constraints.aggregate_max = None
+    elif failure == "overlapping-buckets":
+        champions = _champions(("first", 1, 1, "naive_seasonal"), ("overlap", 1, 1, "croston"))
+    elif failure == "empty-bucket":
+        champions = _champions(("empty", 2, 3, "naive_seasonal"))
+    with pytest.raises(ValueError, match=code):
+        pipeline.run(actuals, champion_model=champions)
+    assert pipeline.last_run is None
+    assert _snapshot(store.root) == before
+    assert store.frame("constraint_test", old_id, "forecast").equals(original)
+
+
+def test_stitched_capacity_preparation_is_fresh_after_a_failed_run_and_option_removal(tmp_path):
+    pipeline, actuals = _pipeline(tmp_path)
+    settings = ConstraintConfig(
+        enabled=True, min_demand=10, max_capacity=80, capacity_column="_cap",
+        aggregate_max=50, proportional_redistribution=False,
+    )
+    pipeline.config.forecast.constraints = settings
+    with_capacity = actuals.with_columns(
+        pl.when(pl.col("series_id") == "a").then(20.0).otherwise(100.0).alias("_cap"),
+    )
+    assert pipeline.run(with_capacity, champion_model=_champions())["forecast"].to_list() == [20.0, 30.0]
+    with pytest.raises(ValueError, match="invalid_capacity_data"):
+        pipeline.run(actuals, champion_model=_champions())
+    settings.capacity_column = None
+    reused = pipeline.run(actuals, champion_model=_champions())
+    fresh, _ = _pipeline(tmp_path / "fresh")
+    fresh.config.forecast.constraints = settings
+    assert fresh.run(actuals, champion_model=_champions()).equals(reused)
+    assert reused["forecast"].to_list() == [10.0, 40.0]
+
+
 def test_constraint_success_and_errors_do_not_mutate_committed_history(private_api):
     pipeline, actuals = _pipeline(private_api.root)
     stored_forecast = pipeline.run(actuals)

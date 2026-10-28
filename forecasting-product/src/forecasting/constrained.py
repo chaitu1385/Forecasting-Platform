@@ -142,6 +142,39 @@ def _finite_sum(values: list[float]) -> float:
     return total
 
 
+def prepare_constraint_capacity_map(
+    frame: pl.DataFrame,
+    constraints: ConstraintConfig,
+    id_col: str = "series_id",
+) -> dict[object, float]:
+    """Validate enabled limits and extract fresh capacities from prepared history.
+
+    Every configured training capacity must be finite and at least the floor.
+    The existing per-series maximum policy is shared by the wrapper and stitched
+    pipelines. Disabled constraints and an absent capacity-column option return
+    an empty map; a configured missing column is an error.
+    """
+    if not constraints.enabled:
+        return {}
+    floor, _, _ = _constraint_limits(constraints)
+    column = constraints.capacity_column
+    if column is None:
+        return {}
+    if frame.is_empty() or column not in frame.columns or id_col not in frame.columns:
+        raise ValueError("invalid_capacity_data: configured capacity column and series IDs are required at every fit")
+    if column == id_col or frame[id_col].null_count():
+        raise ValueError("invalid_capacity_data: capacity needs a distinct, non-null series identity")
+    _validate_key_values(frame, (id_col,))
+    capacities = _finite_values(frame, column)
+    if any(value < floor for value in capacities):
+        raise ValueError("infeasible_constraints: training capacities must be nonnegative and at least min_demand")
+    cap = frame.select(
+        pl.col(id_col).alias("identity"),
+        pl.col(column).cast(pl.Float64).alias("capacity"),
+    ).group_by("identity").agg(pl.col("capacity").max())
+    return dict(cap.iter_rows())
+
+
 def apply_point_constraints(
     frame: pl.DataFrame,
     constraints: ConstraintConfig,
@@ -322,23 +355,7 @@ class ConstrainedDemandEstimator(BaseForecaster):
     ) -> pl.DataFrame:
         """Extract per-series capacity from data if configured; delegate to base."""
         self._capacity_map = {}
-        if self.constraints.enabled:
-            floor, _, _ = _constraint_limits(self.constraints)
-            column = self.constraints.capacity_column
-            if column is not None:
-                if df.is_empty() or column not in df.columns or id_col not in df.columns:
-                    raise ValueError("invalid_capacity_data: configured capacity column and series IDs are required at every fit")
-                if column == id_col or df[id_col].null_count():
-                    raise ValueError("invalid_capacity_data: capacity needs a distinct, non-null series identity")
-                _validate_key_values(df, (id_col,))
-                capacities = _finite_values(df, column)
-                if any(value < floor for value in capacities):
-                    raise ValueError("infeasible_constraints: training capacities must be nonnegative and at least min_demand")
-                cap = df.select(
-                    pl.col(id_col).alias("identity"),
-                    pl.col(column).cast(pl.Float64).alias("capacity"),
-                ).group_by("identity").agg(pl.col("capacity").max())
-                self._capacity_map = dict(cap.iter_rows())
+        self._capacity_map = prepare_constraint_capacity_map(df, self.constraints, id_col)
 
         return self.base.validate_and_prepare(
             df, target_col, time_col, id_col
