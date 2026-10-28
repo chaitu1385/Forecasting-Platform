@@ -143,7 +143,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 2047 unit + integration cases
+├── tests/                  # 2163 unit + integration cases
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 ├── notebooks/              # Jupyter notebooks for exploration
@@ -366,7 +366,7 @@ No UPDATE or DELETE operations — append-only by design for SOX compliance.
 | `HierarchyTree` | Build and traverse a multi-level node hierarchy; exposes `summing_matrix()` |
 | `HierarchyNode` | Single node with `descendants()`, `ancestors()`, `leaf_descendants()`, `is_leaf()` |
 | `HierarchyAggregator` | `aggregate_to()`, `disaggregate_to()`, `compute_historical_proportions()` |
-| `Reconciler` | Six reconciliation methods; non-negativity enforced |
+| `Reconciler` | Six domain reconciliation methods; linear methods enforce non-negativity |
 
 **Reconciliation methods:**
 
@@ -377,7 +377,7 @@ No UPDATE or DELETE operations — append-only by design for SOX compliance.
 | `middle_out` | — | Mid-level is authoritative; disaggregated down, aggregated up |
 | `ols` | Identity | Equal uncertainty at all levels |
 | `wls` | `diag(n_leaf_descendants)` or per-series residual variance | Structural or data-driven weights |
-| `mint` | Ledoit-Wolf diagonal shrinkage covariance | Falls back to WLS-structural when `T < n` |
+| `mint` | Shrinkage covariance when residuals are supplied | Falls back to WLS-structural when residuals are absent |
 
 **Linear reconciliation formula (OLS/WLS/MinT):**
 ```
@@ -385,7 +385,16 @@ G       = (S'W-1 S)-1 S'W-1       # projection matrix
 P_leaf  = G * P_all                # reconciled leaf forecasts
 P_all   = S * P_leaf               # all-level coherent forecasts
 ```
-Tikhonov regularisation (lambda = 1e-6) applied for numerical stability.
+Tikhonov regularisation uses `1e-8 * trace(S'W-1 S) / n_leaves` for numerical stability.
+
+The **hierarchy API/UI** supports complete leaf-input bottom-up/OLS/WLS/MinT and
+root-input top-down with an explicit earlier historical upload. It reports the
+requested and effective calculation: WLS and no-residual MinT use
+`wls_structural`, without independent upper forecasts. Middle-out is not exposed.
+Full key/value/coherence checks run before preview truncation; incomplete panels,
+ambiguous mappings, invalid quantiles, zero-volume history and submicrosecond
+timestamps fail explicitly. No stored run is changed. See the
+[API contract](docs/API_REFERENCE.md#post-hierarchyreconcile).
 
 ### `src/backtesting/` — Backtest Engine
 
@@ -566,7 +575,7 @@ require verified JWTs by default; only an explicit unauthenticated demo opts out
 | `/series/regressor-screen` | POST | Regressor screening (variance, correlation, MI) | Yes |
 | `/hierarchy/build` | POST | Build hierarchy tree, return structure stats | Yes |
 | `/hierarchy/aggregate` | POST | Aggregate data to target hierarchy level | Yes |
-| `/hierarchy/reconcile` | POST | Run hierarchical reconciliation (OLS/WLS/MinT) | Yes (`RUN_PIPELINE`) |
+| `/hierarchy/reconcile` | POST | Complete leaf/root reconciliation with historical input and scoped coherence | Yes (`RUN_PIPELINE`) |
 | `/sku-mapping/phase1` | POST | Phase 1 SKU mapping (attribute + naming) | Yes (`RUN_PIPELINE`) |
 | `/sku-mapping/phase2` | POST | Phase 2 SKU mapping (+ curve fitting) | Yes (`RUN_PIPELINE`) |
 | `/overrides` | GET/POST | List / create planner overrides | Yes |
@@ -998,7 +1007,7 @@ POLARS_MAX_THREADS=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1 \
   python -m pytest -v --timeout=180 --timeout-method=thread \
     -o faulthandler_timeout=60
-# 2047 cases across 77 test modules; no test module exclusions
+# 2163 cases across 78 test modules; no test module exclusions
 # Use the matching py311/py313 profile with those interpreters; no module exclusions.
 ```
 
@@ -1041,6 +1050,7 @@ only mocked chart component tests.
 | `test_forecast_explainability.py` | 59 | Comparator, ExceptionEngine, Explainer (STL+SHAP+narrative), ModelCard, Registry, DriftDetector, Lineage |
 | `test_intermittent_demand.py` | 55 | SparseDetector, Croston, CrostonSBA, TSB, backtest routing |
 | `test_mint_reconciliation.py` | 46 | S-matrix math, OLS/WLS/MinT correctness, coherence, edge cases |
+| `test_planning_api_contracts.py` | 116 | Real authenticated hierarchy uploads, independent matrix/parent oracles, full-frame checks, timestamp identity and unchanged run artifacts |
 | `test_foundation_models.py` | 41 | Chronos, TimeGPT fit/predict/quantiles, error handling, zero-shot property |
 | `test_nixtla_models.py` | 29 | AutoTheta, MSTL extended statsforecast models |
 | `test_data_analyzer.py` | 29 | Data analysis module |

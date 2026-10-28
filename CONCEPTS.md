@@ -55,9 +55,15 @@ When you forecast at multiple levels of a product hierarchy (total company → c
 
 ### MinT Reconciliation
 
-Top-down allocation loses SKU-level signal. Bottom-up aggregation loses top-level stability. Simple averaging splits the difference but ignores correlation structure. MinT (Minimum Trace) reconciliation uses Ledoit-Wolf shrinkage estimation of the forecast error covariance matrix to find the statistically optimal linear combination of base forecasts across all hierarchy levels. It dominates simpler methods (OLS, WLS) especially in large hierarchies where sample covariance is ill-conditioned. The platform also supports bottom-up, top-down, middle-out, OLS, and WLS for comparison.
+Top-down allocation relies on historical shares; bottom-up uses leaf forecasts as authoritative. MinT (Minimum Trace) can combine forecasts according to their estimated residual covariance when the required residuals and independent forecasts are available. Shrinkage helps condition covariance estimates, but better forecasting accuracy is not guaranteed and must be measured on held-out data. Without residuals, this platform's reconciler falls back to structural WLS.
 
-*Implementation: `src/hierarchy/reconciler.py` — `Reconciler.mint()`*
+*Implementation: `src/hierarchy/reconciler.py` — `Reconciler.reconcile()`*
+
+### Reconciliation Scope
+
+Coherence means children sum to their parents; it is not evidence of better accuracy or calibrated intervals. The hierarchy API derives upper forecasts from leaves, so it explicitly labels WLS and no-residual MinT as structural rather than claiming an estimated covariance model. Top-down instead needs complete, earlier leaf history with positive group volumes to split actual root forecasts. Choose the method whose required inputs you possess, and read the returned scope and effective method rather than treating a successful preview as proof of a different calculation.
+
+*Implementation: `src/api/routers/hierarchy.py`; `HierarchyReconcileResponse` in `src/api/schemas.py`*
 
 ---
 

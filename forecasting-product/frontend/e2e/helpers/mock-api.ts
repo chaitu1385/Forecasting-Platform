@@ -113,10 +113,27 @@ export function setupApiMocks() {
       }),
       reconcileHierarchy: vi.fn().mockResolvedValue({
         method: "bottom_up",
+        requested_method: "bottom_up",
+        effective_method: "bottom_up",
+        source_level: "subcategory",
+        output_level: "subcategory",
+        input_rows: 260,
+        output_rows: 260,
         before_total: 10000,
         after_total: 10000,
         rows: 260,
         reconciled_preview: [],
+        warnings: [],
+        coherence: {
+          scope: "leaf_derived_parent_totals",
+          passed: true,
+          checked_rows: 260,
+          checked_periods: 52,
+          checked_groups: 52,
+          value_columns: ["forecast"],
+          max_abs_error: 0,
+        },
+        validation: null,
       }),
 
       // SKU Mapping

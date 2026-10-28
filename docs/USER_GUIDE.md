@@ -220,7 +220,29 @@ Your dimension data must include the hierarchy columns (e.g., `category` for eac
 | `top_down` | Top-level forecast is accurate; disaggregate by historical proportions |
 | `ols` | No prior knowledge about which level is most accurate |
 | `wls` | Some levels have more data (weights by leaf count or residual variance) |
-| `mint` | Best overall accuracy — uses covariance of forecast errors (recommended) |
+| `mint` | Uses residual covariance when supplied to the domain reconciler; otherwise structural WLS, not a guarantee of better accuracy |
+
+### Running reconciliation in the Hierarchy Manager
+
+For bottom-up, upload complete leaf forecasts with all hierarchy columns, `week`
+and `forecast`. Enter levels from root to leaf, for example `department,item`,
+then select **Bottom-Up** and **Reconcile**. The last level identifies leaves.
+Two leaves with values 10/20 in one period and 4/6 in another remain unchanged;
+their parent totals are 30 and 10.
+
+For **Top-Down**, upload root forecasts in the main file input, then upload
+**Historical actuals** and choose its volume column (default `quantity`).
+History must include every hierarchy level, precede the forecast window and
+have positive total volume for every leaf. A root forecast of 120 with historical
+leaf volumes 10 and 30 returns 30 and 90. Missing/zero-volume groups and overlapping
+history are errors, not equal-share allocations.
+
+Read the **effective method** and full checked row/period counts, not only the
+preview. The API/UI uses structural WLS for both WLS and no-residual MinT; it does
+not accept residual covariance or independent upper forecasts. Middle-out is not
+available. Dates and microsecond-exact timestamps are supported; finer timestamps
+are rejected rather than rounded. Changing an input clears the old result, and
+reconciliation does not overwrite stored forecasts.
 
 ---
 

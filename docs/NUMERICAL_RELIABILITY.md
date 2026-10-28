@@ -80,6 +80,35 @@ Malformed/nonfinite values fail explicitly; empty calibration residuals remain
 a no-op for valid quantiles. Both named and prebuilt champions use only their
 own model's residuals. Existing archived forecasts are not rewritten.
 
+## Hierarchy API reconciliation
+
+The hierarchy API supplies the real leaf level to bottom-up/OLS/WLS/MinT and the
+real root level to top-down. Existing `Reconciler` formulas are unchanged.
+Leaf-input linear methods derive upper forecasts from leaves; WLS and no-residual
+MinT report `wls_structural`, not estimated residual covariance. OLS remains OLS.
+The API does not accept independent upper forecasts, residuals or middle-out.
+
+Admission requires unique node/period keys, complete expected leaf coverage for
+every observed period, finite requested values and consistent parent mappings.
+Cross-level node-key collisions are rejected for linear methods. Top-down derives
+its tree from complete, earlier leaf history, requires positive leaf-group volumes
+and all mapped root forecasts, and never invents equal shares.
+
+Dates and exact microsecond timestamps are supported. Nanosecond values with a
+nonzero remainder modulo 1,000 and submicrosecond CSV fractions return 400 before
+calculation; periods are not rounded into duplicate wire keys. Historical cutoffs
+compare timezone instants. Requested quantiles are checked for finiteness and
+ordering before and after reconciliation without sorting or clamping by the API.
+Unrequested value columns are omitted, not presented as reconciled bounds.
+
+Full-frame key, numeric and coherence checks precede the 200-row preview.
+Top-down checks supplied-root conservation; leaf-input checks cover only
+leaf-derived parent totals, not independent forecasting accuracy or calibration.
+The comparisons use `rtol=1e-6, atol=1e-8` on unrounded values. Optional validation
+runs applicable structural/logical/business checks, with no model-comparison
+paradox evaluated. A checker failure is an explicit logged error, not a successful
+skip. No stored run, historical ranking or captured configuration is rewritten.
+
 ## Metric definitions and configuration
 
 `src/metrics/definitions.py` defines the formulas and ranking directions.
