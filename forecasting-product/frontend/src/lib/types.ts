@@ -593,17 +593,32 @@ export interface ForecastCompareResponse {
   summary: Record<string, unknown>[];
 }
 
+export interface ConstrainParams {
+  min_demand?: number;
+  max_capacity?: number;
+  aggregate_max?: number;
+  proportional?: boolean;
+  id_col?: string;
+  time_col?: string;
+  value_col?: string;
+}
+
 export interface ConstrainResponse {
   before_total: number;
   after_total: number;
   rows_modified: number;
   constraints_applied: {
     min_demand: number;
-    max_capacity?: number;
-    aggregate_max?: number;
+    max_capacity: number | null;
+    aggregate_max: number | null;
     proportional: boolean;
   };
   constrained_preview: Record<string, unknown>[];
+  allocation_strategy: "element_wise" | "proportional" | "largest_first";
+  checked_rows: number;
+  checked_periods: number;
+  max_budget_excess: number | null;
+  constraint_scope: "point" | "point_and_quantiles";
 }
 
 // ── Governance ───────────────────────────────────────────────────────────────

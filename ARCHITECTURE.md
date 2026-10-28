@@ -448,6 +448,26 @@ sequenceDiagram
     deactivate FP
 ```
 
+### Constrained Point Paths
+
+When constraints are enabled, single-champion and stitched forecasts share the
+same allocator and fresh capacity preparation. Stitched limits apply to the
+complete output before immutable publication, not independently per bucket.
+Model tags/provenance are retained; infeasible inputs and unsupported requested
+quantiles fail before publication. Stitched inference remains point-only.
+
+```mermaid
+flowchart LR
+    P["Prepared history"] --> W["Single champion wrapper"]
+    P --> B["Bucket forecasters"]
+    P --> C["Fresh capacity map"]
+    W --> A["Shared point allocator"]
+    B --> S["Complete stitched points"]
+    S --> A
+    C --> A
+    A --> V["Validate and publish run"]
+```
+
 ### Deep Dive: Hierarchical Reconciliation
 
 Ensures forecasts are coherent — child node forecasts sum to parent nodes at every level of the hierarchy.

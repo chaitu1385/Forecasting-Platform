@@ -109,6 +109,58 @@ runs applicable structural/logical/business checks, with no model-comparison
 paradox evaluated. A checker failure is an explicit logged error, not a successful
 skip. No stored run, historical ranking or captured configuration is rewritten.
 
+## Point constraints and probabilistic budgets
+
+`forecasting.constrained.apply_point_constraints` is the shared allocator for the
+constraint upload API and forecaster wrapper. For each period, let `L` be the
+nonnegative floor, `U_i` the tighter supplied scalar/per-series cap (or no cap),
+and `x_i = clip(input_i, L, U_i)`. Every input value and supplied bound must be
+finite, every cap must be at least `L`, and a budget `B` must satisfy `B >= n*L`.
+Missing/null/duplicate keys, missing configured capacities and infeasible periods
+fail explicitly. The helper never edits the input frame or stored runs.
+
+Single-champion inference and multi-horizon stitching share
+`prepare_constraint_capacity_map` for fresh, validated training capacities.
+Enabled stitched constraints run the allocator on the **complete concatenated
+forecast** before publication, preserving each row's actual model tag and the
+member-model provenance. Per-bucket application alone is not the final check.
+Missing capacities, overlapping output keys or infeasible final periods fail
+without changing an earlier committed run.
+
+If `sum(x_i) <= B`, preserve the clipped values. Otherwise:
+
+- **Proportional:** `L + (x_i-L) * (B-n*L) / sum_j(x_j-L)`. The implementation
+  normalizes headroom before summing to avoid overflow, without rounding rows.
+- **Largest-first:** remove excess down to `L`, descending by clipped value and
+  ascending by string series ID for ties. Retaining headroom in reverse removal
+  order avoids catastrophic cancellation and restores the original row order.
+
+For IDs `a,b`, `[100,100]`, floor `0`, budget `50`, the two results are `[25,25]`
+and `[0,50]`. `[100,2]`, floor `10`, budget `30` becomes `[20,10]`; two rows with
+floor `40` and budget `50` are infeasible, not a successful total of `80`.
+All output rows/periods are checked before any 200-row preview. Bounds/budget
+checks allow only `1e-9 + 1e-12*abs(bound)` arithmetic error; measured excess and
+totals are not rounded away. The API requires representable finite summary totals.
+Polars keys retain nanosecond precision; the API does not date-infer CSV period
+strings, which must use a consistent representation for the same period.
+
+Without an aggregate budget, scalar/per-series clipping is the same monotone
+function for the point and every supplied quantile. Validate finite ordering
+before and after; do not sort invalid input or infer point containment in an
+upper-tail interval. With an enabled budget, quantile-bearing input or
+`predict_quantiles` raises `unsupported_aggregate_quantiles` (API 400/library
+`ValueError`). These are marginal bounds, not a calibrated joint-budget
+distribution. Disabled constraints bypass this restriction and remain a no-op.
+Quantile algorithms, calibration formulas, scoring and historical artifacts are
+otherwise unchanged.
+
+The pre-existing horizon-stitching path generates points only. With enabled
+constraints, configured aggregate-plus-quantiles fails with
+`unsupported_aggregate_quantiles`; element-only requested quantiles fails with
+`unsupported_stitched_quantiles`. Neither mode invents or silently drops requested
+intervals. Disabled constraints retain the prior point-only stitched path and do
+not create new probabilistic capabilities.
+
 ## Metric definitions and configuration
 
 `src/metrics/definitions.py` defines the formulas and ranking directions.

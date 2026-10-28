@@ -93,9 +93,9 @@ A model that claims "80% prediction interval" but actually covers only 65% of ou
 
 ### Constrained Demand Estimation
 
-Raw statistical forecasts ignore physical reality: a factory can't produce 2 million units if capacity is 1.5 million, and a category can't exceed its budget allocation. The `ConstrainedDemandEstimator` wraps any base forecaster and applies post-prediction constraints: element-wise bounds (per-SKU min/max capacity) and aggregate budget caps (total across all SKUs per period). When aggregate demand exceeds the budget, it redistributes proportionally. Quantile intervals are also constrained, with a monotonicity pass ensuring p10 ≤ p50 ≤ p90 after clipping.
+Raw statistical forecasts can exceed production capacity or a category's per-period budget. The shared constraint allocator clips row bounds, then either scales headroom above the floor proportionally or removes excess from the largest forecasts first, rejecting a budget that cannot cover the floors. Use this for a feasible point plan, not as evidence that unconstrained demand has changed. Quantiles support monotone element-wise bounds only: crossed input and aggregate-plus-quantile requests fail explicitly rather than being sorted into a misleading probabilistic result.
 
-*Implementation: `src/forecasting/constrained.py` — `ConstrainedDemandEstimator`*
+*Implementation: `src/forecasting/constrained.py` — `apply_point_constraints`, `ConstrainedDemandEstimator`*
 
 ---
 

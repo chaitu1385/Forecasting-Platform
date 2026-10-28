@@ -256,6 +256,8 @@ jobs:
           tests/test_docker_seed.py tests/test_planning_api_contracts.py
           tests/test_override_store.py
           tests/test_override_api_contracts.py tests/test_override_store_process.py
+          tests/test_constrained_demand.py
+          tests/test_constraint_api_contracts.py
           -q --capture=tee-sys -o addopts="" -o faulthandler_timeout=60
           --timeout=120 --timeout-method=thread --junitxml=authentication-results.xml
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0, Node 24
@@ -282,7 +284,8 @@ jobs:
           AUTH_E2E_ROOT: ${{ runner.temp }}/forecast-auth-browser
           AUTH_E2E_FRONTEND_MODE: production
           PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
-        run: npm run test:auth-browser
+          PLAYWRIGHT_JUNIT_OUTPUT_FILE: authentication-browser-results.xml
+        run: npm run test:auth-browser -- --reporter=line,junit
       - name: Verify explicit-demo browser login
         if: runner.os == 'Linux' && matrix.runtime.profile == 'py312'
         working-directory: forecasting-product/frontend
@@ -294,7 +297,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
         with:
           name: authentication-results-${{ matrix.os }}-${{ matrix.runtime.profile }}
-          path: forecasting-product/authentication-results.xml
+          path: |
+            forecasting-product/authentication-results.xml
+            forecasting-product/frontend/authentication-browser-results.xml
       - name: Upload native Windows profile evidence
         if: always() && runner.os == 'Windows'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24

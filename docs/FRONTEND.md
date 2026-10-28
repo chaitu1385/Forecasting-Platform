@@ -102,7 +102,7 @@ src/components/
   forecast/            # 4 components — Forecast analysis
     decomposition-panel      # STL trend/seasonal/residual
     comparison-panel         # Model vs external forecast
-    constrained-forecast-panel # Capacity/budget constraint application
+    constrained-forecast-panel # Full-population bounds/point budgets, measured strategy/scope, input-owned results
     cross-run-comparison-panel # Cross-run forecast comparison
   governance/          # 3 components — Model governance
     model-cards-panel  # Model card registry viewer
@@ -323,11 +323,48 @@ It also hashes the complete synthetic run artifacts before/after. The fixture's
 SQL failure trigger is test-only; it is not a production validation rule.
 Its evidence JSON contains IDs, counts, status codes and hashes, never credentials.
 
+### Constraint Results and Request Ownership
+
+`ConstrainedForecastPanel` accepts CSV/Parquet and sends the current limits and
+explicit `proportional` choice through the typed `ConstrainParams` client.
+The existing unchecked default remains largest-first; the API's omitted-parameter
+default remains proportional. The server reports the actual strategy, scope,
+unrounded totals, changed-row count (including quantile-only changes), full
+row/period counts and measured budget excess. A null excess means no budget was
+supplied, not that a budget was checked.
+
+File/limit/strategy handlers call the existing `useAsyncOperation.reset()`
+synchronously, and a new submit clears previous results before `run()`. Late
+successes/errors cannot replace a newer request. Failed/infeasible requests show
+an error instead of an applied result; Retry is an explicit POST. Existing
+session ownership and `AuthBoundary` continue to protect logout/replacement.
+
+`e2e/constraint-api-contracts.test.tsx` has 41 component/client/ownership cases,
+including direct token replacement without logout for the same or a different
+username, immediate/deferred identity responses, and completed/error/pending
+constraint states. These exercise the actual `AuthProvider`/`AuthBoundary`;
+no separate authentication behavior is added to the async hook or panel.
+The two real cases in `playwright/auth/constraint-api-contracts.spec.ts` exercise
+both exact allocation strategies, 400 infeasible/aggregate-quantile responses,
+quantile-only row accounting, a delayed **real** API response and unchanged stored
+run hashes. They share the existing private login helper; no endpoint is replaced
+with synthetic success data.
+
+For the private production suite, set `AUTH_E2E_FRONTEND_MODE=production`, build
+with `NEXT_PUBLIC_API_URL` matching the chosen loopback `AUTH_E2E_API_PORT`, then
+run `npm run test:auth-browser`. `AUTH_E2E_FRONTEND_PORT` selects a separate owned
+port, and `AUTH_E2E_ROOT` must be fresh for each invocation. The fixture pins its
+run authority beneath that private root, regardless of inherited API settings.
+CI includes the constraint contracts in all six existing native authentication
+matrix runs and retains the full backend/M5 gates. The production job records
+credential-free browser JUnit with `--reporter=line,junit`; captures stay off and
+credential directories are never uploaded.
+
 ## Type System
 
 All TypeScript interfaces (`src/lib/types.ts`) mirror the FastAPI Pydantic schemas (`src/api/schemas.py`):
 
-- 70 exported interfaces/types covering API request and response shapes
+- Exported interfaces/types cover API request and response shapes, including hierarchy, override patches, `ConstrainParams` and `ConstrainResponse`
 - Strict typing for roles (`Role` union type), severity levels, trends, confidence levels
 - `Record<string, unknown>` used for flexible/dynamic data (e.g., per-series stats)
 

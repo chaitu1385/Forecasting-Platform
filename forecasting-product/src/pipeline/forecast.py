@@ -302,10 +302,25 @@ class ForecastPipeline:
         assigned bucket.  The slices are concatenated into the final
         forecast.
         """
+        from ..forecasting.constrained import (
+            apply_point_constraints,
+            prepare_constraint_capacity_map,
+        )
+
         fc = self.config.forecast
         horizon = fc.horizon_weeks
         id_col = fc.series_id_column
         time_col = fc.time_column
+
+        capacity_map = None
+        if fc.constraints.enabled:
+            if fc.quantiles:
+                if fc.constraints.aggregate_max is not None:
+                    raise ValueError("unsupported_aggregate_quantiles: stitched forecasts do not support aggregate quantile budgets")
+                raise ValueError("unsupported_stitched_quantiles: constrained horizon stitching currently produces point forecasts only")
+            prepared_capacities = prepare_constraint_capacity_map(series, fc.constraints, id_col)
+            if fc.constraints.capacity_column is not None:
+                capacity_map = prepared_capacities
 
         logger.info(
             "Multi-horizon forecast: %d bucket(s)", len(champion_table)
@@ -361,6 +376,11 @@ class ForecastPipeline:
         # Drop the forecast_step helper column
         if "forecast_step" in forecast.columns:
             forecast = forecast.drop("forecast_step")
+
+        if fc.constraints.enabled:
+            forecast = apply_point_constraints(
+                forecast, fc.constraints, id_col, time_col, "forecast", capacity_map,
+            )
 
         optional_inputs["champion_table"] = champion_table
         self._publish(actuals, series, forecast, "multi_horizon", forecast_origin, models, optional_inputs)

@@ -229,15 +229,61 @@ Compare model forecast against an external/uploaded forecast. Returns per-series
 
 ### `POST /forecast/constrain`
 
-Apply capacity and budget constraints to forecast. Supports per-series caps, aggregate caps, and proportional redistribution. **Requires** `RUN_PIPELINE` permission.
+Apply bounds and per-period point budgets to an uploaded forecast without modifying
+stored runs. **Requires** `RUN_PIPELINE` permission; the existing 100 MB upload
+limit applies. The API and `ConstrainedDemandEstimator.predict` use the same
+`apply_point_constraints` implementation.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `file` | body, required | Forecast CSV/Parquet |
 | `min_demand` | query, default `0.0` | Floor (non-negativity) |
 | `max_capacity` | query, optional | Per-series-per-period cap |
-| `aggregate_max` | query, optional | Total cap across all series |
-| `proportional` | query, default `true` | Use proportional redistribution |
+| `aggregate_max` | query, optional | Total cap across all supplied series **per period** |
+| `proportional` | query, default `true` | Scale headroom above the floor; `false` removes excess largest-first |
+| `id_col` | query, default `series_id` | Series identity column |
+| `time_col` | query, default `week` | Period key column |
+| `value_col` | query, default `forecast` | Point forecast column |
+
+Inputs must be nonempty, with distinct required columns, unique non-null
+series/period keys, finite numeric forecast values and finite nonnegative limits.
+A cap below the floor or a budget below `row_count * min_demand` for any period
+returns HTTP 400 (`infeasible_constraints`). Malformed typed parameters retain
+HTTP 422. Invalid files/semantic inputs return 400; unexpected computation errors
+are logged and return a nonsensitive 500, never an empty or "applied" result.
+
+After clipping to row bounds, under-budget rows remain unchanged. Proportional
+allocation preserves floors and scales only the remaining headroom. Largest-first
+orders by descending clipped value, then ascending **string** series ID, removing
+excess down to each floor. For IDs `a,b`, values `100,100` and budget `50`, the
+results are `25,25` proportionally and `0,50` largest-first, independent of input
+row order. Output row order and nonvalue columns are preserved. CSV period keys
+are kept as supplied rather than date-inferred, so fractional timestamps are not
+rounded together; use a consistent representation for each period. Parquet
+timestamps retain their native precision in the JSON preview.
+Nullable/nested metadata is preserved, including lossless string encoding of
+Parquet decimals. Nonfinite metadata (which JSON would replace with null) and
+unsupported binary/object metadata return 400 instead of a modified preview.
+
+Standard `forecast_p0` through `forecast_p100` columns are quantiles. Without an
+aggregate budget, the same monotone row bounds apply to every supplied quantile;
+crossed/nonfinite input is rejected before clipping. With `aggregate_max` and any
+quantiles, return HTTP 400 `unsupported_aggregate_quantiles`, even if the input is
+under budget. This endpoint does not construct a joint probabilistic budget.
+Per-series capacity maps are available through the Python wrapper/helper, not a
+new upload parameter.
+Quantile columns use the existing integer/floating-point validator; unsupported
+numeric dtypes such as Parquet Decimal return an actionable 400, not a 500.
+
+The response retains `before_total`, `after_total`, `rows_modified`,
+`constraints_applied`, and `constrained_preview` (at most 200 rows). Totals are
+unrounded and measured over the **entire** frame; `rows_modified` counts each row
+with any constrained point or quantile value changed exactly once, including
+quantile-only changes and excluding unrelated metadata. Additional typed fields are
+`allocation_strategy` (`element_wise`, `proportional`, `largest_first`),
+`checked_rows`, `checked_periods`, `max_budget_excess` (actual positive per-period
+excess, or null without a budget), and `constraint_scope` (`point` or
+`point_and_quantiles`). All rows/periods are checked before truncating the preview.
 
 ---
 

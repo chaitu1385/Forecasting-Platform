@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import io
+import json
 import logging
+import math
 from typing import Optional
 
 import polars as pl
@@ -18,6 +20,7 @@ from ..deps import (
     validate_path_param,
     validate_upload_size,
 )
+from ..schemas import ConstrainResponse
 
 logger = logging.getLogger(__name__)
 
@@ -282,7 +285,21 @@ async def compare_forecasts(
     }
 
 
-@router.post("/forecast/constrain")
+def _validate_constraint_json_column(column: pl.Series) -> None:
+    """Reject metadata that JSON would silently replace or cannot represent."""
+    dtype = column.dtype
+    if dtype in (pl.Binary, pl.Object):
+        raise ValueError("invalid_constraint_frame: binary/object metadata is not supported in JSON forecasts")
+    if dtype.is_float() and not column.is_finite().fill_null(True).all():
+        raise ValueError("invalid_constraint_frame: nonfinite metadata cannot be preserved in JSON forecasts")
+    if isinstance(dtype, (pl.List, pl.Array)):
+        _validate_constraint_json_column(column.explode())
+    elif isinstance(dtype, pl.Struct):
+        for member in column.struct.unnest().iter_columns():
+            _validate_constraint_json_column(member)
+
+
+@router.post("/forecast/constrain", response_model=ConstrainResponse)
 async def constrain_forecast(
     file: UploadFile = File(..., description="Forecast CSV/Parquet"),
     min_demand: float = Query(0.0, description="Floor (non-negativity)"),
@@ -293,74 +310,81 @@ async def constrain_forecast(
     time_col: str = Query("week"),
     value_col: str = Query("forecast"),
     user: User = Depends(require_permission(Permission.RUN_PIPELINE)),
-):
-    """Apply capacity and budget constraints to forecast."""
+) -> ConstrainResponse:
+    """Apply full-population bounds and point budgets without modifying stored runs."""
+    from ...config.schema import ConstraintConfig
+    from ...forecasting.constrained import apply_point_constraints
+
     content = await validate_upload_size(file)
     filename = file.filename or ""
     try:
         if filename.endswith(".parquet"):
             df = pl.read_parquet(io.BytesIO(content))
         else:
-            df = pl.read_csv(io.BytesIO(content), try_parse_dates=True)
-    except (ValueError, UnicodeDecodeError, OSError) as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}")
+            # Constraints group exact period keys; date inference can truncate
+            # fractional timestamps and silently combine distinct CSV periods.
+            df = pl.read_csv(io.BytesIO(content), try_parse_dates=False)
+    except (ValueError, UnicodeDecodeError, pl.exceptions.PolarsError) as exc:
+        raise HTTPException(
+            status_code=400, detail="invalid_constraint_file: upload a readable CSV or Parquet forecast"
+        ) from exc
+    except OSError as exc:
+        logger.exception("Constraint upload could not be read")
+        raise HTTPException(status_code=500, detail="Constraint upload could not be read") from exc
 
-    constrained = df.clone()
-
-    # Apply min demand floor
-    if value_col in constrained.columns:
-        constrained = constrained.with_columns(
-            pl.when(pl.col(value_col) < min_demand)
-            .then(min_demand)
-            .otherwise(pl.col(value_col))
-            .alias(value_col)
+    try:
+        constrained = apply_point_constraints(
+            df,
+            ConstraintConfig(
+                enabled=True, min_demand=min_demand, max_capacity=max_capacity,
+                aggregate_max=aggregate_max, proportional_redistribution=proportional,
+            ),
+            id_col, time_col, value_col,
         )
+        before_total = math.fsum(df[value_col])
+        after_total = math.fsum(constrained[value_col])
+        if not math.isfinite(before_total) or not math.isfinite(after_total):
+            raise ValueError("invalid_constraint_frame: aggregate totals must be finite")
+        max_excess = None
+        if aggregate_max is not None:
+            period_values = constrained.select(
+                pl.col(time_col).alias("period"), pl.col(value_col).alias("values"),
+            ).group_by("period").agg("values")["values"].to_list()
+            max_excess = max(max(0.0, math.fsum(values) - aggregate_max) for values in period_values)
+        quantile_columns = [
+            column for column in constrained.columns
+            if column.startswith("forecast_p") and column not in (id_col, time_col)
+        ]
+        modified = df[value_col] != constrained[value_col]
+        for column in quantile_columns:
+            modified = modified | (df[column] != constrained[column])
+        for column in constrained.iter_columns():
+            _validate_constraint_json_column(column)
+        preview = json.loads(constrained.head(200).write_json())
+    except (ValueError, OverflowError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (ArithmeticError, KeyError, OSError, RuntimeError, TypeError, pl.exceptions.PolarsError) as exc:
+        logger.exception("Constraint computation failed")
+        raise HTTPException(status_code=500, detail="Constraint computation failed") from exc
 
-    # Apply per-series capacity cap
-    if max_capacity is not None and value_col in constrained.columns:
-        constrained = constrained.with_columns(
-            pl.when(pl.col(value_col) > max_capacity)
-            .then(max_capacity)
-            .otherwise(pl.col(value_col))
-            .alias(value_col)
-        )
-
-    # Apply aggregate cap
-    if aggregate_max is not None and time_col in constrained.columns and value_col in constrained.columns:
-        period_totals = constrained.group_by(time_col).agg(pl.col(value_col).sum().alias("_total"))
-        over_cap = period_totals.filter(pl.col("_total") > aggregate_max)
-
-        if not over_cap.is_empty():
-            for row in over_cap.iter_rows(named=True):
-                period = row[time_col]
-                total = row["_total"]
-                scale = aggregate_max / total if total > 0 else 1.0
-                if proportional:
-                    constrained = constrained.with_columns(
-                        pl.when(pl.col(time_col) == period)
-                        .then(pl.col(value_col) * scale)
-                        .otherwise(pl.col(value_col))
-                        .alias(value_col)
-                    )
-
-    before_total = float(df[value_col].sum()) if value_col in df.columns else 0.0
-    after_total = float(constrained[value_col].sum()) if value_col in constrained.columns else 0.0
-    rows_modified = 0
-    if value_col in df.columns and value_col in constrained.columns:
-        rows_modified = int((df[value_col] != constrained[value_col]).sum())
-
-    return {
-        "before_total": round(before_total, 2),
-        "after_total": round(after_total, 2),
-        "rows_modified": rows_modified,
-        "constraints_applied": {
-            "min_demand": min_demand,
-            "max_capacity": max_capacity,
-            "aggregate_max": aggregate_max,
-            "proportional": proportional,
+    return ConstrainResponse(
+        before_total=before_total,
+        after_total=after_total,
+        rows_modified=int(modified.sum()),
+        constraints_applied={
+            "min_demand": min_demand, "max_capacity": max_capacity,
+            "aggregate_max": aggregate_max, "proportional": proportional,
         },
-        "constrained_preview": constrained.head(200).to_dicts(),
-    }
+        constrained_preview=preview,
+        allocation_strategy=(
+            "element_wise" if aggregate_max is None else
+            "proportional" if proportional else "largest_first"
+        ),
+        checked_rows=constrained.height,
+        checked_periods=constrained[time_col].n_unique(),
+        max_budget_excess=max_excess,
+        constraint_scope="point_and_quantiles" if quantile_columns else "point",
+    )
 
 
 # ── Post-pipeline validation ────────────────────────────────────────────────
