@@ -66,7 +66,7 @@ function MockAuthProvider({ children }: { children: React.ReactNode }) {
 // We need to mock the auth provider module so useAuth() returns our mock
 vi.mock("@/providers/auth-provider", () => ({
   AuthProvider: ({ children }: { children: React.ReactNode }) => children,
-  useAuth: () => ({
+  useAuth: vi.fn().mockReturnValue({
     user: {
       username: "test-admin",
       role: "admin",

@@ -325,28 +325,44 @@ All AI features work without Claude — they fall back to template-based respons
 
 ## Planner Overrides
 
-Demand planners can manually adjust forecasts through the override store.
+Demand planners can maintain SKU-transition proportions, scenarios and ramp shapes
+through the override store. Editing these records does not rewrite an archived
+forecast or certify a new business approval.
+
+On **SKU Transitions**, use **Edit** in Planner Override Management. The existing
+form shows the ID and read-only SKU pair. **Save** patches only changed editable
+fields and refreshes the same record; a zero proportion is valid. Clear the
+effective date or notes input to send explicit null, rather than keeping the old
+value. **Cancel** discards the editor state; it does not undo a request the server
+has already accepted.
+
+A failed mutation retains the original displayed row and your input. For a busy
+store (409), retry explicitly. If the mutation was acknowledged but refreshing
+failed, the message says it was saved/deleted: use **Refresh** before deciding
+whether to submit another mutation. There is no automatic PUT retry or stale-edit
+protection. Simultaneous edits to the same field are serialized last-writer-wins.
+Verified permissions control Create/Edit and Delete independently.
 
 ```python
-from src.overrides import OverrideStore
+from src.overrides.store import get_override_store
 
-store = OverrideStore()
-
-# Add an override
-store.add_override(
-    lob="retail",
-    old_sku="PROD_A",
-    new_sku="PROD_B",
-    proportion=0.6,
-    scenario="replacement",
-    ramp_shape="linear"
-)
-
-# Retrieve overrides
-overrides = store.get_overrides(lob="retail", week="2024-09-07")
+store = get_override_store()
+try:
+    override_id = store.add_override(
+        old_sku="PROD_A", new_sku="PROD_B", proportion=0.6,
+        scenario="replacement", ramp_shape="linear",
+    )
+    store.update_override(override_id, {"proportion": 0.25, "notes": None})
+    overrides = store.get_overrides(old_sku="PROD_A", new_sku="PROD_B")
+finally:
+    store.close()
 ```
 
-The override store uses DuckDB by default, with automatic fallback to Parquet in environments where DuckDB is unavailable (e.g., Microsoft Fabric).
+The factory selects DuckDB or Parquet; direct `OverrideStore` retains its legacy
+CSV fallback. File-backed mutations use cooperative local locks and atomic
+replacement, not certified distributed OneLake/network locking. See the
+[patch contract](API_REFERENCE.md#put-overridesoverride_id) and
+[local persistence limits](DEPLOYMENT.md#mutable-local-overrides).
 
 ---
 

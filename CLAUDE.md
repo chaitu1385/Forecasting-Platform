@@ -291,6 +291,9 @@ distribution version. Never replace locks with unconstrained installs to make CI
   unchanged identity/metadata/run hashes, rollback/replace faults, real JWT/RBAC,
   native nonblocking locks and explicit contention retry. They run in the
   required Linux/Windows authentication matrix as well as the full backend suite.
+  `e2e/override-management.test.tsx` adds 29 editor/client state cases. The private
+  production browser flow proves edit/reload, a real SQL failure with retained
+  input/unchanged record, denied mutations and byte-identical run artifacts.
 - Process safety: `test_process_execution.py` has five real subprocess cases,
   including the ASGI backtest path, configured model/frequency parity, and
   serialization errors. Both production pools use a local `spawn` context, never
@@ -311,8 +314,8 @@ distribution version. Never replace locks with unconstrained installs to make CI
   no failed/cancelled/skipped constituent may pass it.
 - Authentication: 61 JWT/RBAC/private-output cases, 18 real startup cases and
   11 seeder cases run in a required Linux/Windows job. Frontend coverage includes
-  20 memory/session cases, eight explicit-demo browser cases and an isolated
-  production browser/API flow with private synthetic credentials and capture
+  20 memory/session cases, eight explicit-demo browser cases and two isolated
+  production browser/API flows with private synthetic credentials and capture
   disabled. Never upload that fixture's credentials or enable tracing.
 
 ## Key Dependencies
