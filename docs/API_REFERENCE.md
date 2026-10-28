@@ -387,6 +387,13 @@ Run hierarchical reconciliation and return before/after comparison. **Requires**
 | `method` | query, default `"bottom_up"` | `bottom_up`, `top_down`, `ols`, `wls`, `mint` |
 | `value_columns` | query, default `"forecast"` | Columns to reconcile |
 
+The reconciliation wire contract supports dates and timestamps exactly representable
+at microsecond precision. Nanosecond Parquet timestamps are accepted only when every
+stored value is divisible by 1,000; submicrosecond CSV fractions are also rejected
+with HTTP 400 `unsupported_timestamp_precision`. This applies to forecast and
+historical uploads before domain execution: periods are never rounded or merged.
+Timezone-aware historical cutoffs compare instants, not local wall-clock values.
+
 ---
 
 ## SKU Mapping

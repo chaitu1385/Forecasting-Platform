@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/hierarchy", tags=["hierarchy"])
 
+_TIMESTAMP_PRECISION_ERROR = (
+    "unsupported_timestamp_precision: timestamps must be exactly representable "
+    "in microseconds; submicrosecond values are not supported"
+)
+
 
 @router.post("/build")
 async def build_hierarchy(
@@ -170,7 +175,7 @@ async def reconcile_hierarchy(
     value_columns: str = Query("forecast", description="Comma-separated value columns"),
     time_column: str = Query("week"),
     history_value_column: str = Query("quantity", description="Historical volume column for top_down"),
-    validate: bool = Query(False, description="Run 4-layer post-reconciliation validation"),
+    validate: bool = Query(False, description="Run structural, logical and business checks; no model-comparison paradox is evaluated"),
     user: User = Depends(require_permission(Permission.RUN_PIPELINE)),
 ) -> HierarchyReconcileResponse:
     """Reconcile complete leaf panels, or root forecasts using earlier leaf history."""
@@ -186,8 +191,8 @@ async def reconcile_hierarchy(
             detail="unsupported_reconciliation_mode: use bottom_up, top_down, ols, wls or mint; middle_out requires a separate middle-level input contract.",
         ) from exc
 
-    df = await _read_reconciliation_upload(file)
-    history = await _read_reconciliation_upload(actuals_file) if actuals_file is not None else None
+    df = await _read_reconciliation_upload(file, time_column)
+    history = await _read_reconciliation_upload(actuals_file, time_column) if actuals_file is not None else None
     try:
         level_list = _column_names(levels, "levels")
         val_cols = _column_names(value_columns, "value_columns")
@@ -327,7 +332,7 @@ async def reconcile_hierarchy(
     )
 
 
-async def _read_reconciliation_upload(file: UploadFile) -> pl.DataFrame:
+async def _read_reconciliation_upload(file: UploadFile, time_column: str) -> pl.DataFrame:
     filename = file.filename or ""
     if "/" in filename or "\\" in filename or not filename.lower().endswith((".csv", ".parquet")):
         raise HTTPException(
@@ -337,7 +342,16 @@ async def _read_reconciliation_upload(file: UploadFile) -> pl.DataFrame:
     try:
         if filename.lower().endswith(".parquet"):
             return pl.read_parquet(io.BytesIO(content))
-        return pl.read_csv(io.BytesIO(content), try_parse_dates=True)
+        frame = pl.read_csv(io.BytesIO(content), try_parse_dates=True)
+        if time_column in frame.columns:
+            # CSV inference already truncates fractional seconds beyond microseconds.
+            raw_times = pl.read_csv(
+                io.BytesIO(content), columns=[time_column],
+                schema_overrides={time_column: pl.String},
+            )[time_column]
+            if raw_times.str.contains(r":\d{2}\.\d{6}\d*[1-9]").any():
+                raise HTTPException(status_code=400, detail=f"invalid_hierarchy_input: {_TIMESTAMP_PRECISION_ERROR}")
+        return frame
     except (ValueError, UnicodeDecodeError, OSError, pl.exceptions.PolarsError):
         raise HTTPException(
             status_code=400, detail="invalid_hierarchy_file: unable to parse the CSV or Parquet upload",
@@ -386,6 +400,9 @@ def _check_reconciliation_frame(
     times = frame[time_column]
     if times.null_count() or times.dtype.base_type() not in {pl.Date, pl.Datetime}:
         raise ValueError(f"Time column {time_column!r} must contain nonnull dates or timestamps")
+    if times.dtype.base_type() == pl.Datetime and times.dtype.time_unit == "ns":
+        if (times.cast(pl.Int64) % 1000 != 0).any():
+            raise ValueError(_TIMESTAMP_PRECISION_ERROR)
     _check_reconciliation_values(frame, values)
 
 

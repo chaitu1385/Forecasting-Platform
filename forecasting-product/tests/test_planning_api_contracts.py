@@ -3,7 +3,7 @@
 import hashlib
 import io
 import secrets
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import jwt
 import numpy as np
@@ -508,3 +508,94 @@ def test_004_openapi_declares_the_effective_method_and_history_contract(client):
     assert any(parameter["name"] == "history_value_column" for parameter in route["parameters"])
     body_ref = route["requestBody"]["content"]["multipart/form-data"]["schema"]["$ref"].split("/")[-1]
     assert "actuals_file" in spec["components"]["schemas"][body_ref]["properties"]
+
+
+@pytest.mark.parametrize("method", ["bottom_up", "ols", "top_down"])
+@pytest.mark.parametrize("periods", [1, 2])
+def test_004_submicrosecond_forecast_identity_is_rejected_before_conversion(client, method, periods):
+    nodes = 1 if method == "top_down" else 2
+    frame = pl.concat([_roots()] * periods) if method == "top_down" else _leaves(periods)
+    frame = frame.with_columns(pl.Series(
+        "week", [1767571200000000001 + index // nodes for index in range(frame.height)],
+    ).cast(pl.Datetime("ns")))
+    response = _reconcile(
+        client, frame, history=_history() if method == "top_down" else None,
+        method=method, filename="submicrosecond.parquet",
+    )
+    assert response.status_code == 400, response.text
+    assert "unsupported_timestamp_precision" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("periods", [1, 2])
+def test_004_submicrosecond_history_identity_is_rejected_before_comparison(client, periods):
+    history = pl.concat([_history()] * periods).with_columns(pl.Series(
+        "week", [1764547200000000001 + index // 2 for index in range(2 * periods)],
+    ).cast(pl.Datetime("ns")))
+    response = _reconcile(client, _roots(), history=history, method="top_down")
+    assert response.status_code == 400, response.text
+    assert "unsupported_timestamp_precision" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("method", ["bottom_up", "ols", "top_down"])
+@pytest.mark.parametrize("unit", ["date", "ms", "us", "ns"])
+def test_004_date_and_exact_microsecond_timestamp_identities_survive_the_wire(client, method, unit):
+    frame = _roots() if method == "top_down" else _leaves(1)
+    microseconds = 17000 if unit == "ms" else 17
+    if unit != "date":
+        frame = frame.with_columns(pl.Series(
+            "week", [1767571200000000000 + microseconds * 1000] * frame.height,
+        ).cast(pl.Datetime("ns")).cast(pl.Datetime(unit)))
+    response = _reconcile(
+        client, frame, method=method, history=_history() if method == "top_down" else None,
+        filename="exact-time.parquet",
+    )
+    assert response.status_code == 200, response.text
+    for row in response.json()["reconciled_preview"]:
+        if unit == "date":
+            assert row["week"] == "2026-01-05"
+        else:
+            assert datetime.fromisoformat(row["week"]) == datetime(2026, 1, 5, microsecond=microseconds)
+
+
+@pytest.mark.parametrize("offset,status", [(-3600000000, 200), (3600000000, 400)])
+def test_004_history_cutoff_compares_timezone_instants_not_wall_times(client, offset, status):
+    forecast = _roots().with_columns(
+        pl.Series("week", [1767571200000000]).cast(pl.Datetime("us", "UTC")),
+    )
+    history = _history().with_columns(
+        pl.Series("week", [1767571200000000 + offset] * 2).cast(pl.Datetime("us", "America/New_York")),
+    )
+    response = _reconcile(client, forecast, history=history, method="top_down", filename="utc.parquet")
+    assert response.status_code == status, response.text
+    if status == 200:
+        for row in response.json()["reconciled_preview"]:
+            assert datetime.fromisoformat(row["week"]).astimezone(timezone.utc) == datetime(2026, 1, 5, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("part", ["file", "actuals_file"])
+def test_004_csv_submicrosecond_input_is_rejected_before_inference(client, part):
+    forecast, history = _roots(), _history()
+    if part == "file":
+        forecast = forecast.with_columns(
+            pl.Series("week", [1767571200000000001]).cast(pl.Datetime("ns")),
+        )
+    else:
+        history = history.with_columns(
+            pl.Series("week", [1764547200000000001] * 2).cast(pl.Datetime("ns")),
+        )
+    response = client.post(
+        "/hierarchy/reconcile",
+        params={"levels": "department,item", "id_column": "item", "method": "top_down"},
+        files={"file": _upload(forecast), "actuals_file": _upload(history)},
+    )
+    assert response.status_code == 400, response.text
+    assert "unsupported_timestamp_precision" in response.json()["detail"]
+
+
+def test_004_aligned_nanosecond_csv_preserves_microseconds(client):
+    frame = _leaves(1).with_columns(
+        pl.Series("week", [1767571200000017000] * 2).cast(pl.Datetime("ns")),
+    )
+    response = _reconcile(client, frame)
+    assert response.status_code == 200, response.text
+    assert {row["week"] for row in response.json()["reconciled_preview"]} == {"2026-01-05T00:00:00.000017"}
