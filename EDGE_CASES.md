@@ -136,9 +136,12 @@ precision (including raw CSV fractions) and validate the entire result before pr
 Only expected historical trend/residual edge nulls are allowed; nonfinite results or
 empty statistics are explicit failures. Counts disclose defined and excluded populations.
 
-**What to watch for:** Some seasonal windows leave no defined trend in the existing
-extrapolator's last-three sample and fail rather than returning an invented finite
-answer. An upload is alternative history, not a committed training snapshot; legacy
+**What to watch for:** If the recent trend window selects a slope fit but its last-three
+anchor has no defined trend, the requested window combination is explicitly unsupported
+and returns 400 before computation. This condition is derived from the actual defined
+trend ranges, not a seasonal-period whitelist. Do not select a semantically wrong period
+to bypass it; unexpected damaged/nonfinite outputs still log and return 500.
+An upload is alternative history, not a committed training snapshot; legacy
 history has unknown preparation. A failed exact forecast ID never resolves to another
 run, and the backtest leaderboard ID must not be used as a forecast selector.
 

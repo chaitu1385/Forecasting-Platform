@@ -247,11 +247,18 @@ Each forecast series needs at least
 no seasonal position is filled by the domain's missing-position zero fallback.
 The actual centered `trend_window` is `2 * floor(season_length / 2) + 1`.
 Invalid/unsupported inputs return 400 (malformed typed query fields return 422).
+Known unsupported windows return 400 with `detail.code="unsupported_decomposition_window"`
+**before** computation. Admission derives the defined centered-trend interval
+`[floor(season_length / 2), history_count - floor(season_length / 2))` and intersects
+it with the actual recent-trend window and the last-three anchor. If the recent
+window has at least two defined trends (selecting the slope-fit branch) but the
+last-three anchor has none, that requested combination is unsupported. This is
+not a seasonal-period whitelist. Retain the correct business seasonal period;
+changing it merely to obtain a result would change the analysis's meaning.
 All output keys, values, edge nulls, finite components, reconstruction and statistics
-are checked **before** preview truncation; an undefined/nonfinite domain result is
-a logged 500, not a successful summary. In particular, some windows leave no
-defined trend in the unchanged extrapolator's last-three sample; this API rejects
-that result rather than silently changing the numerical algorithm.
+are still checked **before** preview truncation. Genuinely unexpected damaged or
+nonfinite domain results remain logged 500 errors, never fabricated successful
+summaries; the decomposition arithmetic is unchanged.
 
 String IDs (including CSV leading zeros) and JSON-exact integer IDs are supported.
 Dates and microsecond-exact datetimes are supported; timezone-aware datetimes

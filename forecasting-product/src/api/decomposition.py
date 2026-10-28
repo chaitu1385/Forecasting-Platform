@@ -25,6 +25,10 @@ class DecompositionInputError(ValueError):
     """An unsupported or incomplete panel; messages contain no uploaded values."""
 
 
+class UnsupportedDecompositionWindow(DecompositionInputError):
+    """A recent trend fit would sample an entirely undefined last-three anchor."""
+
+
 class DecompositionResultError(RuntimeError):
     """The complete domain result violates the admitted panel contract."""
 
@@ -179,16 +183,30 @@ def decompose_artifacts(
     scoped = historical.join(forecast_ids, on="series_id", how="semi")
     half = season_length // 2
     minimum = 2 * half + max(season_length, 2)
-    if scoped.group_by("series_id").len().filter(pl.col("len") < minimum).height:
+    lengths = scoped.group_by("series_id").len()["len"]
+    if lengths.min() < minimum:
         raise DecompositionInputError(
             f"Each forecast series needs at least {minimum} history rows to define every seasonal position and trend",
         )
+    explainer = ForecastExplainer(season_length=season_length)
+    for count in lengths:
+        recent_window = min(explainer.trend_window, count)
+        # Defined centered trends occupy [half, count - half).
+        trend_stop = count - half
+        recent_defined = max(0, trend_stop - max(half, count - recent_window))
+        anchor_defined = max(0, trend_stop - max(half, count - 3))
+        if recent_window >= 2 and recent_defined >= 2 and anchor_defined == 0:
+            raise UnsupportedDecompositionWindow(
+                "The requested seasonal period leaves no defined last-three trend anchor "
+                "after the recent trend fit. This decomposition method does not support "
+                "that window combination; no substitute trend is computed.",
+            )
     bounds = scoped.group_by("series_id").agg(pl.col("week").max().alias("last_history")).join(
         forecast.group_by("series_id").agg(pl.col("week").min().alias("first_forecast")), on="series_id",
     )
     if (bounds["first_forecast"] <= bounds["last_history"]).any():
         raise DecompositionInputError("Forecast times must follow the complete history for each series")
-    result = ForecastExplainer(season_length=season_length).decompose(
+    result = explainer.decompose(
         history=scoped, forecast=forecast.rename({"value": "forecast"}), target_col="value",
     )
     _check_result(result, scoped, forecast, half)

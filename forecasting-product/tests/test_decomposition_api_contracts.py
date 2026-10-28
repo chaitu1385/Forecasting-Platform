@@ -456,6 +456,68 @@ def test_effective_odd_and_even_windows_with_sufficient_history(api, season, len
     assert body["components"][0]["mean_abs_value"] == pytest.approx(20)
 
 
+def _window_history():
+    return pl.DataFrame({
+        "series_id": ["hand-example"] * 104,
+        "week": [date(2020, 1, 1) + timedelta(weeks=i) for i in range(104)],
+        "quantity": [20.0] * 104,
+    })
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("season", [6, 7, 12, 21])
+def test_known_unsupported_window_is_actionable_400_before_domain(api, monkeypatch, route, season):
+    from src.analytics.explainer import ForecastExplainer
+
+    run_id = _publish(api[2], history=_window_history())
+    before = _hashes(api[2].root)
+    response = _post(api, route, run_id=run_id, season_length=season)
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"]["code"] == "unsupported_decomposition_window"
+    assert "last-three" in response.json()["detail"]["message"]
+    blocked = Mock(side_effect=AssertionError("Unsupported window reached domain math"))
+    monkeypatch.setattr(ForecastExplainer, "decompose", blocked)
+    assert _post(api, route, run_id=run_id, season_length=season).status_code == 400
+    blocked.assert_not_called()
+    assert _hashes(api[2].root) == before
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("season", [5, 22, 52])
+def test_supported_window_boundaries_keep_real_math_and_stored_bytes(api, route, season):
+    run_id = _publish(api[2], history=_window_history())
+    before = _hashes(api[2].root)
+    response = _post(api, route, run_id=run_id, season_length=season)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["components"][0]["mean_abs_value"] == pytest.approx(20)
+    assert body["components"][0]["defined_count"] == 104 - 2 * (season // 2)
+    assert body["checked_rows"] == 107
+    assert _hashes(api[2].root) == before
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("season,recent_window,status", [(12, 6, 200), (22, 16, 400)])
+def test_admission_is_derived_from_actual_recent_window_not_season_whitelist(
+    api, monkeypatch, route, season, recent_window, status,
+):
+    from src.analytics.explainer import ForecastExplainer
+
+    real_init = ForecastExplainer.__init__
+
+    def configured(self, season_length=52, trend_window=12):
+        real_init(self, season_length=season_length, trend_window=recent_window)
+
+    monkeypatch.setattr(ForecastExplainer, "__init__", configured)
+    run_id = _publish(api[2], history=_window_history())
+    response = _post(api, route, run_id=run_id, season_length=season)
+    assert response.status_code == status, response.text
+    if status == 200:
+        assert response.json()["components"][0]["mean_abs_value"] == pytest.approx(20)
+    else:
+        assert response.json()["detail"]["code"] == "unsupported_decomposition_window"
+
+
 def test_empty_forecast_and_overlapping_time_ranges_are_rejected(api):
     empty = _publish(api[2], forecast=_forecast().head(0))
     assert _post(api, run_id=empty).status_code == 400
@@ -467,7 +529,8 @@ def test_empty_forecast_and_overlapping_time_ranges_are_rejected(api):
 
 @pytest.mark.parametrize("parameter,value,status", [
     ("season_length", 0, 400), ("season_length", -2, 400),
-    ("season_length", 1000000, 400), ("season_length", "bad", 422),
+    ("season_length", 1000000, 400), ("season_length", 10**18, 400),
+    ("season_length", "bad", 422),
     ("season_length", "1.5", 422), ("top_k", 0, 400),
     ("top_k", -1, 400), ("top_k", "bad", 422),
 ])
@@ -609,11 +672,6 @@ def test_unexpected_computation_errors_are_logged_and_bounded(api, monkeypatch, 
 def test_nonfinite_computation_or_statistics_never_become_zero_or_null_success(api):
     run_id = _publish(api[2], history=_history().with_columns(pl.col("quantity") * 1e199))
     assert _post(api, run_id=run_id).status_code == 500
-    history, forecast = _long_panels()
-    run_id = _publish(api[2], history=history, forecast=forecast)
-    # The unchanged extrapolator has no defined last-three trend at this window.
-    # Its undefined result is not disguised by the API or "repaired" by a new algorithm.
-    assert _post(api, run_id=run_id, season_length=7).status_code == 500
 
 
 @pytest.mark.parametrize("route", ROUTES)

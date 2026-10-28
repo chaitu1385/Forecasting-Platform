@@ -134,6 +134,7 @@ async def compute_decomposition(
     from ...pipeline.run_store import RunIntegrityError, RunNotFoundError
     from ..decomposition import (
         DecompositionInputError,
+        UnsupportedDecompositionWindow,
         decompose_artifacts,
         read_decomposition_upload,
     )
@@ -180,6 +181,10 @@ async def compute_decomposition(
         }
     except HTTPException:
         raise
+    except UnsupportedDecompositionWindow as exc:
+        raise HTTPException(400, detail={
+            "code": "unsupported_decomposition_window", "message": str(exc),
+        }) from exc
     except DecompositionInputError as exc:
         raise HTTPException(400, detail=str(exc)) from exc
     except Exception:

@@ -406,6 +406,11 @@ precision or nonfinite computation produces an explicit error rather than a
 fabricated summary; the API guide documents the supported moving-average window
 and minimum historical coverage.
 
+Some combinations of centered and recent-trend windows cannot define the
+last-three trend anchor. They return `unsupported_decomposition_window` (400)
+before calculation. Keep the correct business seasonal period rather than changing
+it just to obtain a result; this method does not support that combination.
+
 ### Running the Selected Forecast Plan
 
 After analyzing a file in **Data Onboarding**, the **Pipeline Execution** panel uses
