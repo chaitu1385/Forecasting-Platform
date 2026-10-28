@@ -391,3 +391,27 @@ actionable failures. Unexpected checker errors and configured blockers still
 prevent publication. No rows are silently dropped, no formula is changed and no
 historical artifact is rewritten. A previously saved leaderboard is always read
 as stored, not recomputed to make old and new rankings agree.
+
+---
+
+## 32. Incomplete or Ambiguous Hierarchy Reconciliation Inputs
+
+**What happens:** A missing leaf/period, conflicting parent, repeated node key
+across levels or absent historical volume can produce a plausible-looking but
+incomplete reconciliation. Nanosecond timestamps can also collapse into the same
+microsecond wire key even when the original stored keys differ.
+
+**How the product handles it:** The hierarchy API rejects invalid mappings,
+duplicate/null keys, incomplete observed-period panels and nonfinite requested
+values before calling the existing reconciler. Linear methods reject ambiguous
+cross-level keys. Top-down requires earlier, complete history with positive
+leaf-group volumes and matching root forecasts; no zero padding or equal-share
+fallback is used. CSV/Parquet submicrosecond timestamps are rejected, not rounded.
+Full output keys, quantile order and scoped coherence are checked before preview
+truncation, and unexpected checker failures return a logged error.
+
+**What to watch for:** Coverage is defined by the periods and hierarchy actually
+supplied, not an inferred missing calendar or unknown external SKU catalogue.
+Structural WLS/no-residual MinT does not estimate residual covariance; derived
+parent totals do not establish independent forecast accuracy. Changing UI inputs
+clears old results and invalidates late responses. Stored runs remain unchanged.

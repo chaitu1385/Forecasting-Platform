@@ -311,12 +311,40 @@ export interface HierarchyAggregateResponse {
   top_n_data: Record<string, unknown>[];
 }
 
+export type HierarchyReconciliationMethod = "bottom_up" | "top_down" | "ols" | "wls" | "mint";
+export type HierarchyEffectiveMethod = "bottom_up" | "top_down" | "ols" | "wls_structural";
+
+export interface HierarchyReconcileOptions {
+  id_column?: string;
+  value_columns?: string;
+  time_column?: string;
+  history_value_column?: string;
+  validate?: boolean;
+}
+
 export interface HierarchyReconcileResponse {
-  method: string;
+  method: HierarchyReconciliationMethod;
+  requested_method: HierarchyReconciliationMethod;
+  effective_method: HierarchyEffectiveMethod;
+  source_level: string;
+  output_level: string;
+  input_rows: number;
+  output_rows: number;
   before_total: number;
   after_total: number;
   rows: number;
   reconciled_preview: Record<string, unknown>[];
+  warnings: string[];
+  coherence: {
+    scope: "leaf_derived_parent_totals" | "root_forecast_conservation";
+    passed: boolean;
+    checked_rows: number;
+    checked_periods: number;
+    checked_groups: number;
+    value_columns: string[];
+    max_abs_error: number;
+  };
+  validation: Record<string, unknown> | null;
 }
 
 // ── SKU Mapping ──────────────────────────────────────────────────────────────

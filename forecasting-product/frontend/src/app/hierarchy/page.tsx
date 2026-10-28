@@ -2,23 +2,32 @@
 
 import { useState, useRef } from "react";
 import { api } from "@/lib/api-client";
+import { useAsyncOperation } from "@/hooks/use-async-operation";
 import { MetricCard } from "@/components/shared/metric-card";
 import { HierarchySunburst } from "@/components/charts/hierarchy-sunburst";
 import { WorkflowNav } from "@/components/shared/workflow-nav";
 import type {
   HierarchyBuildResponse,
   HierarchyAggregateResponse,
+  HierarchyEffectiveMethod,
+  HierarchyReconciliationMethod,
   HierarchyReconcileResponse,
 } from "@/lib/types";
 
-const RECONCILIATION_METHODS = [
-  { value: "bottom_up", label: "Bottom-Up", description: "Aggregate leaf forecasts upward" },
-  { value: "top_down", label: "Top-Down", description: "Disaggregate top-level forecast using proportions" },
-  { value: "middle_out", label: "Middle-Out", description: "Reconcile from a chosen middle level" },
-  { value: "ols", label: "OLS", description: "Ordinary Least Squares regression-based reconciliation" },
-  { value: "wls", label: "WLS", description: "Weighted Least Squares using variance scaling" },
-  { value: "mint", label: "MinT", description: "Minimum Trace — optimal reconciliation using error covariance" },
+const RECONCILIATION_METHODS: { value: HierarchyReconciliationMethod; label: string; description: string }[] = [
+  { value: "bottom_up", label: "Bottom-Up", description: "Preserve leaf forecasts and derive parent totals" },
+  { value: "top_down", label: "Top-Down", description: "Split root forecasts using positive volumes from earlier leaf history" },
+  { value: "ols", label: "OLS", description: "Ordinary Least Squares with upper forecasts derived from the supplied leaves" },
+  { value: "wls", label: "WLS (structural)", description: "Structural weights, not estimated residual variances" },
+  { value: "mint", label: "MinT (structural fallback)", description: "Uses structural WLS because this interface does not supply residual covariance" },
 ];
+
+const EFFECTIVE_METHOD_LABELS: Record<HierarchyEffectiveMethod, string> = {
+  bottom_up: "Bottom-Up",
+  top_down: "Top-Down",
+  ols: "OLS",
+  wls_structural: "Structural WLS",
+};
 
 function GenericTable({ data }: { data: Record<string, unknown>[] }) {
   if (data.length === 0) return <p className="text-sm text-muted-foreground">No data.</p>;
@@ -53,79 +62,66 @@ export default function HierarchyPage() {
   const [file, setFile] = useState<File | null>(null);
   const [levels, setLevels] = useState("");
 
-  // Build hierarchy state
-  const [buildResult, setBuildResult] = useState<HierarchyBuildResponse | null>(null);
-  const [buildLoading, setBuildLoading] = useState(false);
-  const [buildError, setBuildError] = useState<string | null>(null);
+  const {
+    result: buildResult, loading: buildLoading, error: buildError,
+    run: runBuild, reset: resetBuild,
+  } = useAsyncOperation<HierarchyBuildResponse>();
 
   // Aggregation state
   const [targetLevel, setTargetLevel] = useState("");
-  const [aggResult, setAggResult] = useState<HierarchyAggregateResponse | null>(null);
-  const [aggLoading, setAggLoading] = useState(false);
-  const [aggError, setAggError] = useState<string | null>(null);
+  const {
+    result: aggResult, loading: aggLoading, error: aggError,
+    run: runAggregate, reset: resetAggregate,
+  } = useAsyncOperation<HierarchyAggregateResponse>();
 
   // Reconciliation state
-  const [reconMethod, setReconMethod] = useState("bottom_up");
-  const [reconResult, setReconResult] = useState<HierarchyReconcileResponse | null>(null);
-  const [reconLoading, setReconLoading] = useState(false);
-  const [reconError, setReconError] = useState<string | null>(null);
+  const [reconMethod, setReconMethod] = useState<HierarchyReconciliationMethod>("bottom_up");
+  const [actualsFile, setActualsFile] = useState<File | null>(null);
+  const [historyValueColumn, setHistoryValueColumn] = useState("quantity");
+  const {
+    result: reconResult, loading: reconLoading, error: reconError,
+    run: runReconcile, reset: resetReconcile,
+  } = useAsyncOperation<HierarchyReconcileResponse>();
+  const levelList = levels.split(",").map(level => level.trim());
+  const leafLevel = levelList[levelList.length - 1];
+  const topDown = reconMethod === "top_down";
+
+  const resetInputs = () => {
+    resetBuild();
+    resetAggregate();
+    resetReconcile();
+    setTargetLevel("");
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selected = e.target.files?.[0] ?? null;
+    resetInputs();
     setFile(selected);
-    // Reset downstream results when file changes
-    setBuildResult(null);
-    setAggResult(null);
-    setReconResult(null);
   };
 
   const handleBuild = async () => {
     if (!file || !levels.trim()) return;
-    setBuildLoading(true);
-    setBuildError(null);
-    setBuildResult(null);
-    try {
-      const result = await api.buildHierarchy(file, levels.trim());
-      setBuildResult(result);
-      // Default target level to first level if available
-      if (result.levels.length > 0 && !targetLevel) {
-        setTargetLevel(result.levels[0]);
-      }
-    } catch (err) {
-      setBuildError(err instanceof Error ? err.message : "Failed to build hierarchy");
-    } finally {
-      setBuildLoading(false);
+    resetBuild();
+    const result = await runBuild(() => api.buildHierarchy(file, levels.trim(), leafLevel));
+    if (result && result.levels.length > 0 && !targetLevel) {
+      setTargetLevel(result.levels[0]);
     }
   };
 
-  const handleAggregate = async () => {
+  const handleAggregate = () => {
     if (!file || !levels.trim() || !targetLevel) return;
-    setAggLoading(true);
-    setAggError(null);
-    setAggResult(null);
-    try {
-      const result = await api.aggregateHierarchy(file, levels.trim(), targetLevel);
-      setAggResult(result);
-    } catch (err) {
-      setAggError(err instanceof Error ? err.message : "Failed to aggregate hierarchy");
-    } finally {
-      setAggLoading(false);
-    }
+    resetAggregate();
+    void runAggregate(() => api.aggregateHierarchy(file, levels.trim(), targetLevel, { id_column: leafLevel }));
   };
 
-  const handleReconcile = async () => {
-    if (!file || !levels.trim()) return;
-    setReconLoading(true);
-    setReconError(null);
-    setReconResult(null);
-    try {
-      const result = await api.reconcileHierarchy(file, levels.trim(), reconMethod);
-      setReconResult(result);
-    } catch (err) {
-      setReconError(err instanceof Error ? err.message : "Failed to reconcile hierarchy");
-    } finally {
-      setReconLoading(false);
-    }
+  const handleReconcile = () => {
+    if (!file || !levels.trim() || (topDown && (!actualsFile || !historyValueColumn.trim()))) return;
+    resetReconcile();
+    void runReconcile(() => api.reconcileHierarchy(
+      file, levels.trim(), reconMethod,
+      { id_column: leafLevel, ...(topDown ? { history_value_column: historyValueColumn.trim() } : {}) },
+      topDown && actualsFile ? actualsFile : undefined,
+    ));
   };
 
   return (
@@ -150,25 +146,33 @@ export default function HierarchyPage() {
         <h2 className="text-lg font-semibold">Data Input</h2>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
           <div className="flex-1">
-            <label className="mb-1 block text-sm font-medium">Upload CSV</label>
+            <label htmlFor="hierarchy-file" className="mb-1 block text-sm font-medium">Upload CSV or Parquet</label>
             <input
+              id="hierarchy-file"
               ref={fileRef}
               type="file"
-              accept=".csv"
+              accept=".csv,.parquet"
               onChange={handleFileChange}
               className="block w-full rounded-md border px-3 py-2 text-sm file:mr-3 file:rounded file:border-0 file:bg-primary/10 file:px-3 file:py-1 file:text-sm file:font-medium"
             />
           </div>
           <div className="flex-1">
-            <label className="mb-1 block text-sm font-medium">Hierarchy Levels (comma-separated)</label>
+            <label htmlFor="hierarchy-levels" className="mb-1 block text-sm font-medium">Hierarchy Levels (comma-separated)</label>
             <input
+              id="hierarchy-levels"
               type="text"
               value={levels}
-              onChange={(e) => setLevels(e.target.value)}
+              onChange={(e) => { resetInputs(); setLevels(e.target.value); }}
               placeholder="e.g. category,subcategory,brand"
               className="block w-full rounded-md border px-3 py-2 text-sm"
             />
           </div>
+          <p className="text-xs text-muted-foreground">
+            {topDown
+              ? "For top-down reconciliation, upload root forecasts here and earlier leaf history below."
+              : "Reconciliation requires every leaf in every period, with all hierarchy columns."}
+            {" "}Forecast values use the forecast column and dates use week; the last hierarchy level identifies leaves.
+          </p>
         </div>
       </section>
 
@@ -226,6 +230,7 @@ export default function HierarchyPage() {
       {/* Reconciliation Methods Reference */}
       <section className="space-y-3">
         <h2 className="text-lg font-semibold">Reconciliation Methods</h2>
+        <p className="text-xs text-muted-foreground">Middle-out is unavailable: this interface does not accept middle-level forecasts.</p>
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {RECONCILIATION_METHODS.map((m) => (
             <div key={m.value} className="rounded-lg border p-4">
@@ -243,10 +248,11 @@ export default function HierarchyPage() {
         <section className="space-y-3 rounded-lg border p-4">
           <h2 className="text-lg font-semibold">Aggregation Explorer</h2>
           <div className="space-y-2">
-            <label className="block text-sm font-medium">Target Level</label>
+            <label htmlFor="hierarchy-target" className="block text-sm font-medium">Target Level</label>
             <select
+              id="hierarchy-target"
               value={targetLevel}
-              onChange={(e) => setTargetLevel(e.target.value)}
+              onChange={(e) => { resetAggregate(); setTargetLevel(e.target.value); }}
               className="block w-full rounded-md border px-3 py-2 text-sm"
             >
               <option value="" disabled>
@@ -281,29 +287,68 @@ export default function HierarchyPage() {
         <section className="space-y-3 rounded-lg border p-4">
           <h2 className="text-lg font-semibold">Reconciliation Execution</h2>
           <div className="space-y-2">
-            <label className="block text-sm font-medium">Method</label>
+            <label htmlFor="hierarchy-method" className="block text-sm font-medium">Method</label>
             <select
+              id="hierarchy-method"
               value={reconMethod}
-              onChange={(e) => setReconMethod(e.target.value)}
+              onChange={(e) => {
+                const selected = RECONCILIATION_METHODS.find(method => method.value === e.target.value);
+                if (selected) { resetReconcile(); setActualsFile(null); setReconMethod(selected.value); }
+              }}
               className="block w-full rounded-md border px-3 py-2 text-sm"
             >
-              {RECONCILIATION_METHODS.filter((m) => m.value !== "middle_out").map((m) => (
+              {RECONCILIATION_METHODS.map((m) => (
                 <option key={m.value} value={m.value}>{m.label}</option>
               ))}
             </select>
           </div>
+          {topDown && (
+            <div className="space-y-3">
+              <div>
+                <label htmlFor="hierarchy-actuals-file" className="mb-1 block text-sm font-medium">Historical actuals</label>
+                <input
+                  id="hierarchy-actuals-file"
+                  type="file"
+                  accept=".csv,.parquet"
+                  onChange={(e) => { resetReconcile(); setActualsFile(e.target.files?.[0] ?? null); }}
+                  className="block w-full rounded-md border px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label htmlFor="hierarchy-history-value" className="mb-1 block text-sm font-medium">History value column</label>
+                <input
+                  id="hierarchy-history-value"
+                  type="text"
+                  value={historyValueColumn}
+                  onChange={(e) => { resetReconcile(); setHistoryValueColumn(e.target.value); }}
+                  className="block w-full rounded-md border px-3 py-2 text-sm"
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                History must include all hierarchy levels and complete leaf/period coverage, precede the forecast window,
+                and have positive total volume for every leaf. Missing groups never receive equal shares.
+              </p>
+            </div>
+          )}
           <button
             onClick={handleReconcile}
-            disabled={reconLoading || !file || !levels.trim()}
+            disabled={reconLoading || !file || !levels.trim() || (topDown && (!actualsFile || !historyValueColumn.trim()))}
             className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
           >
             {reconLoading ? "Reconciling..." : "Reconcile"}
           </button>
           {reconError && (
-            <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{reconError}</div>
+            <div role="alert" className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">{reconError}</div>
           )}
           {reconResult && (
-            <div className="space-y-2">
+            <div className="space-y-2" data-testid="reconciliation-result">
+              <p className="text-sm">
+                Effective method: <strong data-testid="reconciliation-effective-method">{EFFECTIVE_METHOD_LABELS[reconResult.effective_method]}</strong>
+                {" "}({reconResult.effective_method}); requested: {reconResult.requested_method}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {reconResult.source_level} to {reconResult.output_level} | Input rows: {reconResult.input_rows} | Output rows: {reconResult.output_rows}
+              </p>
               <div className="flex gap-3 text-sm">
                 <div className="rounded-md border p-2 flex-1">
                   <span className="text-muted-foreground">Before Total</span>
@@ -318,6 +363,18 @@ export default function HierarchyPage() {
                   <p className="font-semibold">{reconResult.rows}</p>
                 </div>
               </div>
+              <p className="text-xs text-muted-foreground">
+                {reconResult.coherence.scope === "root_forecast_conservation" ? "Root conservation" : "Leaf-derived parent totals"}
+                {": "}{reconResult.coherence.checked_rows} rows, {reconResult.coherence.checked_periods} periods,
+                {" "}{reconResult.coherence.checked_groups} parent/period groups checked.
+                {" "}Maximum absolute error: {reconResult.coherence.max_abs_error}.
+                {" "}Preview shows {reconResult.reconciled_preview.length} of {reconResult.output_rows} output rows.
+              </p>
+              {reconResult.warnings.length > 0 && (
+                <ul className="list-disc space-y-1 pl-4 text-xs text-muted-foreground">
+                  {reconResult.warnings.map(warning => <li key={warning}>{warning}</li>)}
+                </ul>
+              )}
               <GenericTable data={reconResult.reconciled_preview} />
             </div>
           )}

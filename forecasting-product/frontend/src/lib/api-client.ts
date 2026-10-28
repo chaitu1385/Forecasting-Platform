@@ -27,6 +27,8 @@ import type {
   RegressorScreenResponse,
   HierarchyBuildResponse,
   HierarchyAggregateResponse,
+  HierarchyReconciliationMethod,
+  HierarchyReconcileOptions,
   HierarchyReconcileResponse,
   SKUMappingResponse,
   OverrideListResponse,
@@ -373,11 +375,20 @@ export const api = {
     );
   },
 
-  reconcileHierarchy: (file: File, levels: string, method: string = "bottom_up", params?: Record<string, string>) => {
+  reconcileHierarchy: (
+    file: File,
+    levels: string,
+    method: HierarchyReconciliationMethod = "bottom_up",
+    params?: HierarchyReconcileOptions,
+    actualsFile?: File,
+  ) => {
     const formData = new FormData();
     formData.append("file", file);
+    if (actualsFile) formData.append("actuals_file", actualsFile);
     const sp = new URLSearchParams({ levels, method });
-    if (params) Object.entries(params).forEach(([k, v]) => sp.set(k, v));
+    if (params) Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined) sp.set(k, String(v));
+    });
     return request<HierarchyReconcileResponse>(
       `/hierarchy/reconcile?${sp.toString()}`,
       { method: "POST", body: formData },

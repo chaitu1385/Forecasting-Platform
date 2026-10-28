@@ -5,6 +5,7 @@ Pydantic response models for the forecasting product REST API.
 from __future__ import annotations
 
 from datetime import date
+from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -89,6 +90,50 @@ class ValidationResponse(BaseModel):
     layers: Dict[str, Any] = Field(description="Per-layer validation results")
     confidence: Dict[str, Any] = Field(description="Scoring breakdown")
     skipped: bool = False
+
+
+class HierarchyReconciliationMethod(str, Enum):
+    BOTTOM_UP = "bottom_up"
+    TOP_DOWN = "top_down"
+    OLS = "ols"
+    WLS = "wls"
+    MINT = "mint"
+
+
+class HierarchyEffectiveMethod(str, Enum):
+    BOTTOM_UP = "bottom_up"
+    TOP_DOWN = "top_down"
+    OLS = "ols"
+    WLS_STRUCTURAL = "wls_structural"
+
+
+class HierarchyCoherenceResult(BaseModel):
+    """Full-frame checks, not evidence of independent upper-level forecasts."""
+
+    scope: Literal["leaf_derived_parent_totals", "root_forecast_conservation"]
+    passed: bool
+    checked_rows: int = Field(ge=0)
+    checked_periods: int = Field(ge=0)
+    checked_groups: int = Field(ge=0)
+    value_columns: List[str]
+    max_abs_error: float = Field(ge=0, allow_inf_nan=False)
+
+
+class HierarchyReconcileResponse(BaseModel):
+    method: HierarchyReconciliationMethod
+    requested_method: HierarchyReconciliationMethod
+    effective_method: HierarchyEffectiveMethod
+    source_level: str
+    output_level: str
+    input_rows: int = Field(ge=1)
+    output_rows: int = Field(ge=1)
+    before_total: float = Field(allow_inf_nan=False)
+    after_total: float = Field(allow_inf_nan=False)
+    rows: int = Field(ge=1)
+    reconciled_preview: List[Dict[str, Any]]
+    warnings: List[str]
+    coherence: HierarchyCoherenceResult
+    validation: Optional[Dict[str, Any]] = None
 
 
 class DriftAlertItem(BaseModel):

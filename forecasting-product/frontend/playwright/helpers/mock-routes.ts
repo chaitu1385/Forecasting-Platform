@@ -254,25 +254,52 @@ const MOCK = {
   },
 
   hierarchyBuild: {
+    name: "product",
     levels: ["category", "region", "sku"],
-    n_nodes: 15,
-    n_leaf: 10,
-    tree: { name: "total", children: [{ name: "electronics", children: [{ name: "east" }, { name: "west" }] }] },
+    level_stats: [
+      { level: "category", node_count: 1 }, { level: "region", node_count: 1 }, { level: "sku", node_count: 1 },
+    ],
+    total_nodes: 3,
+    leaf_count: 1,
+    s_matrix_shape: [3, 3],
+    s_matrix_sample: [],
+    tree_nodes: [
+      { key: "electronics", level: "category", parent: "", is_leaf: false },
+      { key: "east", level: "region", parent: "electronics", is_leaf: false },
+      { key: "sku_001", level: "sku", parent: "east", is_leaf: true },
+    ],
   },
 
   hierarchyAggregate: {
     target_level: "category",
-    n_nodes: 3,
-    aggregated_rows: 156,
-    preview: [{ category: "electronics", week: "2025-01-06", quantity: 500 }],
+    unique_nodes: 1,
+    total_rows: 1,
+    top_n_data: [{ category: "electronics", week: "2025-01-06", quantity: 100 }],
   },
 
   hierarchyReconcile: {
     method: "bottom_up",
-    n_series_reconciled: 10,
-    coherence_before: 0.85,
-    coherence_after: 1.0,
-    preview: [{ series_id: "sku_001", week: "2025-01-06", original: 100, reconciled: 105 }],
+    requested_method: "bottom_up",
+    effective_method: "bottom_up",
+    source_level: "sku",
+    output_level: "sku",
+    input_rows: 1,
+    output_rows: 1,
+    rows: 1,
+    before_total: 100,
+    after_total: 100,
+    warnings: ["Parent totals are derived; no independent upper forecasts were supplied."],
+    coherence: {
+      scope: "leaf_derived_parent_totals",
+      passed: true,
+      checked_rows: 1,
+      checked_periods: 1,
+      checked_groups: 2,
+      value_columns: ["forecast"],
+      max_abs_error: 0,
+    },
+    validation: null,
+    reconciled_preview: [{ sku: "sku_001", week: "2025-01-06", forecast: 100 }],
   },
 
   // AI endpoints
