@@ -185,11 +185,18 @@ def main():
         lh.optimize("forecasts", z_order_by=["series_id", "week"])
         logger.info("Forecasts written to Lakehouse and optimized.")
     else:
-        output_path = Path(args.output_dir) / args.lob
-        output_path.mkdir(parents=True, exist_ok=True)
-        filename = f"forecast_{args.lob}_{forecast_origin}.parquet"
-        forecasts_sdf.toPandas().to_parquet(output_path / filename, index=False)
-        logger.info("Forecasts written locally to %s", output_path / filename)
+        import polars as pl
+
+        from src.pipeline.run_store import atomic_frame_append, checked_child, validate_lob
+
+        validate_lob(args.lob)
+        output_path = checked_child(Path(args.output_dir), args.lob)
+        filename = atomic_frame_append(
+            pl.from_pandas(forecasts_sdf.toPandas()), output_path,
+            prefix=f"forecast_{args.lob}_{forecast_origin}",
+        )
+        logger.info("Legacy Spark adapter forecast saved: run_id=%s file=%s; no local run-bundle guarantee",
+                    pipeline.run_id, filename.name)
 
     logger.info("spark_forecast.py complete.")
     spark.stop()

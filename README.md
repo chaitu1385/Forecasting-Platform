@@ -134,7 +134,7 @@ forecasting-product/
 │   ├── sku_mapping/        # New/discontinued SKU mapping (4 methods + Bayesian fusion)
 │   ├── spark/              # PySpark distributed execution layer
 │   └── utils/              # Logger, config utilities
-├── frontend/               # Next.js 15 frontend (TypeScript, Tailwind, Recharts)
+├── frontend/               # Next.js 16 / Node 24 (TypeScript, Tailwind, Recharts)
 │   ├── src/app/            # App Router pages (login + 9 workflow pages)
 │   ├── src/components/     # Reusable components (charts, AI panels, layout, shared)
 │   │   ├── forecast/       # Decomposition, comparison, constrained forecast panels
@@ -143,7 +143,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 1691 unit + integration tests
+├── tests/                  # 2047 unit + integration cases
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 ├── notebooks/              # Jupyter notebooks for exploration
@@ -391,16 +391,16 @@ Tikhonov regularisation (lambda = 1e-6) applied for numerical stability.
 
 | Class | Description |
 |-------|-------------|
-| `BacktestEngine` | Orchestrates walk-forward folds; writes per-fold, per-series metrics to MetricStore |
+| `BacktestEngine` | Validates complete series/date/lead coverage and excludes incomplete models; pipeline persistence is deferred until validation and atomic bundle commit |
 | `WalkForwardCV` | Expanding-window fold generator; configurable `n_folds`, `horizon_weeks`, `step_weeks` |
 | `CVFold` | Dataclass for one fold: train indices, test indices, fold number |
-| `ChampionSelector` | Ranks models by WMAPE; promotes lowest-error model; `compute_ensemble_weights()` |
+| `ChampionSelector` | Recomputes volume WMAPE (or an explicit alternative) over comparable raw rows and horizon buckets; `compute_ensemble_weights()` |
 
 ### `src/metrics/` — Metric Store & Drift
 
 | Class/Function | Description |
 |----------------|-------------|
-| `MetricStore` | Append-only Parquet store; `write()`, `read()`, `leaderboard()`, `accuracy_over_time()` |
+| `MetricStore` | Unique atomic appends, committed/legacy raw reads, and immutable stored leaderboard retrieval; explicit current scoring from records |
 | `ForecastDriftDetector` | Detects accuracy drift, bias drift, and volume anomalies per series |
 | `DriftAlert` | `series_id`, `metric`, `severity` (warning/critical), `current_value`, `baseline_value` |
 | `DriftConfig` | `baseline_weeks`, `recent_weeks` configuration |
@@ -420,7 +420,7 @@ Tikhonov regularisation (lambda = 1e-6) applied for numerical stability.
 
 #### `ForecastAnalytics` (notebook API)
 Notebook-ready queries over the MetricStore:
-- `model_leaderboard(lob, run_type, primary_metric)` — rank models by WMAPE
+- `model_leaderboard(lob, run_id=...)` — retrieve stored rank, values and competition scope without rescoring; use `latest=True` within one LOB
 - `model_comparison_by_fold(lob)` — per-fold performance breakdown
 - `accuracy_over_time(model, channel)` — trend of accuracy metrics
 - `accuracy_by_grain(lob)` — performance by hierarchy level
@@ -557,7 +557,7 @@ require verified JWTs by default; only an explicit unauthenticated demo opts out
 | `/auth/me` | GET | Verified identity, role, permissions and expiry; never a token | Yes |
 | `/forecast/{lob}` | GET | Latest forecasts for a LOB (optional `series_id`, `horizon` query params) | Yes |
 | `/forecast/{lob}/{series_id}` | GET | Latest forecast for a single series | Yes |
-| `/metrics/leaderboard/{lob}` | GET | Model leaderboard ranked by WMAPE | Yes |
+| `/metrics/leaderboard/{lob}` | GET | Stored exact/latest ranking with criteria, competition scope and scoring provenance | Yes |
 | `/metrics/drift/{lob}` | GET | Drift alerts (`baseline_weeks`, `recent_weeks` params) | Yes |
 | `/audit` | GET | Query audit log (`action`, `resource_type`, `limit` params) | Yes (`VIEW_AUDIT_LOG`) |
 | `/series/{lob}` | GET | List series with SBC classification (ADI, CV², demand class) | Yes |
@@ -614,12 +614,23 @@ PySpark wrappers for large-scale runs on Fabric/Databricks:
 
 | Class | Description |
 |-------|-------------|
-| `BacktestPipeline` | Wires `SeriesBuilder -> BacktestEngine -> MetricStore -> ChampionSelector` |
-| `ForecastPipeline` | Wires `SeriesBuilder -> champion model -> Reconciler -> OverrideStore -> BIExporter` |
-| `PipelineManifest` | Provenance sidecar for each forecast run: input data hash, cleansing/validation/screen summaries, config hash, champion model, output metadata |
+| `BacktestPipeline` | Current-run evaluation/selection/validation, then one immutable input/config/metric bundle |
+| `ForecastPipeline` | Prepared series, selected model/constraints, validation, then one immutable forecast bundle |
+| `RunStore` | Exclusive UUID directories, no-replace manifest commit marker, checksums, exact/latest reads and explicit uncertain outcomes |
+| `RunReader` | Shared committed resolver and read-only legacy forecast/history/sidecar compatibility |
+| `PipelineManifest` | Versioned provenance: raw/prepared inputs, safe canonical settings, models/source, validation and artifact checksums |
 | `build_manifest()` | Collects provenance from SeriesBuilder reports into a single manifest |
-| `write_manifest()` | Writes manifest as JSON sidecar next to the forecast Parquet file |
+| `write_manifest()` | Atomic no-overwrite legacy sidecar helper; not the versioned run publisher |
 | `read_manifest()` | Loads manifest from JSON file |
+
+Use an explicit `output.runs_path` / server `API_RUNS_DIR` to share one local
+authority across API, CLI and notebook readers. New successful runs never
+overwrite a date/second-named predecessor. Exact run ID selection survives
+service restart; default latest follows attempt-start UTC with ID tie-break.
+The Forecast Viewer lists prior runs, shows their exact values and stored
+configuration, and labels legacy provenance unknown. Read the
+[storage and recovery contract](docs/DEPLOYMENT.md#immutable-local-runs-and-recovery):
+local hard-link visibility is not a distributed/OneLake or power-loss ACID claim.
 
 ### `src/config/` — Configuration Schema & Loader
 
@@ -635,7 +646,12 @@ YAML-driven config system with dataclass schema validation. `FREQUENCY_PROFILES`
 | `load_config(path)` | Load and parse YAML config into `PlatformConfig` |
 | `load_config_with_overrides(path, overrides)` | Load config with LOB-level overrides merged |
 | `get_frequency_profile(freq)` | Get temporal properties for `"D"` / `"W"` / `"M"` / `"Q"` |
-| `freq_timedelta(freq, periods)` | Convert frequency + periods to `timedelta` |
+| `freq_timedelta(freq, periods)` | Fixed D/W durations only; M/Q require an anchored calendar |
+| `utils.calendar.PeriodCalendar` | Exact D/W/M/Q grids, preserving weekday and calendar start/end labels |
+
+See [Numerical reliability and score migration](docs/NUMERICAL_RELIABILITY.md)
+for scoring definitions, explicit macro weighting, missing-prediction failures,
+gap semantics, fold-local preprocessing restrictions, and historical rankings.
 
 Pipeline upload precedence is explicit model/horizon override, then valid YAML,
 then platform defaults. The UI carries the current backtest winner into forecasting
@@ -976,14 +992,14 @@ observability:
 ## Testing
 
 ```bash
-pip install -r forecasting-product/requirements.txt
-pip install -e "forecasting-product[dev]"
+python -m pip install --require-hashes --only-binary=:all: -r forecasting-product/requirements/py312/dev.txt
 cd forecasting-product
 POLARS_MAX_THREADS=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1 \
   python -m pytest -v --timeout=180 --timeout-method=thread \
     -o faulthandler_timeout=60
-# 1691 cases across 64 test modules; no test module exclusions
+# 2047 cases across 77 test modules; no test module exclusions
+# Use the matching py311/py313 profile with those interpreters; no module exclusions.
 ```
 
 On Windows, set the same process environment variables with PowerShell
@@ -996,16 +1012,32 @@ consumers, with separate artifact copies and application/response state; the
 forecast still runs through the real API. No model search settings, fixture rows,
 folds or numerical assertions are reduced.
 
+The full M5 empirical gates also require the matching approved Linux x86-64
+reference selected through `M5_BASELINE_PATH`, with native install/qualification
+receipts from the same test environment. CI supplies these per profile; see the
+[reference protocol](forecasting-product/tests/integration/baselines/README.md).
+The initial references are not historical learned-model no-regression evidence
+or a generic/Windows M5 baseline.
+
 The stable **CI gate** requires successful lint, focused validation/intent,
 process safety, the full backend matrix, frontend, Docker cold/restart smoke,
 and automation safety jobs. Missing, skipped, cancelled or failed constituents
 cannot produce a successful gate. Branch protection must require this context;
 workflow code alone does not configure repository protection.
 
+Runtime support and dependency reproducibility are described in the
+[deployment profiles](docs/DEPLOYMENT.md#supported-runtimes-and-locked-profiles).
+CI ships/tests supported Python releases rather than EOL 3.10, verifies generated
+profile freshness, and restores exact hashes. The frontend additionally runs
+noninteractive lint and real production-bundle Plotly browser regressions, not
+only mocked chart component tests.
+
 | Test file | Tests | Covers |
 |-----------|------:|--------|
 | `test_platform.py` | 85 | Config, hierarchy, reconciliation, metrics, transitions, registry, backtest, REST API, deployment, drift |
-| `test_forecast_intent.py` | 107 | Real ASGI champion/horizon/config handoff, aliases, safe execution settings, invalid-input no-publication guarantees |
+| `test_dependency_profiles.py` | 30 | Profile locks/hashes, CPU-only boundaries, audited closure/marker coverage, release policy, stale/tampered exports and native capture/reference wiring |
+| `test_m5_baseline.py` | 67 | Original empirical thresholds, complete observations, profile compatibility and audit-bound initial reference integrity |
+| `test_forecast_intent.py` | 113 | Real ASGI champion/horizon/config handoff, aliases, safe execution settings, invalid-input no-publication guarantees |
 | `test_forecast_explainability.py` | 59 | Comparator, ExceptionEngine, Explainer (STL+SHAP+narrative), ModelCard, Registry, DriftDetector, Lineage |
 | `test_intermittent_demand.py` | 55 | SparseDetector, Croston, CrostonSBA, TSB, backtest routing |
 | `test_mint_reconciliation.py` | 46 | S-matrix math, OLS/WLS/MinT correctness, coherence, edge cases |
@@ -1076,7 +1108,7 @@ All frontend features are backed by live API endpoints — no placeholder "Comin
 **Run locally:**
 ```bash
 cd forecasting-product/frontend
-npm install
+npm ci
 npm run dev
 # → Open http://localhost:3000
 ```
@@ -1094,41 +1126,45 @@ docker compose -f docker-compose.yml -f docker-compose.demo.yml up --build
 
 ## Dependencies
 
-**Core** (no pandas in the production path):
+**Supported runtime:** CPython 3.12.16 by default; separately locked/tested
+3.11.18 and 3.13.18 on Windows/glibc Linux x86-64. The numerical stack uses
+Polars internally and pandas/PyArrow at model-library boundaries. Exact versions
+and SHA-256 hashes are in `forecasting-product/requirements/py*/`, generated from
+`pyproject.toml`; the ranges below are not promises that every combination works.
+
+**Core CPU/scientific profile:**
 ```
-polars >= 0.20.0
-numpy >= 1.21.0
-statsforecast >= 1.6.0      # AutoARIMA, AutoETS, AutoTheta, MSTL
-mlforecast >= 0.12.0        # ML direct forecasting
-lightgbm >= 3.3.0
-xgboost >= 1.5.0
-scikit-learn >= 1.0.0
-rapidfuzz >= 3.0.0          # SKU name matching
-duckdb >= 0.9.0             # Override store
-pyyaml >= 5.4.0
-fastapi + uvicorn           # REST API
-pyjwt >= 2.0.0, < 3.0       # Required API JWT validation
+polars >= 2.0, < 3          # Honest whole-application floor, not the old 0.20-only smoke
+numpy / scipy / pandas / pyarrow
+statsforecast / mlforecast / hierarchicalforecast
+lightgbm / xgboost-cpu / scikit-learn
+rapidfuzz / pyyaml
 ```
 
-**Frontend** (Node.js 18+):
+The API profile adds FastAPI, patched Starlette, Uvicorn, multipart parsing,
+DuckDB, PyJWT and the optional-use Anthropic SDK. Dev adds tests, lint, packaging,
+audit and profile-generation tooling. CPU XGBoost does not provide CUDA training.
+
+**Frontend** (Node.js 24.22.1 / npm 11.19.1, installed using `npm ci`):
 ```
-next >= 15.1.0              # React framework (App Router)
-react >= 19.0.0             # UI library
-tailwindcss >= 4.0.0        # Utility-first CSS
-recharts >= 2.15.0          # Chart components
+next 16.4.2                # Supported Active LTS, existing Webpack build retained
+react 19                   # UI library
+tailwindcss 3              # Utility-first CSS
+recharts 2 / plotly.js 4    # Chart components
 @tanstack/react-query       # Server state management
-next-auth >= 4.24.0         # Legacy installed dependency; not used by the sign-in flow
 ```
 
 **Optional:**
 ```
-neuralforecast              # N-BEATS, NHITS, TFT neural forecasters
-shap                        # SHAP explainability for ML models
-bcrypt >= 4.0.0             # Legacy optional dependency; password login is not implemented
-holidays >= 0.40            # Holiday calendar generation (external regressors)
-pyspark >= 3.4.0            # Distributed execution
-delta-spark >= 2.4.0        # Delta Lake (local dev)
-azure-identity              # Fabric authentication
-pandas >= 1.3.0             # Legacy data layer + evaluation
-matplotlib / seaborn        # Visualisation
+holidays / matplotlib / seaborn / plotly   # Included in dev/Fabric candidate
+pyspark / delta-spark                     # Separate local Spark profile
+azure-identity                           # External Azure/Fabric integration
+shap / neuralforecast                    # Separate, not qualified by the CPU locks
 ```
+
+NextAuth and bcrypt were unused and are no longer installed by the declared
+profiles; operator-issued JWT authentication is unchanged. Managed Fabric is
+externally supplied: the local candidate profile does not certify or replace a
+workspace's Python/Spark/Delta/Azure runtime. See the
+[profile boundaries](docs/DEPLOYMENT.md#supported-runtimes-and-locked-profiles)
+before installing optional features.

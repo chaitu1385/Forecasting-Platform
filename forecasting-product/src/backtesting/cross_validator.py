@@ -19,7 +19,8 @@ from typing import List, Tuple
 
 import polars as pl
 
-from ..config.schema import freq_timedelta
+from ..config.schema import get_frequency_profile
+from ..utils.calendar import PeriodCalendar
 
 
 @dataclass
@@ -64,6 +65,9 @@ class WalkForwardCV:
         self.val_weeks = val_weeks
         self.gap_weeks = gap_weeks
         self.frequency = frequency
+        get_frequency_profile(frequency)
+        if n_folds < 1 or val_weeks < 1 or gap_weeks < 0:
+            raise ValueError("CV requires positive folds/validation periods and a nonnegative gap")
 
     def split(
         self,
@@ -82,15 +86,21 @@ class WalkForwardCV:
         if min_date is None or max_date is None:
             return []
 
+        dates = df[time_col].unique().sort().to_list()
+        calendar = PeriodCalendar.from_dates(dates, self.frequency)
+        if dates != calendar.date_range(min_date, max_date):
+            raise ValueError("Incomplete calendar grid for CV; fill missing periods explicitly before splitting")
+        if len(dates) < self.n_folds * self.val_weeks + self.gap_weeks + 1:
+            raise ValueError(
+                "Insufficient data for all requested CV folds, validation periods and gap"
+            )
+
         # Work backwards from max_date
         folds: List[CVFold] = []
         for i in range(self.n_folds - 1, -1, -1):
-            val_end = max_date - freq_timedelta(self.frequency, i * self.val_weeks)
-            val_start = val_end - freq_timedelta(self.frequency, self.val_weeks - 1)
-            train_end = val_start - freq_timedelta(self.frequency, self.gap_weeks + 1)
-
-            if train_end < min_date:
-                continue
+            val_end = calendar.shift(max_date, -i * self.val_weeks)
+            val_start = calendar.shift(val_end, -(self.val_weeks - 1))
+            train_end = calendar.shift(val_start, -(self.gap_weeks + 1))
 
             folds.append(CVFold(
                 fold_index=self.n_folds - 1 - i,

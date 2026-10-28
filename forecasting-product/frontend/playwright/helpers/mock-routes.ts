@@ -349,6 +349,7 @@ export async function mockApiRoutes(page: Page) {
     if (path.startsWith("/audit")) return json(MOCK.audit);
 
     // Pipeline — specific paths first
+    if (path === "/pipeline/runs") return json({ count: 0, runs: [] });
     if (path === "/pipeline/manifests" || path.startsWith("/pipeline/manifests")) return json(MOCK.manifests);
     if (path === "/pipeline/costs" || path.startsWith("/pipeline/costs")) return json(MOCK.costs);
     if (path.includes("/analyze-multi-file")) return json(MOCK.analysis);

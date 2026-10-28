@@ -226,11 +226,12 @@ sequenceDiagram
     participant BE as BacktestEngine
     participant PP as ProcessPool
     participant F as Forecaster
-    participant MS as MetricStore
     participant CS as ChampionSelector
+    participant RS as RunStore
 
     S->>BP: run(actuals, product_master)
     activate BP
+    BP->>BP: fresh UUID32 context and per-attempt state
 
     BP->>SB: build(actuals)
     activate SB
@@ -240,7 +241,7 @@ sequenceDiagram
     BP->>R: build_from_config(model_list)
     R-->>BP: [Forecaster, Forecaster, ...]
 
-    BP->>BE: run(series, forecasters)
+    BP->>BE: run(series, forecasters, run_id, persist=false)
     activate BE
 
     Note over BE: Split into n_folds<br/>train/validation windows
@@ -257,21 +258,29 @@ sequenceDiagram
         deactivate PP
     end
 
-    BE->>MS: write(all_fold_metrics)
     BE-->>BP: backtest_results
     deactivate BE
 
     BP->>CS: select(backtest_results)
     CS-->>BP: champions DataFrame
 
-    BP->>MS: leaderboard(lob)
-    MS-->>BP: ranked model table
+    BP->>BP: current-run leaderboard and validation
+    BP->>RS: publish(input, prepared, config, validation,<br/>metrics, champions, leaderboard, metadata)
+    RS->>RS: exclusive run directory; write/fsync/hash members
+    RS->>RS: no-replace hard link to manifest.json
+    RS-->>BP: committed manifest with same run_id
 
-    BP-->>S: {backtest_results, champions,<br/>leaderboard, calibration_report}
+    BP-->>S: results + run_id; last_run identifies committed bundle
     deactivate BP
 ```
 
 ### Deep Dive: Walk-Forward Cross-Validation
+
+The bundle's leaderboard is an immutable result, not a query to the current
+scorer. Its `execution.scoring_contract` is captured in the manifest and canonical
+configuration before publication. Exact/latest readers select a saved frame and
+manifest together, retain row order/rank and competition scope, and label absent
+historical policy unknown. Current raw-observation analytics remain separate.
 
 The training window expands (or slides) and the validation window moves forward in time. Each fold evaluates all models on the same held-out period.
 
@@ -402,11 +411,11 @@ sequenceDiagram
     participant SB as SeriesBuilder
     participant R as Registry
     participant F as Forecaster
-    participant RC as Reconciler
-    participant M as Manifest
+    participant RS as RunStore
 
     S->>FP: run(actuals, champion_model_id)
     activate FP
+    FP->>FP: fresh UUID32 context and per-attempt state
 
     FP->>SB: build(actuals, external_features)
     SB-->>FP: model-ready series
@@ -429,18 +438,13 @@ sequenceDiagram
         FP->>FP: apply_conformal_correction(forecast, residuals)
     end
 
-    opt Hierarchy enabled
-        FP->>RC: reconcile(forecasts, hierarchy_tree)
-        RC-->>FP: coherent forecasts
-    end
+    FP->>FP: validate forecast; propagate enabled failures
+    FP->>RS: publish(input, prepared, config, validation,<br/>forecast, optional inputs, model/source metadata)
+    RS->>RS: exclusive run directory; write/fsync/hash members
+    RS->>RS: no-replace hard link to manifest.json
+    RS-->>FP: committed manifest with same run_id
 
-    FP->>FP: write forecast Parquet
-
-    FP->>M: build_manifest(run_id, config, stats)
-    M-->>FP: manifest JSON
-    FP->>M: write_manifest(path)
-
-    FP-->>S: forecast DataFrame
+    FP-->>S: forecast DataFrame; last_run identifies committed bundle
     deactivate FP
 ```
 
@@ -740,26 +744,28 @@ The four core data structures that flow through the platform.
 
 ### Pipeline Manifest (JSON)
 
-```json
-{
-  "run_id": "abc123def456",
-  "timestamp": "2024-06-01T14:30:00",
-  "lob": "retail",
-  "input_data_hash": "sha256:...",
-  "input_row_count": 52000,
-  "input_series_count": 1000,
-  "date_range_start": "2022-01-01",
-  "date_range_end": "2024-05-31",
-  "cleansing_applied": true,
-  "outliers_clipped": 145,
-  "stockout_periods_imputed": 23,
-  "validation_passed": true,
-  "regressors_dropped": ["low_variance_feature"],
-  "config_hash": "sha256:...",
-  "champion_model_id": "lgbm_direct",
-  "backtest_wmape": 0.0842,
-  "forecast_horizon": 39,
-  "forecast_row_count": 39000,
-  "forecast_file": "forecast_retail_2024-06-01.parquet"
-}
+The version-1 manifest is the sole commit marker in
+`<runs_path>/<lob>/<UUID32>/`, not an independently published sidecar.
+It binds raw normalized and prepared input, safe canonical settings, validation,
+model/source metadata and output descriptors/checksums to one attempt.
+For the complete field contract see [DATA_FORMAT.md](docs/DATA_FORMAT.md).
+
+```mermaid
+flowchart LR
+    ATTEMPT["Fresh server attempt ID"] --> STAGE["Exclusive directory<br/>write, close, fsync, hash all members"]
+    STAGE --> CANDIDATE["Private candidate manifest"]
+    CANDIDATE --> MARKER["Atomic no-replace hard link<br/>manifest.json"]
+    MARKER --> READER["RunStore / RunReader<br/>verify version, identity and checksums"]
+    READER --> EXACT["Exact run ID<br/>forecast/config/input/history/metrics"]
+    READER --> LATEST["Latest by start UTC + ID<br/>per LOB and run type"]
+    STAGE -->|pre-commit error| FAILED["Invisible incomplete attempt<br/>bounded failure diagnostics"]
+    MARKER -->|later error| UNCERTAIN["Committed or uncertain receipt<br/>never delete; resolve exact ID"]
 ```
+
+All supported local readers share this authority. Legacy files are a separate
+read-only, unknown-lineage adapter; committed runs take default precedence.
+Backtest metrics do not become visible before their bundle commits; standalone
+MetricStore appends use distinct atomic file identities. Local visibility
+guarantees do not apply to managed Delta upserts or imply power-loss ACID
+durability. Filesystem requirements, root precedence and backup/recovery are
+specified in [DEPLOYMENT.md](docs/DEPLOYMENT.md#immutable-local-runs-and-recovery).

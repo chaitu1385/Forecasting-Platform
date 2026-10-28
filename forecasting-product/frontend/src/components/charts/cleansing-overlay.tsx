@@ -16,8 +16,8 @@ import { COLORS, SEVERITY_COLORS } from "@/lib/constants";
 
 interface CleansingPoint {
   week: string;
-  original: number;
-  cleaned: number;
+  original: number | null;
+  cleaned: number | null;
   is_outlier?: boolean;
 }
 

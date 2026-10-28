@@ -4,58 +4,57 @@ from __future__ import annotations
 
 import io
 import logging
-from typing import Optional
+import math
+from pathlib import Path
+from typing import Literal, Optional
 
 import polars as pl
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 
 from ...auth.models import User
 from ...auth.rbac import get_current_user
-from ..deps import validate_path_param, validate_upload_size
+from ..deps import raise_run_error, run_reader, validate_upload_size
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/series", tags=["series"])
 
 
-def _load_actuals(data_dir, lob: str) -> pl.DataFrame:
-    """Load the most recent actuals/history file for a LOB."""
-    validate_path_param(lob, "lob")
-    for subdir in ("history", "actuals"):
-        d = data_dir / subdir / lob
-        if d.exists():
-            files = sorted(d.glob("*.parquet"))
-            if files:
-                return pl.read_parquet(files[-1])
-    raise HTTPException(
-        status_code=404,
-        detail=f"No history/actuals data found for LOB '{lob}'.",
-    )
+def _load_actuals(data_dir, lob: str, runs_dir=None, run_id: Optional[str] = None) -> pl.DataFrame:
+    """Compatibility entrypoint delegating to the authoritative run/history reader."""
+    from ...pipeline.readers import RunReader
+    from ...pipeline.run_store import RunIntegrityError, RunNotFoundError
+
+    data = Path(data_dir)
+    try:
+        return RunReader(
+            runs_dir if runs_dir is not None else data / "runs",
+            data / "forecasts", (data / "history", data / "actuals"),
+        ).history(lob, run_id).frame
+    except (RunIntegrityError, RunNotFoundError, ValueError, OSError) as exc:
+        raise_run_error(exc)
 
 
 @router.get("/{lob}")
 def list_series(
     lob: str,
     request: Request,
+    run_id: Optional[str] = Query(None),
+    stage: Literal["input", "prepared"] = Query("input"),
+    legacy: bool = Query(False),
     user: User = Depends(get_current_user),
 ):
     """List all series with SBC demand classification (ADI, CV², demand_class)."""
+    from ...pipeline.run_store import RunIntegrityError, RunNotFoundError
     from ...series.sparse_detector import SparseDetector
-
-    df = _load_actuals(request.app.state.data_dir, lob)
+    try:
+        selected = run_reader(request).history(lob, run_id, stage=stage, legacy=legacy)
+    except (RunIntegrityError, RunNotFoundError, ValueError, OSError) as exc:
+        raise_run_error(exc)
+    df = selected.frame
 
     detector = SparseDetector()
-    # Detect target and id columns
-    target_col = "quantity"
-    id_col = "series_id"
-    for c in ("quantity", "target", "value", "sales", "demand"):
-        if c in df.columns:
-            target_col = c
-            break
-    for c in ("series_id", "sku_id", "product_id", "item_id"):
-        if c in df.columns:
-            id_col = c
-            break
+    target_col, id_col = selected.target_column, selected.id_column
 
     classified = detector.classify(df, target_col=target_col, id_col=id_col)
 
@@ -63,7 +62,7 @@ def list_series(
     for row in classified.iter_rows(named=True):
         n_obs = df.filter(pl.col(id_col) == row[id_col]).height
         items.append({
-            "series_id": row[id_col],
+            "series_id": str(row[id_col]),
             "adi": round(float(row.get("adi", 0)), 4),
             "cv2": round(float(row.get("cv2", 0)), 4),
             "demand_class": row.get("demand_class", "unknown"),
@@ -71,7 +70,10 @@ def list_series(
             "n_observations": n_obs,
         })
 
-    return {"lob": lob, "series_count": len(items), "series": items}
+    return {
+        "lob": lob, "series_count": len(items), "series": items,
+        "run_id": selected.run_id, "artifact_source": selected.source, "input_stage": selected.input_stage,
+    }
 
 
 @router.get("/{lob}/{series_id}/history")
@@ -79,23 +81,36 @@ def get_series_history(
     lob: str,
     series_id: str,
     request: Request,
+    run_id: Optional[str] = Query(None),
+    stage: Literal["input", "prepared"] = Query("input"),
+    legacy: bool = Query(False),
     user: User = Depends(get_current_user),
 ):
-    """Return raw time series data for a single series."""
-    df = _load_actuals(request.app.state.data_dir, lob)
+    """Return exact-run history, with raw/prepared or unknown legacy stage labelled."""
+    from ...pipeline.run_store import RunIntegrityError, RunNotFoundError
+    try:
+        selected = run_reader(request).history(lob, run_id, stage=stage, legacy=legacy)
+    except (RunIntegrityError, RunNotFoundError, ValueError, OSError) as exc:
+        raise_run_error(exc)
+    df = selected.frame
 
-    id_col, time_col, target_col = _detect_columns(df)
-    series_df = df.filter(pl.col(id_col) == series_id).sort(time_col)
+    id_col, time_col, target_col = selected.id_column, selected.time_column, selected.target_column
+    series_df = df.filter(pl.col(id_col).cast(pl.Utf8) == series_id).sort(time_col)
 
     if series_df.is_empty():
         raise HTTPException(status_code=404, detail=f"Series '{series_id}' not found in LOB '{lob}'.")
 
     points = [
-        {"week": str(row[time_col]), "value": float(row[target_col])}
+        {"week": str(row[time_col]),
+         "value": float(row[target_col]) if row[target_col] is not None and math.isfinite(float(row[target_col])) else None}
         for row in series_df.iter_rows(named=True)
     ]
 
-    return {"series_id": series_id, "lob": lob, "points": points}
+    return {
+        "series_id": series_id, "lob": lob, "points": points,
+        "run_id": selected.run_id, "artifact_source": selected.source, "input_stage": selected.input_stage,
+        "input_data_hash": selected.manifest.input_data_hash if selected.manifest else None,
+    }
 
 
 @router.post("/breaks")
@@ -145,6 +160,7 @@ async def cleansing_audit(
     request: Request,
     file: Optional[UploadFile] = File(None),
     lob: Optional[str] = Query(None),
+    frequency: Literal["D", "W", "M", "Q"] = Query("W", description="Input period frequency; weekly legacy default"),
     outlier_method: str = Query("iqr", description="'iqr' or 'zscore'"),
     iqr_multiplier: float = Query(1.5),
     zscore_threshold: float = Query(3.0),
@@ -168,7 +184,7 @@ async def cleansing_audit(
         stockout_detection=stockout_detection,
         min_zero_run=min_zero_run,
     )
-    cleanser = DemandCleanser(config)
+    cleanser = DemandCleanser(config, frequency=frequency)
     id_col, time_col, target_col = _detect_columns(df)
 
     result = cleanser.cleanse(df, time_col=time_col, value_col=target_col, sid_col=id_col)
@@ -179,6 +195,7 @@ async def cleansing_audit(
         per_series_dicts = report.per_series.to_dicts()
 
     return {
+        "frequency": frequency,
         "total_series": report.total_series,
         "series_with_outliers": report.series_with_outliers,
         "total_outliers": report.total_outliers,
@@ -265,7 +282,7 @@ async def _read_upload_or_lob(file, request: Request, lob):
         except (ValueError, UnicodeDecodeError, OSError) as exc:
             raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}")
     elif lob:
-        return _load_actuals(request.app.state.data_dir, lob)
+        return _load_actuals(request.app.state.data_dir, lob, request.app.state.runs_dir)
     else:
         raise HTTPException(status_code=400, detail="Provide either a file upload or lob query parameter.")
 

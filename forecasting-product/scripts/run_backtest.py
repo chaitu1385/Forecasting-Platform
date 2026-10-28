@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import polars as pl
 
 from src.config import load_config, load_config_with_overrides
+from src.config.schema import OutputConfig
 from src.pipeline.backtest import BacktestPipeline
 
 logging.basicConfig(
@@ -54,6 +55,7 @@ def main():
         default=None,
         help="Path to SKU mapping table (for transitions)",
     )
+    parser.add_argument("--runs-dir", default=None, help="Explicit shared immutable run authority")
     args = parser.parse_args()
 
     # Load config
@@ -61,6 +63,14 @@ def main():
         config = load_config_with_overrides(args.config, args.lob_override)
     else:
         config = load_config(args.config)
+    defaults = OutputConfig()
+    if args.runs_dir is not None:
+        config.output.runs_path = args.runs_dir
+    elif config.output.runs_path is None and (
+        Path(config.output.forecast_path) == Path(defaults.forecast_path)
+        and Path(config.output.metrics_path) == Path(defaults.metrics_path)
+    ):
+        config.output.runs_path = "data/runs"
 
     logger.info("Config loaded: LOB=%s", config.lob)
 
@@ -69,7 +79,7 @@ def main():
     if data_path.suffix == ".parquet":
         actuals = pl.read_parquet(str(data_path))
     else:
-        actuals = pl.read_csv(str(data_path))
+        actuals = pl.read_csv(str(data_path), try_parse_dates=True)
 
     logger.info("Actuals loaded: %d rows", len(actuals))
 
@@ -83,7 +93,7 @@ def main():
         mapping_table = pl.read_csv(args.mapping_table)
 
     # Run pipeline
-    pipeline = BacktestPipeline(config)
+    pipeline = BacktestPipeline(config, source_kind="cli")
     results = pipeline.run(
         actuals=actuals,
         product_master=product_master,
@@ -91,6 +101,7 @@ def main():
     )
 
     # Print summary
+    print(f"Committed run_id: {results['run_id']}")
     if not results["champions"].is_empty():
         print("\n" + "=" * 60)
         print("CHAMPION MODEL(S)")

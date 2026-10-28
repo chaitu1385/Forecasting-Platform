@@ -439,7 +439,7 @@ restart against an unchanged temporary volume.
 
 ### Microsoft Fabric
 
-**Issue:** DuckDB, neuralforecast, and PySpark are not available in the Fabric Spark runtime.
+**Issue:** A local dependency profile does not match the managed Fabric runtime.
 
 **What happens:**
 - Override store auto-falls back to Parquet (no concurrent write support)
@@ -447,8 +447,12 @@ restart against an unchanged temporary volume.
 - `pip install` only persists for the session, not across cluster restarts
 
 **Fix:**
-- Use `requirements-fabric.txt` (excludes incompatible packages)
-- Pin libraries in Fabric workspace settings for persistent installs
+- Treat `requirements-fabric.txt` as a local Python 3.13 candidate, not a certified
+  or blindly installable managed environment.
+- Inventory the workspace's actual Python/scientific/Azure libraries and its
+  supplied Spark/Delta versions before validating an overlay in nonproduction.
+- Pin validated libraries in Fabric environment settings for persistent installs;
+  never install local PySpark/Delta over the supplied managed engine.
 - Use a single orchestrator notebook for override management
 
 ### Docker volume mounts
@@ -489,15 +493,29 @@ pip install anthropic         # for AI features
 2. Check `.env.local` has `NEXT_PUBLIC_API_URL=http://localhost:8000`
 3. If running on different hosts/ports, check for CORS — the API must allow the frontend's origin
 
-### `npm install` fails
+### `npm ci` fails
 
 **Issue:** Dependency installation errors.
 
-**Fix:** Ensure Node.js 18+ is installed (`node --version`). Delete `node_modules` and `package-lock.json`, then retry:
+**Fix:** Verify Node.js 24.22.1 and npm 11.19.1 (`node --version`, `npm --version`),
+then restore the committed resolution:
 ```bash
-rm -rf node_modules package-lock.json
-npm install
+npm ci
 ```
+
+Do not delete `package-lock.json`, use `--force`, or disable the engine check.
+For Python, use the matching `py311`/`py312`/`py313` hash-locked profile in a clean
+virtual environment. A missing wheel, hash mismatch or unsupported interpreter
+is an explicit failure, not a reason to remove hashes, mix profile files or
+disable TLS verification. Regeneration is a reviewed dependency update.
+
+On a Windows ARM64 host, an x64 Python interpreter is still running under
+emulation. Polars' default native runtime can fail CPUID detection there (for
+example, `unknown feature flag: 'sse3'`). This is not a native Windows x64 result.
+Do not set `POLARS_SKIP_CPU_CHECK` or patch installed modules: use a qualified
+native x64 host. A separately declared upstream `polars[rtcompat]` development
+environment is supplementary evidence only, not a replacement for the production
+lock or native CI qualification.
 
 ### Login doesn't work
 
@@ -513,10 +531,11 @@ npm install
 **Issue:** TypeScript or build errors when running `npm run build`.
 
 **Fix:**
-1. Ensure all dependencies are installed: `npm install`
-2. Check for TypeScript errors: `npx tsc --noEmit`
+1. Restore the locked dependencies: `npm ci`
+2. Check lint and types explicitly: `npm run lint` and `npm run typecheck`
 3. Clear the Next.js cache: `rm -rf .next` and rebuild
-4. Verify Node.js 18+ is installed
+4. Verify Node.js 24.22.1 / npm 11.19.1. The build intentionally uses the supported
+   `next build --webpack` flag; switching bundlers is not a troubleshooting fix.
 
 ### API returns 401 Unauthorized
 

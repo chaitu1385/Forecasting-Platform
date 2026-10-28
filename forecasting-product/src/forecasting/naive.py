@@ -7,12 +7,13 @@ yearly seasonality, it copies weeks from the same period one year ago.
 This serves as the "beat this" benchmark for all other models.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import polars as pl
 
-from ..config.schema import freq_timedelta, get_frequency_profile
+from ..config.schema import get_frequency_profile
+from ..utils.calendar import PeriodCalendar
 from .base import BaseForecaster
 from .registry import registry
 
@@ -23,28 +24,29 @@ class SeasonalNaiveForecaster(BaseForecaster):
 
     name = "naive_seasonal"
 
-    def __init__(self, season_length: int = 52, frequency: str = "W"):
+    def __init__(self, season_length: Optional[int] = None, frequency: str = "W"):
         """
         Parameters
         ----------
         season_length:
             Number of periods in one seasonal cycle.  Defaults to the
-            value from ``FREQUENCY_PROFILES[frequency]`` when left at 52
-            and *frequency* is not ``"W"``.
+            value from ``FREQUENCY_PROFILES[frequency]`` when omitted.
+            Explicit values, including 52, are always preserved.
         frequency:
             Data frequency — ``"D"``, ``"W"``, ``"M"``, or ``"Q"``.
         """
         self.frequency = frequency
         profile = get_frequency_profile(frequency)
-        # If caller left season_length at the old weekly default but picked
-        # a non-weekly frequency, use the profile default instead.
-        if season_length == 52 and frequency != "W":
+        if season_length is None:
             season_length = profile["season_length"]
+        if season_length < 1:
+            raise ValueError("season_length must be positive")
         self.season_length = season_length
         self._fitted_data: pl.DataFrame = pl.DataFrame()
         self._target_col: str = "quantity"
         self._time_col: str = "week"
         self._id_col: str = "series_id"
+        self._calendar: Optional[PeriodCalendar] = None
 
     def fit(
         self,
@@ -53,6 +55,13 @@ class SeasonalNaiveForecaster(BaseForecaster):
         time_col: str = "week",
         id_col: str = "series_id",
     ) -> None:
+        self._fitted_data = df.head(0).select([id_col, time_col, target_col])
+        self._calendar = None
+        if not df.is_empty():
+            values = df[target_col]
+            if not values.dtype.is_numeric() or values.null_count() or not values.is_finite().all():
+                raise ValueError(f"{self.name} requires finite numeric {target_col}")
+            self._calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), self.frequency)
         self._fitted_data = df.select([id_col, time_col, target_col])
         self._target_col = target_col
         self._time_col = time_col
@@ -65,7 +74,6 @@ class SeasonalNaiveForecaster(BaseForecaster):
         time_col: str = "week",
     ) -> pl.DataFrame:
         sl = self.season_length
-        freq = self.frequency
 
         def _predict_group(group_df: pl.DataFrame) -> pl.DataFrame:
             """Vectorized predict for a single series group."""
@@ -94,7 +102,7 @@ class SeasonalNaiveForecaster(BaseForecaster):
             forecast_vals = vals_array[indices]
 
             # Build date array
-            dates = [max_date + freq_timedelta(freq, int(h)) for h in h_range]
+            dates = self._calendar.future_dates(max_date, horizon)
 
             return pl.DataFrame({
                 id_col: [series_id_val] * horizon,
@@ -122,11 +130,13 @@ class SeasonalNaiveForecaster(BaseForecaster):
         Interval estimation from year-over-year empirical residuals.
 
         For each seasonal position, collect historical ``value[t] - value[t - season_length]``
-        residuals, then use their empirical quantiles as additive offsets over the P50 point
-        forecast.  If fewer than two seasons of data are available, falls back to the
-        base-class degenerate intervals.
+        residuals. Offsets are their empirical quantiles minus their empirical
+        median, preserving the point/P50 and interval width. This location shift
+        does not establish empirical coverage. Without seasonal residuals, the
+        intervals are degenerate at the point forecast.
         """
         results = []
+        point = self.predict(horizon, id_col=id_col, time_col=time_col)
 
         for series_id in self._fitted_data[self._id_col].unique().to_list():
             series = (
@@ -140,14 +150,10 @@ class SeasonalNaiveForecaster(BaseForecaster):
             if len(values) < self.season_length + 1 or max_date is None:
                 # Not enough history — fall back to degenerate intervals
                 point_rows = [
-                    {id_col: series_id,
-                     time_col: max_date + freq_timedelta(self.frequency, h),
-                     **{f"forecast_p{int(round(q * 100))}": float(
-                         values[min(len(values) - self.season_length + ((h - 1) % self.season_length),
-                                    len(values) - 1)]
-                     ) for q in quantiles}}
-                    for h in range(1, horizon + 1)
-                ] if max_date else []
+                    {id_col: series_id, time_col: row[time_col],
+                     **{f"forecast_p{int(round(q * 100))}": row["forecast"] for q in quantiles}}
+                    for row in point.filter(pl.col(id_col) == series_id).iter_rows(named=True)
+                ]
                 results.extend(point_rows)
                 continue
 
@@ -165,10 +171,11 @@ class SeasonalNaiveForecaster(BaseForecaster):
                 if idx < 0:
                     idx = (h - 1) % n
                 point_val = float(values[idx] if 0 <= idx < n else 0.0)
-                forecast_date = max_date + freq_timedelta(self.frequency, h)
+                forecast_date = self._calendar.shift(max_date, h)
 
                 pos = idx % sl
                 pos_residuals = residuals_by_pos.get(pos, [0.0])
+                residual_median = float(np.quantile(pos_residuals, 0.5))
 
                 row: Dict = {id_col: series_id, time_col: forecast_date}
                 for q in quantiles:
@@ -176,7 +183,9 @@ class SeasonalNaiveForecaster(BaseForecaster):
                     if abs(q - 0.5) < 1e-6:
                         row[col] = point_val
                     else:
-                        row[col] = point_val + float(np.quantile(pos_residuals, q))
+                        row[col] = point_val + (
+                            float(np.quantile(pos_residuals, q)) - residual_median
+                        )
                 results.append(row)
 
         if not results:

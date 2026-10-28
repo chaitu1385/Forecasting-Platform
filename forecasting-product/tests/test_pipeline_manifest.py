@@ -208,7 +208,7 @@ class TestConfigHash:
         h1 = _hash_config(config)
         h2 = _hash_config(config)
         assert h1 == h2
-        assert len(h1) == 8
+        assert len(h1) == 64
 
     def test_config_hash_changes_with_different_config(self):
         c1 = PlatformConfig(lob="retail")
@@ -222,7 +222,7 @@ class TestDataHash:
         h1 = _hash_dataframe(df)
         h2 = _hash_dataframe(df)
         assert h1 == h2
-        assert len(h1) == 12
+        assert len(h1) == 64
 
     def test_input_data_hash_changes_with_different_data(self):
         df1 = _make_actuals(n_weeks=52)
@@ -314,7 +314,7 @@ class TestWriteReadManifest:
 
 class TestForecastPipelineIntegration:
     def test_integration_manifest_written(self, tmp_path):
-        """End-to-end: ForecastPipeline.run() should write a manifest sidecar."""
+        """End-to-end: the completed bundle has one authoritative manifest."""
         from src.pipeline.forecast import ForecastPipeline
 
         config = PlatformConfig(
@@ -329,10 +329,12 @@ class TestForecastPipelineIntegration:
         forecast = pipeline.run(actuals, champion_model="naive_seasonal")
 
         # Check manifest was written
-        manifest_files = list(tmp_path.glob("**/*_manifest.json"))
+        manifest_files = list(tmp_path.glob("runs/*/*/manifest.json"))
         assert len(manifest_files) == 1
 
         data = json.loads(manifest_files[0].read_text())
+        assert data["schema_version"] == 1
+        assert data["run_id"] == pipeline.context.run_id == pipeline.last_run.run_id
         assert data["lob"] == "test_lob"
         assert data["champion_model_id"] == "naive_seasonal"
         assert data["forecast_row_count"] == len(forecast)

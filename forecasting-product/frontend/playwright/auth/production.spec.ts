@@ -93,6 +93,30 @@ test("production operator tokens enforce identity, roles and memory-only lifetim
   await expect(page.locator("header").getByText("browser-admin", { exact: true })).toBeVisible();
   await page.locator("aside").getByRole("link", { name: "6 Forecast Viewer", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Forecast: SYNTHETIC_AUTH_SERIES", exact: true })).toBeVisible();
+  const [priorRun, latestRun] = marker.forecast_runs;
+  expect(priorRun.run_id).not.toBe(latestRun.run_id);
+  await expect(page.getByTestId("forecast-run-id")).toHaveText(latestRun.run_id);
+  await page.getByText("Forecast data", { exact: true }).click();
+  await expect(page.getByRole("cell", { name: "20.00", exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("cell", { name: "20.00", exact: true })).toHaveCount(4);
+  const earlier = page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return url.pathname === "/forecast/retail" && url.searchParams.get("run_id") === priorRun.run_id;
+  });
+  await page.getByLabel("Forecast run", { exact: true }).selectOption(priorRun.run_id);
+  const priorData = await (await earlier).json();
+  expect(priorData.run_id).toBe(priorRun.run_id);
+  expect(priorData.points.map((point: { forecast: number }) => point.forecast)).toEqual([10, 10, 10, 10]);
+  await expect(page.getByTestId("forecast-run-id")).toHaveText(priorRun.run_id);
+  await expect(page.getByRole("cell", { name: "10.00", exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("cell", { name: "20.00", exact: true })).toHaveCount(0);
+  const savedConfiguration = page.waitForResponse(response =>
+    new URL(response.url()).pathname === `/pipeline/runs/retail/${priorRun.run_id}/config`);
+  await page.getByRole("button", { name: "View stored configuration", exact: true }).click();
+  const priorConfiguration = await (await savedConfiguration).json();
+  expect(priorConfiguration.run_id).toBe(priorRun.run_id);
+  expect(priorConfiguration.config_hash).toBe(priorData.config_hash);
+  expect(priorConfiguration.configuration.settings.forecast.horizon_weeks).toBe(4);
   expect(await protectedStatus(page, apiUrl, admin, "POST", "/overrides")).toBe(200);
   const persisted = await page.evaluate(() =>
     JSON.stringify([Object.entries(localStorage), Object.entries(sessionStorage), document.cookie]));

@@ -10,6 +10,7 @@ import time
 import urllib.error
 import urllib.request
 import uuid
+from datetime import date, timedelta
 from pathlib import Path
 
 
@@ -105,6 +106,52 @@ def main() -> None:
             time.sleep(0.5)
         raise TimeoutError("Production container did not become ready within 90 seconds")
 
+    def create_forecast(base, token, value):
+        boundary = "synthetic-run-" + uuid.uuid4().hex
+        rows = "\n".join(
+            f"SYNTHETIC,{date(2024, 1, 1) + timedelta(weeks=index)},{value}"
+            for index in range(64)
+        )
+        csv = "series_id,week,quantity\n" + rows + "\n"
+        config = (
+            "forecast:\n  forecasters: [naive_seasonal]\n  horizon_periods: 2\n"
+            "data_quality:\n  fill_gaps: false\n  min_series_length_periods: 1\n"
+            "parallelism:\n  n_workers: 1\npost_validation:\n  enabled: false\n"
+        )
+        chunks = []
+        for field, filename, content in (("file", "synthetic.csv", csv), ("config_file", "plan.yaml", config)):
+            chunks.append(
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"; filename=\"{filename}\"\r\n"
+                f"Content-Type: text/plain\r\n\r\n{content}\r\n"
+            )
+        payload = ("".join(chunks) + f"--{boundary}--\r\n").encode()
+        call = urllib.request.Request(
+            base + "/pipeline/forecast?lob=auth_smoke", data=payload,
+            headers={"Authorization": f"Bearer {token}", "Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        with urllib.request.urlopen(call, timeout=60) as response:
+            result = json.loads(response.read())
+        assert result["status"] == "completed" and len(result["run_id"]) == 32
+        return result["run_id"]
+
+    def run_snapshot(base, token, run_id, value):
+        entries = {}
+        for name, endpoint in (
+            ("forecast", f"/forecast/auth_smoke?run_id={run_id}"),
+            ("metadata", f"/pipeline/runs/auth_smoke/{run_id}"),
+            ("config", f"/pipeline/runs/auth_smoke/{run_id}/config"),
+            ("history", f"/series/auth_smoke/SYNTHETIC/history?run_id={run_id}"),
+        ):
+            status, body = request(base, endpoint, token)
+            assert status == 200 and body["run_id"] == run_id
+            entries[name] = body
+        assert {point["forecast"] for point in entries["forecast"]["points"]} == {value}
+        assert {point["value"] for point in entries["history"]["points"]} == {value}
+        assert entries["metadata"]["input_data_hash"] == entries["forecast"]["input_data_hash"]
+        assert entries["metadata"]["config_hash"] == entries["config"]["config_hash"]
+        safe(json.dumps(entries))
+        return entries
+
     try:
         if docker("container", "inspect", name, check=False).returncode == 0:
             raise RuntimeError("Refusing to reuse an existing smoke container")
@@ -132,16 +179,9 @@ def main() -> None:
         assert request(base, "/auth/me", token="not-a-valid-token")[0] == 401
         assert request(base, "/auth/token?username=untrusted&role=admin", body={})[0] == 404
         docker("exec", "-i", name, "python", "-", input_text="""
-from datetime import date
 from pathlib import Path
-import polars as pl
 root = Path('/app/forecasting-product/data')
 assert not (root / '.seeded').exists() and not (root / 'demo').exists()
-output = root / 'forecasts' / 'auth_smoke'
-output.mkdir(parents=True)
-pl.DataFrame({'series_id': ['SYNTHETIC'], 'week': [date(2024, 1, 1)],
-              'forecast': [10.0], 'model': ['naive_seasonal']}).write_parquet(
-                  output / 'forecast_auth_smoke_2024-01-01.parquet')
 """)
         with tempfile.TemporaryDirectory(prefix="forecast-auth-private-") as temporary:
             tokens = {}
@@ -156,6 +196,15 @@ pl.DataFrame({'series_id': ['SYNTHETIC'], 'week': [date(2024, 1, 1)],
                 tokens[role] = output.read_text(encoding="utf-8").strip()
                 private_values.append(tokens[role])
                 safe(issuance.stdout + issuance.stderr)
+            first = create_forecast(base, tokens["admin"], 10.0)
+            second = create_forecast(base, tokens["admin"], 20.0)
+            assert first != second
+            before = {
+                first: run_snapshot(base, tokens["viewer"], first, 10.0),
+                second: run_snapshot(base, tokens["viewer"], second, 20.0),
+            }
+            assert request(base, "/forecast/auth_smoke", tokens["viewer"])[1]["run_id"] == second
+            assert request(base, f"/pipeline/runs/auth_smoke/{first}")[0] == 401
             body = {"old_sku": "SYNTHETIC_OLD", "new_sku": "SYNTHETIC_NEW", "proportion": 0.5}
             for role, token in tokens.items():
                 status, identity = request(base, "/auth/me", token)
@@ -169,13 +218,23 @@ pl.DataFrame({'series_id': ['SYNTHETIC'], 'week': [date(2024, 1, 1)],
                 "network_issuer": 404, "admin_write": 200, "viewer_read": 200, "viewer_write": 403,
                 "demo_seeding": False, "operator_output": "private-file-only",
             }
+            results["run_identity"] = {
+                "first": first, "second": second, "first_value": 10.0, "second_value": 20.0,
+                "input_hashes": {run_id: item["metadata"]["input_data_hash"] for run_id, item in before.items()},
+                "config_hashes": {run_id: item["metadata"]["config_hash"] for run_id, item in before.items()},
+            }
             remove_container("production")
             start({"JWT_SECRET_KEY": key}, persistent=True)
             base = ready()
             status, forecast = request(base, "/forecast/auth_smoke", tokens["viewer"])
-            assert status == 200 and forecast["points"][0]["forecast"] == 10.0
+            assert status == 200 and forecast["points"][0]["forecast"] == 20.0 and forecast["run_id"] == second
+            assert run_snapshot(base, tokens["viewer"], first, 10.0) == before[first]
+            assert run_snapshot(base, tokens["viewer"], second, 20.0) == before[second]
             assert request(base, "/forecast/auth_smoke")[0] == 401
-            results["production_restart"] = {"authenticated_read": 200, "anonymous": 401}
+            results["production_restart"] = {
+                "authenticated_read": 200, "anonymous": 401,
+                "both_exact_run_snapshots_unchanged": True, "latest_run_id": second,
+            }
         with report.open("x", encoding="utf-8") as output:
             output.write(safe(json.dumps(results, indent=2)) + "\n")
         print("Production container: invalid configurations rejected; JWT roles and authenticated restart verified.")

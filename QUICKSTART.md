@@ -25,14 +25,16 @@ the volume as a workaround.
 
 ## Path B — Explicit local Python demo
 
-Requires Python 3.8+.
+Use **CPython 3.12.16** and **Node.js 24.22.1 / npm 11.19.1**.
+The [runtime profiles](docs/DEPLOYMENT.md#supported-runtimes-and-locked-profiles)
+also define explicit Python 3.11/3.13 installations; do not mix their lock files.
 
 ```bash
 git clone https://github.com/chaitu1385/Forecasting-Platform.git
 cd Forecasting-Platform
 python -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
-pip install -r forecasting-product/requirements.txt
+python -m pip install --require-hashes --only-binary=:all: -r forecasting-product/requirements/py312/api.txt
 python forecasting-product/scripts/serve.py --demo --port 8000 --data-dir data/
 ```
 
@@ -40,7 +42,7 @@ Then, in a separate terminal:
 
 ```bash
 cd forecasting-product/frontend
-npm install
+npm ci
 npm run dev
 ```
 

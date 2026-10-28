@@ -12,6 +12,7 @@ from typing import Tuple
 import polars as pl
 
 from ..config.schema import CleansingConfig, get_frequency_profile
+from ..utils.calendar import PeriodCalendar
 
 # --------------------------------------------------------------------------- #
 #  Result types
@@ -57,8 +58,10 @@ class DemandCleanser:
     >>> print(result.report)
     """
 
-    def __init__(self, config: CleansingConfig):
+    def __init__(self, config: CleansingConfig, frequency: str = "W"):
         self.config = config
+        get_frequency_profile(frequency)
+        self.frequency = frequency
 
     # ------------------------------------------------------------------ #
     #  Main entry point
@@ -299,7 +302,7 @@ class DemandCleanser:
             return df
 
         if method == "seasonal":
-            return self._impute_seasonal(df, time_col, value_col, sid_col)
+            return self._impute_seasonal(df, time_col, value_col, sid_col, self.frequency)
         elif method == "interpolate":
             return self._interpolate_flagged(
                 df, time_col, value_col, sid_col, "_stockout_flag",
@@ -315,13 +318,28 @@ class DemandCleanser:
         sid_col: str,
         frequency: str = "W",
     ) -> pl.DataFrame:
-        """Replace stockout zeros with same-period-prior-year value."""
+        """Look up the configured prior season by date, including on raw/gapped data."""
         sl = get_frequency_profile(frequency)["season_length"]
-        td_kwargs = get_frequency_profile(frequency)["timedelta_kwargs"]
-        seasonal_lookback = {k: v * sl for k, v in td_kwargs.items()}
-        one_period = td_kwargs
+        if df.is_empty():
+            return df
+        month_end = False
+        if frequency in ("M", "Q"):
+            calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), frequency)
+            month_end = calendar.origin.day != 1
+        # A fixed D/W lookup need not impose a model grid on diagnostic data.
+        # For example, the legacy audit uses a weekly lookback on daily rows.
+        size, unit = {"D": (1, "d"), "W": (1, "w"), "M": (1, "mo"), "Q": (3, "mo")}[frequency]
+
+        def shifted(periods: int) -> pl.Expr:
+            shifted_date = pl.col(time_col).dt.offset_by(f"{periods * size}{unit}")
+            return shifted_date.dt.month_end() if month_end else shifted_date
+
+        # Native expressions retain Date/Datetime units, timezone and sub-us
+        # labels. A Python datetime round-trip would lose nanosecond keys.
         df = df.with_columns(
-            (pl.col(time_col) - pl.duration(**seasonal_lookback)).alias("_lookup_date"),
+            shifted(-sl).alias("_lookup_date"),
+            shifted(-1).alias("_previous_date"),
+            shifted(1).alias("_next_date"),
         )
 
         lookup = df.select(
@@ -335,12 +353,12 @@ class DemandCleanser:
         # Fall back to ±1 period neighbors from prior year
         lookup_minus1 = df.select(
             pl.col(sid_col),
-            (pl.col(time_col) + pl.duration(**one_period)).alias("_lookup_date"),
+            pl.col("_next_date").alias("_lookup_date"),
             pl.col(value_col).alias("_py_minus1"),
         )
         lookup_plus1 = df.select(
             pl.col(sid_col),
-            (pl.col(time_col) - pl.duration(**one_period)).alias("_lookup_date"),
+            pl.col("_previous_date").alias("_lookup_date"),
             pl.col(value_col).alias("_py_plus1"),
         )
 
@@ -367,7 +385,7 @@ class DemandCleanser:
             .alias(value_col),
         )
 
-        return df.drop(["_lookup_date", "_prior_year_val", "_py_minus1", "_py_plus1"])
+        return df.drop(["_previous_date", "_next_date", "_lookup_date", "_prior_year_val", "_py_minus1", "_py_plus1"])
 
     # ------------------------------------------------------------------ #
     #  Shared interpolation helper

@@ -6,9 +6,9 @@ validation, governance, and daily-frequency-specific assertions.
 
 Prerequisites
 -------------
-- Run ``python -m tests.integration.prepare_m5_daily`` to generate
-  ``tests/integration/fixtures/m5_daily_sample.csv``  (or the tests will
-  auto-skip).
+- The checked-in full daily fixture and config must be present. Missing
+  inputs fail collection; missing approved empirical references fail their
+  two original gates rather than skipping them.
 
 Run
 ---
@@ -17,13 +17,17 @@ Run
 """
 from __future__ import annotations
 
+import hashlib
 import io
+import json
+import os
 import shutil
 import tempfile
 import unittest
 from copy import deepcopy
 from datetime import date, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import polars as pl
 import pytest
@@ -36,13 +40,9 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SAMPLE_CSV = FIXTURES / "m5_daily_sample.csv"
 CONFIG_YAML = FIXTURES / "m5_daily_config.yaml"
 
-# Skip the entire module if the fixture hasn't been generated yet.
-if not SAMPLE_CSV.exists():
-    pytest.skip(
-        f"M5 daily fixture not found at {SAMPLE_CSV}. "
-        "Run 'python -m tests.integration.prepare_m5_daily' first.",
-        allow_module_level=True,
-    )
+for required in (SAMPLE_CSV, CONFIG_YAML):
+    if not required.is_file():
+        raise FileNotFoundError(f"Required full M5 daily input is missing: {required}")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -65,6 +65,17 @@ def _load_sample() -> pl.DataFrame:
     return pl.read_csv(SAMPLE_CSV, try_parse_dates=True)
 
 
+def _assert_api_champion_wmape(result: dict, scores: dict, champion: str) -> float:
+    """Cross-check the API summary, but return the independently rescored winner."""
+    assert result.get("champion_model") == champion, "API champion differs from independent winner"
+    authoritative = scores[champion]["wmape"]
+    reported = result.get("best_wmape")
+    assert reported == pytest.approx(authoritative, rel=1e-12, abs=1e-12), (
+        f"API best_wmape {reported!r} differs from independent champion WMAPE {authoritative!r}"
+    )
+    return float(authoritative)
+
+
 # ── Test app factory ──────────────────────────────────────────────────────────
 
 def _make_app(data_dir: str, metrics_dir: str):
@@ -81,8 +92,19 @@ def _make_app(data_dir: str, metrics_dir: str):
 
 
 @pytest.fixture(scope="module")
-def _daily_backtest(tmp_path_factory):
+def _daily_backtest(tmp_path_factory, record_testsuite_property):
     """Run the complete checked-in sample, three models and two folds once."""
+    from src.backtesting.engine import BacktestEngine
+    from tests.integration.m5_reference import (
+        candidate_provenance,
+        canonical_text_sha256,
+        daily_naive_reference,
+        exact_totals,
+        read_daily_panel,
+        score_complete_predictions,
+    )
+
+    provenance = candidate_provenance(SAMPLE_CSV, CONFIG_YAML)
     data_dir = tmp_path_factory.mktemp("m5-backtest") / "data"
     metrics_dir = data_dir / "metrics"
     metrics_dir.mkdir(parents=True)
@@ -90,7 +112,17 @@ def _daily_backtest(tmp_path_factory):
     history.mkdir(parents=True)
     _load_sample().write_parquet(history / "actuals.parquet")
     app = _make_app(str(data_dir), str(metrics_dir))
-    with TestClient(app) as client:
+    raw_records = []
+    original_run = BacktestEngine.run
+
+    def capture_run(engine, *args, **kwargs):
+        records = original_run(engine, *args, **kwargs)
+        raw_records.append(records.clone())
+        return records
+
+    # Capture the actual shared run, not a second fit or a smaller benchmark.
+    # Forward identity/persistence kwargs unchanged through Phase III integration.
+    with patch.object(BacktestEngine, "run", capture_run), TestClient(app) as client:
         response = client.post(
             "/pipeline/backtest?lob=walmart_m5_daily",
             files={
@@ -105,14 +137,56 @@ def _daily_backtest(tmp_path_factory):
         }, result
         persisted = client.get("/metrics/leaderboard/walmart_m5_daily")
         assert persisted.status_code == 200, persisted.text
-    return data_dir, result
+    assert len(raw_records) == 1
+    expected_reference = json.loads(
+        (FIXTURES.parent / "baselines" / "m5_daily_reference.json").read_text(encoding="utf-8")
+    )
+    assert canonical_text_sha256(SAMPLE_CSV) == expected_reference["fixture_sha256"]
+    assert canonical_text_sha256(CONFIG_YAML) == expected_reference["config_sha256"]
+    panel = read_daily_panel(SAMPLE_CSV)
+    series_count, input_rows = len(panel), sum(map(len, panel.values()))
+    assert series_count == expected_reference["series_count"] == 105
+    assert input_rows == expected_reference["input_rows"] == 76755
+    reference = daily_naive_reference(panel)
+    assert exact_totals(reference) == expected_reference["totals"]
+    expected_models = {"naive_seasonal", "auto_arima", "lgbm_direct"}
+    scores = score_complete_predictions(raw_records[0].iter_rows(named=True), reference, expected_models)
+    for entry in result["leaderboard"]:
+        for metric in ("wmape", "normalized_bias"):
+            assert entry[metric] == pytest.approx(scores[entry["model_id"]][metric], rel=1e-12, abs=1e-12)
+    expected_champion = min(
+        scores, key=lambda model: (scores[model]["wmape"], abs(scores[model]["normalized_bias"]), model),
+    )
+    _assert_api_champion_wmape(result, scores, expected_champion)
+    snapshot = {
+        **provenance,
+        "scoring_policy": "raw-observations-v1",
+        "scalar_reference_scores": scores,
+        "champion_model": expected_champion,
+        "input_rows": input_rows, "series_count": series_count, "models": sorted(expected_models),
+        "folds": 2, "validation_periods": 28, "gap_periods": 0,
+        "scored_observations_per_model": len(reference),
+    }
+    if candidate_path := os.environ.get("M5_CANDIDATE_OUTPUT"):
+        output = Path(candidate_path)
+        raw_output = output.with_suffix(".predictions.parquet")
+        if output.exists() or raw_output.exists():
+            raise ValueError("Refusing to overwrite existing M5 candidate evidence")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        raw_records[0].write_parquet(raw_output)
+        snapshot["raw_predictions_sha256"] = hashlib.sha256(raw_output.read_bytes()).hexdigest()
+        snapshot["raw_predictions_rows"] = raw_records[0].height
+        output.write_text(json.dumps(snapshot, sort_keys=True, indent=2, allow_nan=False) + "\n",
+                          encoding="utf-8")
+    record_testsuite_property("m5_daily_unapproved_candidate", json.dumps(snapshot, sort_keys=True))
+    return data_dir, result, snapshot
 
 
 @pytest.fixture(scope="class")
 def _daily_backtest_client(request, tmp_path_factory, _daily_backtest):
     # Give every consumer its own files, response values and application state.
     # In particular, forecasting must not mutate the shared backtest snapshot.
-    source, result = _daily_backtest
+    source, result, snapshot = _daily_backtest
     data_dir = tmp_path_factory.mktemp(request.cls.__name__) / "data"
     shutil.copytree(source, data_dir)
     metrics_dir = data_dir / "metrics"
@@ -123,6 +197,7 @@ def _daily_backtest_client(request, tmp_path_factory, _daily_backtest):
         request.cls.client = client
         request.cls._backtest_result = deepcopy(result)
         request.cls._backtest_data = deepcopy(result)
+        request.cls._backtest_provenance = deepcopy(snapshot)
         yield
 
 
@@ -236,10 +311,11 @@ class TestSeriesExploration(unittest.TestCase):
         resp = self.client.post(
             "/series/cleansing-audit?lob=walmart_m5_daily"
             "&outlier_method=iqr&iqr_multiplier=1.5&outlier_action=clip"
-            "&stockout_detection=true&min_zero_run=3",
+            "&stockout_detection=true&min_zero_run=3&frequency=D",
         )
         self.assertEqual(resp.status_code, 200)
         data = resp.json()
+        self.assertEqual(data["frequency"], "D")
         self.assertIn("total_series", data)
         self.assertIn("total_outliers", data)
         self.assertIn("rows_modified", data)
@@ -270,61 +346,72 @@ class TestBacktestPipeline(unittest.TestCase):
             self.assertLess(data["best_wmape"], 2.0)  # sanity — not absurdly high
 
     def test_baseline_no_regression(self):
-        """Champion + per-model WMAPE must not regress against the blessed baseline.
-
-        Skipped if ``tests/integration/baselines/m5_daily_baseline.json`` is absent
-        (run ``python scripts/bless_m5_baseline.py --frequency daily`` to capture).
-        """
+        """Champion + every model must satisfy the approved native reference."""
         from tests.integration.baseline import (
             assert_no_regression,
             require_baseline,
             verify_fixture_hash,
         )
 
-        baseline = require_baseline("daily", self)
+        baseline = require_baseline("daily", self, observed=self._backtest_provenance)
         verify_fixture_hash(self, baseline, SAMPLE_CSV, CONFIG_YAML)
 
         data = self._backtest_result
-        if data.get("best_wmape") is None:
-            self.skipTest("Pipeline did not return best_wmape; cannot check regression.")
+        self.assertIsNotNone(data.get("best_wmape"), "Missing observed champion WMAPE")
+        observed_champion_wmape = _assert_api_champion_wmape(
+            data, self._backtest_provenance["scalar_reference_scores"],
+            self._backtest_provenance["champion_model"],
+        )
+        leaderboard = data.get("leaderboard", [])
+        self.assertEqual(len(leaderboard), len(baseline.per_model_wmape),
+                         "Observed model leaderboard is incomplete or duplicated")
 
         per_model = {
             entry["model_id"]: float(entry["wmape"])
-            for entry in data.get("leaderboard", [])
+            for entry in leaderboard
             if entry.get("model_id") and entry.get("wmape") is not None
         }
         assert_no_regression(
             self,
             baseline,
-            observed_champion_wmape=float(data["best_wmape"]),
+            observed_champion_wmape=observed_champion_wmape,
             observed_per_model_wmape=per_model,
         )
 
     def test_baseline_fva_preserved(self):
         """Champion must still beat naive by ≥ MIN_FVA_RATIO of the blessed margin."""
-        from tests.integration.baseline import assert_fva_preserved, require_baseline
+        from tests.integration.baseline import (
+            assert_fva_preserved,
+            require_baseline,
+            verify_fixture_hash,
+        )
 
-        baseline = require_baseline("daily", self)
+        baseline = require_baseline("daily", self, observed=self._backtest_provenance)
+        verify_fixture_hash(self, baseline, SAMPLE_CSV, CONFIG_YAML)
         data = self._backtest_result
         leaderboard = data.get("leaderboard", [])
+        self.assertEqual(len(leaderboard), len(baseline.per_model_wmape),
+                         "Observed model leaderboard is incomplete or duplicated")
 
         by_id = {
             e["model_id"]: float(e["wmape"])
             for e in leaderboard
             if e.get("model_id") and e.get("wmape") is not None
         }
-        naive_wmape = next(
-            (w for mid, w in by_id.items() if "naive" in mid.lower()),
-            None,
+        self.assertEqual(set(by_id), set(baseline.per_model_wmape),
+                         "Observed model population is incomplete")
+        naive_wmape = by_id["naive_seasonal"]
+        self.assertIsNotNone(data.get("best_wmape"), "Missing observed champion WMAPE")
+        observed_champion_wmape = _assert_api_champion_wmape(
+            data, self._backtest_provenance["scalar_reference_scores"],
+            self._backtest_provenance["champion_model"],
         )
-        if naive_wmape is None or data.get("best_wmape") is None:
-            self.skipTest("Naive or champion WMAPE missing; cannot check FVA.")
 
         assert_fva_preserved(
             self,
             baseline,
             observed_naive_wmape=naive_wmape,
-            observed_champion_wmape=float(data["best_wmape"]),
+            observed_champion_wmape=observed_champion_wmape,
         )
 
     def test_leaderboard(self):

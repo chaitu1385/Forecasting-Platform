@@ -20,12 +20,20 @@ Usage
 """
 
 import hashlib
+import importlib.metadata
 import json
 import logging
+import math
+import numbers
+import os
+import re
+import sys
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
+from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
+from urllib.parse import parse_qsl, urlsplit
 
 import polars as pl
 
@@ -82,6 +90,24 @@ class PipelineManifest:
     # Post-pipeline validation (4-layer framework)
     post_validation_grade: Optional[str] = None
     post_validation_score: Optional[int] = None
+
+    # Version zero is a legacy sidecar, not an atomic run commit.
+    schema_version: int = 0
+    run_type: str = "forecast"
+    status: str = "legacy"
+    started_at: str = ""
+    completed_at: str = ""
+    artifacts: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    input_snapshot_stage: str = "unknown"
+    prepared_data_hash: str = ""
+    input_digest_kind: str = "legacy"
+    config_digest_kind: str = "legacy"
+    forecast_origin: Optional[str] = None
+    models: List[Dict[str, Any]] = field(default_factory=list)
+    execution: Dict[str, Any] = field(default_factory=dict)
+    source: Dict[str, Any] = field(default_factory=dict)
+    reproducibility: Dict[str, Any] = field(default_factory=dict)
+    total_seconds: float = 0.0
 
 
 def build_manifest(
@@ -195,11 +221,14 @@ def write_manifest(manifest: PipelineManifest, forecast_path: str) -> str:
     -------
     Path to the written manifest JSON file.
     """
+    from .run_store import atomic_bytes_create
+
+    if manifest.schema_version != 0:
+        raise ValueError("Versioned run manifests must be published through RunStore")
     p = Path(forecast_path)
     manifest_path = p.parent / f"{p.stem}_manifest.json"
 
-    data = asdict(manifest)
-    manifest_path.write_text(json.dumps(data, indent=2, default=str))
+    atomic_bytes_create(manifest_path, canonical_json(asdict(manifest)))
 
     logger.info("Manifest written to %s", manifest_path)
     return str(manifest_path)
@@ -226,21 +255,291 @@ def read_manifest(manifest_path: str) -> PipelineManifest:
 # ---------------------------------------------------------------------------
 
 def _hash_dataframe(df: pl.DataFrame) -> str:
-    """Compute a stable hash of a Polars DataFrame."""
-    try:
-        sorted_df = df.sort(df.columns)
-        raw = sorted_df.write_ipc(None).getvalue()
-        return hashlib.md5(raw).hexdigest()[:12]
-    except Exception:
-        return hashlib.md5(str(df.shape).encode()).hexdigest()[:12]
+    """Hash the normalized in-memory IPC representation, never just its shape.
+
+    Committed runs instead record the checksum of their actual stored Parquet
+    bytes. Neither representation claims semantic equality across serializers.
+    """
+    raw = df.write_ipc(None, compression="uncompressed").getvalue()
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _hash_config(config: PlatformConfig) -> str:
-    """Compute an MD5 hash of the config (matching ModelCard pattern)."""
+    """Hash the canonical, explicitly safe configuration projection."""
+    return hashlib.sha256(canonical_json(configuration_snapshot(config))).hexdigest()
+
+
+_PRIVATE_KEYS = frozenset({
+    "password", "passwd", "secret", "secretkey", "jwtsecretkey", "privatekey",
+    "apikey", "accesstoken", "refreshtoken", "token", "authorization",
+    "credential", "credentials", "clientsecret", "webhookurl", "connectionstring",
+    "auth", "authtoken", "bearer", "sastoken", "headers", "cookies", "apikeyenvvar",
+})
+_TOKEN_SHAPE = re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
+
+
+def _private_name(name: str) -> bool:
+    return re.sub(r"[^a-z0-9]", "", name.lower()) in _PRIVATE_KEYS
+
+
+def _private_string(value: str) -> bool:
+    if "PRIVATE KEY-----" in value or _TOKEN_SHAPE.search(value):
+        return True
+    if "://" in value:
+        try:
+            parsed = urlsplit(value)
+        except ValueError:
+            return True
+        if parsed.username is not None or parsed.password is not None:
+            return True
+        if any(_private_name(key) or key.lower() in {"sig", "signature", "key"} for key, _ in parse_qsl(parsed.query)):
+            return True
+    return False
+
+
+def normalized_json_value(value: Any) -> Any:
+    """Normalize supported metadata types without object repr or pickle."""
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, Enum):
+        return normalized_json_value(value.value)
+    if isinstance(value, numbers.Integral):
+        return int(value)
+    if isinstance(value, numbers.Real):
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            return {"$float": "nan" if math.isnan(numeric) else ("inf" if numeric > 0 else "-inf")}
+        return numeric
+    if isinstance(value, (datetime, date)):
+        return {"$datetime" if isinstance(value, datetime) else "$date": value.isoformat()}
+    if isinstance(value, Mapping):
+        if not all(isinstance(key, str) for key in value):
+            raise TypeError("Metadata mappings must have string keys")
+        return {key: normalized_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [normalized_json_value(item) for item in value]
+    raise TypeError("Unsupported metadata value type")
+
+
+def canonical_json(value: Any) -> bytes:
+    """Canonical JSON v1: sorted UTF-8 keys, compact form and tagged special values."""
+    return json.dumps(
+        normalized_json_value(value), sort_keys=True, separators=(",", ":"),
+        ensure_ascii=True, allow_nan=False,
+    ).encode("utf-8")
+
+
+def _safe_settings(value: Any, omitted: List[str], prefix: str = "") -> Any:
+    if isinstance(value, Mapping):
+        result = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError("Settings mappings must have string keys")
+            label = f"{prefix}.{key}" if prefix else key
+            if _private_name(key) or key.endswith(("_path", "_dir")):
+                omitted.append(label)
+            else:
+                result[key] = _safe_settings(item, omitted, label)
+        return result
+    if isinstance(value, (list, tuple)):
+        return [_safe_settings(item, omitted, prefix) for item in value]
+    if isinstance(value, str) and (_private_string(value) or Path(value).is_absolute()
+                                  or re.match(r"^[A-Za-z]:[\\/]", value)):
+        omitted.append(prefix)
+        return {"$omitted": "private_setting"}
+    return normalized_json_value(value)
+
+
+def configuration_snapshot(
+    config: PlatformConfig, execution: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Project scientific settings only, excluding credentials and server locations."""
+    omitted = [
+        "description", "ai", "analysis", "observability", "output.locations",
+        "transition.override_store_path", "forecast.external_regressors.future_features_path",
+    ]
+    forecast = asdict(config.forecast)
+    forecast["external_regressors"].pop("future_features_path", None)
+    transition = asdict(config.transition)
+    transition.pop("override_store_path", None)
+    settings = {
+        "lob": config.lob,
+        "hierarchies": [asdict(item) for item in config.hierarchies],
+        "reconciliation": asdict(config.reconciliation),
+        "forecast": forecast,
+        "backtest": asdict(config.backtest),
+        "transition": transition,
+        "data_quality": asdict(config.data_quality),
+        "parallelism": asdict(config.parallelism),
+        "post_validation": asdict(config.post_validation),
+        "metrics": list(config.metrics),
+        "output": {"grain": dict(config.output.grain)},
+    }
+    return {
+        "schema_version": 1,
+        "normalization": "canonical-json-v1",
+        "settings": _safe_settings(settings, omitted),
+        "execution": _safe_settings(dict(execution or {}), omitted, "execution"),
+        "omitted_settings": sorted(set(omitted)),
+    }
+
+
+def model_metadata(model: Any, configured_frequency: str, horizon: int) -> Dict[str, Any]:
+    """Capture declared model parameters without serializing fitted state or secrets."""
+    return _model_metadata(model, configured_frequency, horizon, frozenset())
+
+
+def _model_metadata(
+    model: Any, configured_frequency: str, horizon: int, ancestors: frozenset[int],
+) -> Dict[str, Any]:
+    from ..forecasting.constrained import ConstrainedDemandEstimator
+    from ..forecasting.ensemble import WeightedEnsembleForecaster
+
+    if id(model) in ancestors or len(ancestors) >= 16:
+        raise ValueError("Composite forecaster metadata requires an acyclic tree of at most 16 levels")
+    ancestors = ancestors | {id(model)}
+    omitted: List[str] = []
+    if not isinstance(model.name, str) or not model.name or _private_string(model.name):
+        raise ValueError("Model identity cannot contain credential material")
+    if isinstance(model, WeightedEnsembleForecaster):
+        components = model._forecasters
+    elif isinstance(model, ConstrainedDemandEstimator):
+        components = [model.base]
+    else:
+        components = None
+    component_metadata = None if components is None else [
+        _model_metadata(component, configured_frequency, horizon, ancestors)
+        for component in components
+    ]
+    # Wrapper getters may flatten child values over their own constraints.
+    declared = (
+        {"base": model.base.name, **asdict(model.constraints)}
+        if isinstance(model, ConstrainedDemandEstimator) else model.get_params()
+    )
+    if not isinstance(declared, Mapping):
+        raise TypeError("Model parameters must be a mapping")
+    parameters = _safe_settings(declared, omitted, "parameters")
+    result = {
+        "name": model.name,
+        "class": f"{type(model).__module__}.{type(model).__qualname__}",
+        "parameters": parameters,
+        "configured_frequency": configured_frequency,
+        "model_frequency": getattr(model, "frequency", None),
+        "horizon_periods": horizon,
+        "parameters_omitted": omitted,
+        "fitted_model_persisted": False,
+    }
+    for name in ("num_threads", "n_jobs", "_freq"):
+        if hasattr(model, name):
+            result[name.lstrip("_")] = normalized_json_value(getattr(model, name))
+    module = sys.modules.get(type(model).__module__)
+    filename = getattr(module, "__file__", None)
+    if filename and Path(filename).is_file():
+        result["implementation_sha256"] = hashlib.sha256(Path(filename).read_bytes()).hexdigest()
+    else:
+        result["implementation_sha256"] = None
+    if component_metadata is not None:
+        result["components"] = component_metadata
+    return result
+
+
+def scoring_metadata(config: PlatformConfig, records: pl.DataFrame) -> Dict[str, Any]:
+    """Describe the authoritative scorer used for this new backtest result."""
+    from ..metrics.aggregation import SCORING_POLICY
+
+    scopes = records["competition_scope"].unique().to_list()
+    if len(scopes) != 1 or not isinstance(scopes[0], str) or not scopes[0]:
+        raise ValueError("A backtest must declare one competition scope")
+    return {
+        "version": 1, "policy": SCORING_POLICY,
+        "primary_metric": config.backtest.primary_metric,
+        "secondary_metric": config.backtest.secondary_metric,
+        "competition_scope": scopes[0],
+    }
+
+
+def read_scoring_contract(execution: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """Read recorded scoring provenance; absence never implies today's policy."""
+    contract = execution.get("scoring_contract")
+    if contract is None:
+        return None
+    fields = {"version", "policy", "primary_metric", "secondary_metric", "competition_scope"}
+    if (
+        not isinstance(contract, dict) or set(contract) != fields
+        or type(contract["version"]) is not int or contract["version"] != 1
+        or any(not isinstance(contract[key], str) or not contract[key]
+               or len(contract[key]) > 128 or _private_string(contract[key])
+               for key in fields - {"version"})
+    ):
+        raise ValueError("Unsupported or malformed stored scoring contract")
+    return dict(contract)
+
+
+def _distribution_version(name: str) -> Optional[str]:
     try:
-        payload = json.dumps(
-            asdict(config), sort_keys=True, default=str
-        ).encode()
-        return hashlib.md5(payload).hexdigest()[:8]
-    except Exception:
-        return ""
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def runtime_metadata() -> Dict[str, Any]:
+    """Record installed runtime versions; absent optional backends remain explicit."""
+    versions: Dict[str, Optional[str]] = {
+        "python": ".".join(map(str, sys.version_info[:3])), "polars": pl.__version__,
+    }
+    distributions: Dict[str, str] = {}
+    for package in ("polars", "statsforecast", "mlforecast", "lightgbm", "numpy", "neuralforecast", "nixtla"):
+        version = _distribution_version(package)
+        if package != "polars":
+            versions[package] = version
+        if version is not None:
+            distributions[package] = version
+    xgboost_distributions = {
+        package: version for package in ("xgboost", "xgboost-cpu")
+        if (version := _distribution_version(package)) is not None
+    }
+    if len(xgboost_distributions) > 1:
+        raise ValueError("Multiple installed XGBoost distributions make runtime provenance ambiguous")
+    versions["xgboost"] = next(iter(xgboost_distributions.values()), None)
+    distributions.update(xgboost_distributions)
+
+    variant = getattr(importlib.import_module("polars._plr"), "RUNTIME_REPR", None)
+    runtime_packages = {
+        "rt32": "polars-runtime-32", "rt64": "polars-runtime-64", "rtcompat": "polars-runtime-compat",
+    }
+    if variant not in runtime_packages:
+        raise ValueError("The loaded Polars runtime identity is not supported")
+    runtime_distribution = runtime_packages[variant]
+    runtime_version = _distribution_version(runtime_distribution)
+    if runtime_version is None:
+        raise ValueError("The loaded Polars runtime distribution metadata is missing")
+    distributions[runtime_distribution] = runtime_version
+    revision = os.environ.get("FORECAST_BUILD_REVISION") or None
+    if revision is not None and not re.fullmatch(r"[0-9a-f]{40,64}", revision):
+        raise ValueError("FORECAST_BUILD_REVISION must be a hexadecimal source revision")
+    source_root = Path(__file__).resolve().parents[1]
+    source_files = (
+        ("pipeline", "forecast.py"), ("pipeline", "backtest.py"),
+        ("pipeline", "run_store.py"), ("pipeline", "manifest.py"),
+        ("pipeline", "validation_step.py"), ("validation", "confidence_scoring.py"),
+        ("series", "builder.py"), ("config", "schema.py"),
+        ("backtesting", "engine.py"), ("backtesting", "scoring.py"),
+        ("metrics", "definitions.py"), ("metrics", "aggregation.py"),
+        ("forecasting", "naive.py"), ("evaluation", "calibration.py"),
+        ("utils", "calendar.py"),
+    )
+    hashes = {
+        ".".join((*parts[:-1], Path(parts[-1]).stem)): hashlib.sha256(
+            source_root.joinpath(*parts).read_bytes()
+        ).hexdigest()
+        for parts in source_files
+    }
+    return {
+        "runtime_versions": versions, "code_revision": revision or "not_stamped",
+        "runtime_distributions": distributions,
+        "polars_runtime": {
+            "variant": variant, "distribution": runtime_distribution, "version": runtime_version,
+        },
+        "observed_source_sha256": hashes,
+        "source_hash_scope": "listed installed source files observed at publication; not a full dependency closure",
+    }

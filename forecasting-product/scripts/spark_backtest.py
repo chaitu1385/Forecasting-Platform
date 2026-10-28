@@ -115,7 +115,11 @@ def main():
     )
 
     # ── 5. Run backtest ───────────────────────────────────────────────────────
-    from src.spark.pipeline import SparkForecastPipeline
+    from src.spark.pipeline import (
+        SparkForecastPipeline,
+        backtest_metrics_for_legacy_storage,
+        leaderboard_for_legacy_storage,
+    )
     pipeline = SparkForecastPipeline(spark, config)
 
     backtest_results_sdf = pipeline.run_backtest(actuals_sdf, model_names=model_names)
@@ -126,6 +130,7 @@ def main():
     leaderboard_sdf = pipeline.select_champion(
         backtest_results_sdf,
         primary_metric=config.backtest.primary_metric,
+        secondary_metric=config.backtest.secondary_metric,
     )
     leaderboard_sdf.show(truncate=False)
 
@@ -145,14 +150,14 @@ def main():
         writer = DeltaWriter(spark, fabric_cfg)
 
         out_sdf = (
-            backtest_results_sdf
+            backtest_metrics_for_legacy_storage(backtest_results_sdf, config.forecast.series_id_column)
             .withColumn("lob", F.lit(args.lob))
             .withColumn("run_date", F.lit(run_date))
         )
         writer.append(out_sdf, "backtest_results", partition_by=["lob", "run_date"])
 
         lb_out = (
-            leaderboard_sdf
+            leaderboard_for_legacy_storage(leaderboard_sdf)
             .withColumn("lob", F.lit(args.lob))
             .withColumn("run_date", F.lit(run_date))
             .withColumn("champion_model", F.lit(champion))

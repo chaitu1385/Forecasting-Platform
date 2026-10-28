@@ -11,11 +11,13 @@ import {
   Cell,
 } from "recharts";
 import { MODEL_LAYER_COLORS, COLORS } from "@/lib/constants";
-import { modelDisplayName, formatPct } from "@/lib/utils";
+import { modelDisplayName, formatMetric, leaderboardScore, metricLabel } from "@/lib/utils";
 import type { LeaderboardEntry } from "@/lib/types";
 
 interface Props {
   entries: LeaderboardEntry[];
+  primaryMetric?: string;
+  scoringPolicy?: string | null;
 }
 
 function getModelColor(model: string): string {
@@ -25,16 +27,17 @@ function getModelColor(model: string): string {
   return COLORS.primary;
 }
 
-export function LeaderboardBar({ entries }: Props) {
+export function LeaderboardBar({ entries, primaryMetric = "wmape", scoringPolicy }: Props) {
   const data = entries
-    .sort((a, b) => a.wmape - b.wmape)
     .map((e) => ({
-      model: modelDisplayName(e.model),
+      model: `${modelDisplayName(e.model)}${e.group_key ? ` (${e.group_key})` : ""}`,
       rawModel: e.model,
-      wmape: e.wmape,
+      key: `${e.competition_scope ?? "unknown"}:${e.group_key ?? "unknown"}:${e.model}`,
+      score: leaderboardScore(e, primaryMetric),
       bias: e.normalized_bias,
       series: e.n_series,
-    }));
+    }))
+    .filter(entry => entry.score !== null);
 
   return (
     <div style={{ width: '100%', height: 300 }}>
@@ -43,17 +46,17 @@ export function LeaderboardBar({ entries }: Props) {
         <CartesianGrid strokeDasharray="3 3" horizontal={false} />
         <XAxis
           type="number"
-          tickFormatter={(v: number) => formatPct(v)}
-          domain={[0, "auto"]}
+          tickFormatter={(v: number) => formatMetric(primaryMetric, v)}
+          domain={primaryMetric === "normalized_bias" ? ["auto", "auto"] : [0, "auto"]}
         />
         <YAxis type="category" dataKey="model" width={90} tick={{ fontSize: 12 }} />
         <Tooltip
-          formatter={(value: number) => formatPct(value)}
+          formatter={(value: number) => formatMetric(primaryMetric, value)}
           labelFormatter={(label: string) => `Model: ${label}`}
         />
-        <Bar dataKey="wmape" name="WMAPE" radius={[0, 4, 4, 0]}>
+        <Bar dataKey="score" name={metricLabel(primaryMetric, scoringPolicy)} radius={[0, 4, 4, 0]}>
           {data.map((entry) => (
-            <Cell key={entry.rawModel} fill={getModelColor(entry.rawModel)} />
+            <Cell key={entry.key} fill={getModelColor(entry.rawModel)} />
           ))}
         </Bar>
       </BarChart>

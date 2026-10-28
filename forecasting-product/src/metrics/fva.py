@@ -66,7 +66,10 @@ def compute_fva_between_layers(
         "fva_wmape": fva_val,
         "parent_bias": parent_metrics["bias"],
         "child_bias": child_metrics["bias"],
-        "fva_bias": abs(parent_metrics["bias"]) - abs(child_metrics["bias"]),
+        "fva_bias": (
+            abs(parent_metrics["bias"]) - abs(child_metrics["bias"])
+            if parent_metrics["bias"] is not None and child_metrics["bias"] is not None else None
+        ),
         "fva_class": classify_fva(fva_val) if fva_val is not None else "undefined",
     }
 

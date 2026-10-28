@@ -35,7 +35,8 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import polars as pl
 
-from ..config.schema import freq_timedelta, get_frequency_profile
+from ..config.schema import get_frequency_profile
+from ..utils.calendar import PeriodCalendar
 from .base import BaseForecaster
 from .registry import registry
 
@@ -242,6 +243,7 @@ class HierarchicalForecaster(BaseForecaster):
         self._id_col = id_col
         self._time_col = time_col
         self._target_col = target_col
+        self._calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), self.frequency)
 
         # Discover hierarchy levels from columns if not specified
         if hierarchy_levels is None:
@@ -304,7 +306,7 @@ class HierarchicalForecaster(BaseForecaster):
             season = min(sl, len(vals))
 
             for h in range(1, horizon + 1):
-                fc_date = last_date + freq_timedelta(self.frequency, h)
+                fc_date = self._calendar.shift(last_date, h)
                 # Seasonal naive: value from season_length periods ago
                 idx = len(vals) - season + ((h - 1) % season)
                 fc_val = vals[max(0, idx)]
@@ -333,6 +335,7 @@ class HierarchicalForecaster(BaseForecaster):
             "method": self.method,
             "base_forecaster": self.base_forecaster_name,
             "hierarchy_levels": self._hierarchy_levels,
+            "frequency": self.frequency,
         }
 
     def _build_hierarchical_series(

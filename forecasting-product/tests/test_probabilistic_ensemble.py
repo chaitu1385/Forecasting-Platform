@@ -10,6 +10,7 @@ Covers:
   - ForecastPipeline: quantile columns emitted when config.forecast.quantiles set
 """
 
+from datetime import date, timedelta
 from typing import List
 
 import polars as pl
@@ -55,20 +56,16 @@ class TestNaivePredictQuantiles:
         qdf = f.predict_quantiles(horizon=13, quantiles=[0.1, 0.5, 0.9])
         assert len(qdf) == 2 * 13  # 2 series × 13 weeks
 
-    def test_p10_le_p90(self):
-        """P10 ≤ P90 for every row — interval width must be non-negative.
-
-        Note: P50 is not guaranteed to lie between P10 and P90 because
-        empirical YoY residuals can be all-positive (trending series) or
-        all-negative, meaning the naive point forecast is biased relative
-        to the residual distribution.  The key invariant is just P10 ≤ P90.
-        """
+    def test_p10_le_p50_le_p90(self):
+        """Every requested percentile is ordered, including the point/P50."""
         f = _naive()
         data = _make_weekly_series(n_series=2, n_weeks=104)
         f.fit(data, target_col="quantity", time_col="week", id_col="series_id")
         qdf = f.predict_quantiles(horizon=13, quantiles=[0.1, 0.5, 0.9])
         violations = (qdf["forecast_p10"] > qdf["forecast_p90"] + 1e-6).sum()
         assert violations == 0, f"{violations} rows where P10 > P90"
+        assert (qdf["forecast_p10"] <= qdf["forecast_p50"]).all()
+        assert (qdf["forecast_p50"] <= qdf["forecast_p90"]).all()
 
     def test_base_class_degenerate_intervals(self):
         """When a forecaster doesn't override, all quantiles equal point forecast."""
@@ -194,6 +191,8 @@ class TestWeightedEnsembleForecaster:
         ens.fit(data)
         qdf = ens.predict_quantiles(horizon=8, quantiles=[0.1, 0.5, 0.9])
         assert (qdf["forecast_p10"] > qdf["forecast_p90"] + 1e-6).sum() == 0
+        assert (qdf["forecast_p10"] <= qdf["forecast_p50"]).all()
+        assert (qdf["forecast_p50"] <= qdf["forecast_p90"]).all()
 
     def test_get_params_contains_weights(self):
         ens = self._make_ensemble()
@@ -219,6 +218,12 @@ class TestComputeEnsembleWeights:
                         "series_id": sid,
                         "wmape": wmape + 0.01 * fold,
                         "normalized_bias": 0.0,
+                        "run_id": "ensemble-oracle",
+                        "lob": "test",
+                        "target_week": date(2024, 1, 1) + timedelta(weeks=fold),
+                        "forecast_step": 1,
+                        "actual": 100.0,
+                        "forecast": 100.0 * (1 + wmape + 0.01 * fold),
                     })
         return pl.DataFrame(rows)
 
@@ -253,6 +258,12 @@ class TestComputeEnsembleWeights:
             "series_id": ["A", "B"] * 2,
             "wmape": [0.10] * 4,
             "normalized_bias": [0.0] * 4,
+            "run_id": ["single-model"] * 4,
+            "lob": ["test"] * 4,
+            "target_week": [date(2024, 1, 1)] * 2 + [date(2024, 1, 8)] * 2,
+            "forecast_step": [1] * 4,
+            "actual": [100.0] * 4,
+            "forecast": [110.0] * 4,
         })
         weights = sel.compute_ensemble_weights(results)
         assert weights["lgbm_direct"] == pytest.approx(1.0, abs=1e-9)

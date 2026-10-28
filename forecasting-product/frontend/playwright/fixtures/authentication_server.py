@@ -18,6 +18,8 @@ import uvicorn
 from src.api.app import create_app
 from src.auth.issuer import write_private_token
 from src.auth.token import create_token
+from src.config.schema import PlatformConfig
+from src.pipeline.forecast import ForecastPipeline
 
 
 def main() -> None:
@@ -55,18 +57,30 @@ def main() -> None:
             credentials / f"{role}.jwt",
             create_token(f"browser-{role}", "", role, key, expiry_hours=1),
         )
-    forecast = data / "forecasts" / "retail"
-    forecast.mkdir(parents=True)
-    pl.DataFrame({
-        "series_id": ["SYNTHETIC_AUTH_SERIES"] * 4,
-        "week": [date(2024, 1, 1) + timedelta(weeks=i) for i in range(4)],
-        "forecast": [10.0, 11.0, 12.0, 13.0],
-        "model": ["naive_seasonal"] * 4,
-    }).write_parquet(forecast / "forecast_retail_2024-01-01.parquet")
+    config = PlatformConfig(lob="retail")
+    config.forecast.horizon_weeks = 4
+    config.data_quality.fill_gaps = False
+    config.data_quality.min_series_length_weeks = 1
+    config.post_validation.enabled = False
+    config.parallelism.n_workers = 1
+    config.output.forecast_path = str(data / "forecasts")
+    config.output.metrics_path = str(data / "metrics")
+    config.output.runs_path = str(data / "runs")
+    pipeline = ForecastPipeline(config)
+    forecast_runs = []
+    for value in (10.0, 20.0):
+        actuals = pl.DataFrame({
+            "series_id": ["SYNTHETIC_AUTH_SERIES"] * 64,
+            "week": [date(2024, 1, 1) + timedelta(weeks=i) for i in range(64)],
+            "quantity": [value] * 64,
+        })
+        pipeline.run(actuals)
+        forecast_runs.append({"run_id": pipeline.last_run.run_id, "value": value})
     (data / ".authentication-fixture.json").write_text(json.dumps({
         "api_url": f"http://127.0.0.1:{args.port}",
         "frontend_origin": args.frontend_origin,
         "mode": "production",
+        "forecast_runs": forecast_runs,
     }), encoding="utf-8")
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
 

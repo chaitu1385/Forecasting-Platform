@@ -21,7 +21,7 @@ class TestPipelineContext:
     def test_auto_generated_run_id(self):
         from src.observability.context import PipelineContext
         ctx = PipelineContext()
-        assert len(ctx.run_id) == 16
+        assert len(ctx.run_id) == 32
 
     def test_custom_run_id(self):
         from src.observability.context import PipelineContext

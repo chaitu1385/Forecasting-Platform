@@ -32,6 +32,8 @@ import type {
   OverrideListResponse,
   CreateOverrideRequest,
   PipelineRunResponse,
+  RunListResponse,
+  RunConfigResponse,
   ManifestListResponse,
   CostListResponse,
   MultiFileAnalysisResponse,
@@ -95,6 +97,7 @@ async function request<T>(
   authentication?: RequestCredentials | null,
 ): Promise<T> {
   const owner = currentSession;
+  const canRetry = options.method === undefined || ["GET", "HEAD"].includes(options.method.toUpperCase());
   const credentials = authentication === undefined ? owner : authentication;
   const token = credentials?.kind === "bearer" ? credentials.token : null;
   const headers: Record<string, string> = {};
@@ -142,7 +145,7 @@ async function request<T>(
           `Please check that the backend is running and NEXT_PUBLIC_API_URL is set correctly. ` +
           `(${err instanceof Error ? err.message : String(err)})`,
       );
-      if (attempt < MAX_RETRIES) {
+      if (canRetry && attempt < MAX_RETRIES) {
         await sleep(RETRY_BASE_MS * 2 ** attempt);
         continue;
       }
@@ -158,7 +161,7 @@ async function request<T>(
       const text = await res.text().catch(() => "Unknown error");
       lastError = new ApiError(res.status, text);
 
-      if (RETRYABLE_STATUS_CODES.has(res.status) && attempt < MAX_RETRIES) {
+      if (canRetry && RETRYABLE_STATUS_CODES.has(res.status) && attempt < MAX_RETRIES) {
         await sleep(RETRY_BASE_MS * 2 ** attempt);
         continue;
       }
@@ -175,6 +178,14 @@ async function request<T>(
 
 // ── Endpoints ────────────────────────────────────────────────────────────────
 
+function verifiedForecast(result: ForecastResponse, lob: string, runId?: string, legacy = false): ForecastResponse {
+  if (result.lob !== lob || (runId && result.run_id !== runId)
+      || (legacy && result.artifact_source !== "legacy")) {
+    throw new ApiError(502, "The API returned a different forecast identity. No substitute run was displayed.");
+  }
+  return result;
+}
+
 export const api = {
   // Health
   health: () => request<HealthResponse>("/health", {}, null),
@@ -188,24 +199,32 @@ export const api = {
     request<AuthIdentity>("/auth/me", { signal }, { kind: "demo", username, role }),
 
   // Forecasts
-  getForecasts: (lob: string, params?: { series_id?: string; horizon?: number }) => {
+  getForecasts: (lob: string, params?: { series_id?: string; horizon?: number; run_id?: string; legacy?: boolean }) => {
     const searchParams = new URLSearchParams();
     if (params?.series_id) searchParams.set("series_id", params.series_id);
     if (params?.horizon) searchParams.set("horizon", String(params.horizon));
+    if (params?.run_id) searchParams.set("run_id", params.run_id);
+    if (params?.legacy) searchParams.set("legacy", "true");
     const qs = searchParams.toString();
-    return request<ForecastResponse>(`/forecast/${encodeURIComponent(lob)}${qs ? `?${qs}` : ""}`);
+    return request<ForecastResponse>(`/forecast/${encodeURIComponent(lob)}${qs ? `?${qs}` : ""}`)
+      .then(result => verifiedForecast(result, lob, params?.run_id, params?.legacy));
   },
 
-  getForecastSeries: (lob: string, seriesId: string) =>
+  getForecastSeries: (lob: string, seriesId: string, runId?: string) =>
     request<ForecastResponse>(
-      `/forecast/${encodeURIComponent(lob)}/${encodeURIComponent(seriesId)}`,
-    ),
+      `/forecast/${encodeURIComponent(lob)}/${encodeURIComponent(seriesId)}${runId ? `?run_id=${encodeURIComponent(runId)}` : ""}`,
+    ).then(result => verifiedForecast(result, lob, runId)),
 
   // Metrics
-  getLeaderboard: (lob: string, runType: string = "backtest") =>
+  getLeaderboard: (lob: string, runType: string = "backtest", runId?: string) =>
     request<LeaderboardResponse>(
-      `/metrics/leaderboard/${encodeURIComponent(lob)}?run_type=${encodeURIComponent(runType)}`,
-    ),
+      `/metrics/leaderboard/${encodeURIComponent(lob)}?${new URLSearchParams({
+        run_type: runType, ...(runId ? { run_id: runId } : {}),
+      }).toString()}`,
+    ).then(result => {
+      if (runId && result.run_id !== runId) throw new ApiError(502, "The API returned a different metric run.");
+      return result;
+    }),
 
   getDrift: (
     lob: string,
@@ -267,13 +286,16 @@ export const api = {
 
   // ── Series ──────────────────────────────────────────────────────────────────
 
-  listSeries: (lob: string) =>
-    request<SeriesListResponse>(`/series/${encodeURIComponent(lob)}`),
+  listSeries: (lob: string, runId?: string) =>
+    request<SeriesListResponse>(`/series/${encodeURIComponent(lob)}${runId ? `?run_id=${encodeURIComponent(runId)}` : ""}`),
 
-  getSeriesHistory: (lob: string, seriesId: string) =>
+  getSeriesHistory: (lob: string, seriesId: string, runId?: string) =>
     request<SeriesHistoryResponse>(
-      `/series/${encodeURIComponent(lob)}/${encodeURIComponent(seriesId)}/history`,
-    ),
+      `/series/${encodeURIComponent(lob)}/${encodeURIComponent(seriesId)}/history${runId ? `?run_id=${encodeURIComponent(runId)}` : ""}`,
+    ).then(result => {
+      if (runId && result.run_id !== runId) throw new ApiError(502, "The API returned history for a different run.");
+      return result;
+    }),
 
   detectBreaks: (file: File, params?: { lob?: string; method?: string; penalty?: number }) => {
     const formData = new FormData();
@@ -417,6 +439,21 @@ export const api = {
 
   // ── Pipeline ────────────────────────────────────────────────────────────────
 
+  listRuns: (lob: string, runType: "forecast" | "backtest" = "forecast") =>
+    request<RunListResponse>(
+      `/pipeline/runs?${new URLSearchParams({ lob, run_type: runType }).toString()}`,
+    ),
+
+  getRunConfig: (lob: string, runId: string) =>
+    request<RunConfigResponse>(
+      `/pipeline/runs/${encodeURIComponent(lob)}/${encodeURIComponent(runId)}/config`,
+    ).then(result => {
+      if (result.lob !== lob || result.run_id !== runId) {
+        throw new ApiError(502, "The API returned configuration for a different run.");
+      }
+      return result;
+    }),
+
   runBacktest: (file: File, lob: string = "default", configFile?: File) => {
     const formData = new FormData();
     formData.append("file", file);
@@ -465,14 +502,18 @@ export const api = {
 
   // ── Analytics ───────────────────────────────────────────────────────────────
 
-  getFVA: (lob: string, runType: string = "backtest") =>
+  getFVA: (lob: string, runType: string = "backtest", runId?: string) =>
     request<FVAResponse>(
-      `/metrics/${encodeURIComponent(lob)}/fva?run_type=${encodeURIComponent(runType)}`,
+      `/metrics/${encodeURIComponent(lob)}/fva?${new URLSearchParams({
+        run_type: runType, ...(runId ? { run_id: runId } : {}),
+      }).toString()}`,
     ),
 
-  getCalibration: (lob: string, runType: string = "backtest") =>
+  getCalibration: (lob: string, runType: string = "backtest", runId?: string) =>
     request<CalibrationResponse>(
-      `/metrics/${encodeURIComponent(lob)}/calibration?run_type=${encodeURIComponent(runType)}`,
+      `/metrics/${encodeURIComponent(lob)}/calibration?${new URLSearchParams({
+        run_type: runType, ...(runId ? { run_id: runId } : {}),
+      }).toString()}`,
     ),
 
   getShap: (lob: string, params?: { model_name?: string; season_length?: number; top_k?: number }) => {
@@ -530,17 +571,23 @@ export const api = {
   getModelCard: (modelName: string) =>
     request<ModelCardItem>(`/governance/model-cards/${encodeURIComponent(modelName)}`),
 
-  getLineage: (lob?: string, modelId?: string) => {
+  getLineage: (lob?: string, modelId?: string, runId?: string) => {
     const sp = new URLSearchParams();
     if (lob) sp.set("lob", lob);
     if (modelId) sp.set("model_id", modelId);
+    if (runId) sp.set("run_id", runId);
     const qs = sp.toString();
     return request<LineageResponse>(`/governance/lineage${qs ? `?${qs}` : ""}`);
   },
 
-  biExport: (reportType: string, lob: string, runType: string = "backtest", modelId?: string) => {
+  biExport: (
+    reportType: string, lob: string, runType: string = "backtest", modelId?: string,
+    runs?: { run_id?: string; actuals_run_id?: string },
+  ) => {
     const sp = new URLSearchParams({ lob, run_type: runType });
     if (modelId) sp.set("model_id", modelId);
+    if (runs?.run_id) sp.set("run_id", runs.run_id);
+    if (runs?.actuals_run_id) sp.set("actuals_run_id", runs.actuals_run_id);
     return request<BIExportResponse>(
       `/governance/export/${encodeURIComponent(reportType)}?${sp.toString()}`,
       { method: "POST" },

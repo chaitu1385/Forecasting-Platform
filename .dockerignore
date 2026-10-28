@@ -9,6 +9,9 @@ __pycache__
 notebooks/
 *.ipynb
 .env
+.env.*
+**/.env
+**/.env.*
 .venv
 venv/
 dist/
@@ -17,3 +20,6 @@ build/
 *.whl
 node_modules/
 .next/
+**/node_modules/
+**/.next/
+forecasting-product/data/

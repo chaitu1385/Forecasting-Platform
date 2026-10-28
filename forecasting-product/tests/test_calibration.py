@@ -353,6 +353,61 @@ class TestConformalCorrection(unittest.TestCase):
         # Should succeed and produce adjusted intervals
         self.assertIn("forecast_p10", corrected.columns)
 
+    def test_negative_correction_preserves_ordered_median_and_point(self):
+        forecast = pl.DataFrame({
+            "forecast": [100.0], "forecast_p10": [80.0],
+            "forecast_p50": [100.0], "forecast_p90": [120.0],
+        })
+        corrected = apply_conformal_correction(
+            forecast, pl.DataFrame({"residual_80": [-5.0]}),
+            quantiles=[0.1, 0.5, 0.9], coverage_targets={"80": 0.80},
+        )
+        self.assertEqual(corrected.to_dicts(), [{
+            "forecast": 100.0, "forecast_p10": 85.0,
+            "forecast_p50": 100.0, "forecast_p90": 115.0,
+        }])
+
+    def test_correction_rejects_median_crossing_even_when_outer_bounds_are_ordered(self):
+        forecast = pl.DataFrame({
+            "forecast": [100.0], "forecast_p10": [99.0],
+            "forecast_p50": [100.0], "forecast_p90": [120.0],
+        })
+        with self.assertRaisesRegex(ValueError, "ordered quantiles.*forecast_p10.*forecast_p50"):
+            apply_conformal_correction(
+                forecast, pl.DataFrame({"residual_80": [-2.0]}),
+                quantiles=[0.1, 0.5, 0.9], coverage_targets={"80": 0.80},
+            )
+        self.assertEqual(forecast["forecast_p10"].item(), 99.0)
+
+    def test_correction_rejects_crossed_outer_bounds_without_a_requested_median(self):
+        forecast = _make_forecast_with_quantiles()
+        with self.assertRaisesRegex(ValueError, "ordered quantiles"):
+            apply_conformal_correction(
+                forecast, pl.DataFrame({"residual_80": [-20.0]}),
+                quantiles=[0.1, 0.9], coverage_targets={"80": 0.80},
+            )
+
+    def test_nested_corrections_cannot_cross_other_requested_quantiles(self):
+        forecast = pl.DataFrame({
+            "forecast_p5": [70.0], "forecast_p10": [80.0],
+            "forecast_p50": [100.0], "forecast_p90": [120.0], "forecast_p95": [130.0],
+        })
+        with self.assertRaisesRegex(ValueError, "ordered quantiles"):
+            apply_conformal_correction(
+                forecast, pl.DataFrame({"residual_80": [0.0], "residual_90": [-15.0]}),
+                quantiles=[0.05, 0.1, 0.5, 0.9, 0.95],
+                coverage_targets={"80": 0.80, "90": 0.90},
+            )
+
+    def test_nonfinite_residuals_fail_instead_of_being_dropped_or_propagated(self):
+        for value in [None, float("nan"), float("inf"), -float("inf")]:
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "finite numeric"):
+                apply_conformal_correction(
+                    _make_forecast_with_quantiles(),
+                    pl.DataFrame({"residual_80": [value]}, schema={"residual_80": pl.Float64}),
+                    quantiles=[0.1, 0.9], coverage_targets={"80": 0.80},
+                )
+
 
 # --------------------------------------------------------------------------- #
 #  Integration Tests

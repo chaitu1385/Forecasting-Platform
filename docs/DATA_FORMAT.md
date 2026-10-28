@@ -192,7 +192,7 @@ The forecast pipeline writes Parquet files with this schema:
 |--------|------|-------------|
 | `series_id` | String | Series identifier (matches input) |
 | `week` | Date | Forecast period date |
-| `forecast` | Float64 | Point forecast (P50) |
+| `forecast` | Float64 | Point forecast (equals P50 for seasonal naive) |
 | `forecast_p10` | Float64 | 10th percentile (if quantiles configured) |
 | `forecast_p50` | Float64 | 50th percentile (if quantiles configured) |
 | `forecast_p90` | Float64 | 90th percentile (if quantiles configured) |
@@ -202,6 +202,15 @@ Quantile columns are controlled by:
 forecast:
   quantiles: [0.1, 0.5, 0.9]    # generates forecast_p10, forecast_p50, forecast_p90
 ```
+
+For seasonal naive, `forecast_p50` is exactly the unchanged point forecast.
+Other percentiles add empirical seasonal residual quantiles **minus the residual
+median**: this intentionally recenters bounds, preserving their width and
+ordering, but does not establish empirical coverage. Other models retain their
+own point/quantile estimators. Only requested quantiles must be ordered; a point
+need not fall within an upper-tail-only range. Nonfinite/crossed quantiles,
+including invalid conformal corrections, fail before forecast publication.
+See [Numerical reliability](NUMERICAL_RELIABILITY.md#point-forecasts-naive-intervals-and-calibration).
 
 ### Example
 
@@ -217,53 +226,104 @@ STORE_002  | 2024-09-07 | 5600.3   | 4200.1       | 7000.5
 
 ## Output: Pipeline Manifest (JSON)
 
-Each forecast run produces a JSON sidecar file alongside the Parquet output (e.g., `forecast_retail_2024-09-07_manifest.json`).
+New local forecast and backtest attempts use schema-version-1 run bundles:
 
-### Schema
+```text
+runs/<lob>/<server-generated UUID32>/
+  input.parquet              normalized raw values + configured series ID
+  prepared.parquet           SeriesBuilder output
+  config.json                canonical allowlisted settings + effective execution
+  validation.json            actual validation result, or explicit opt-out
+  forecast.parquet            forecast runs
+  metrics.parquet             backtest runs
+  champions.parquet           backtest runs
+  leaderboard.parquet         backtest runs
+  manifest.json               authoritative atomic commit marker
+```
+
+Optional supplied inputs (mapping/product/override/external/future-feature data,
+conformal residuals or multi-horizon champion tables) are separately named
+members when used. Internal candidate/attempt/failure files are not commit markers.
+
+| Manifest field | Contract |
+|----------------|----------|
+| `schema_version`, `status`, `run_type` | `1`, `completed`, and `forecast` or `backtest` |
+| `run_id`, `lob` | Same server UUID32 and validated LOB as context, metric rows, response and directory |
+| `started_at`, `completed_at` | Canonical UTC timestamps; latest uses attempt start plus ID, never mtime |
+| `artifacts` | Fixed allowlisted relative filenames, byte counts, SHA256 checksums, and frame row/schema descriptors |
+| `input_data_hash`, `prepared_data_hash` | SHA256 of actual stored Parquet bytes; **not** semantic data-equivalence hashes |
+| `config_hash`, `config_digest_kind` | SHA256 of canonical typed safe JSON, `sha256:canonical-json-v1` |
+| `models`, `execution`, `source` | Actual selected model parameters/frequency/horizon, runtime versions and observed source hashes/build revision |
+| `reproducibility` | Snapshot stages, supplied optional inputs, omitted/external state and retraining limitations |
+| Validation/cleansing fields | Per-attempt reports, including configured opt-out and post-validation grade/score |
+
+New `source.runtime_distributions` records allowlisted installed distribution
+names and versions, including `xgboost-cpu` when it supplies the existing logical
+`source.runtime_versions.xgboost` value. `source.polars_runtime` records the
+loaded Polars variant, its distribution name and version; it does not guess the
+standard runtime. Ambiguous XGBoost installations or unidentified Polars runtimes
+block new publication: use a clean locked environment rather than mixing
+distributions. These observations are not native-platform qualification or a
+promise of deterministic retraining. Historical source metadata is never
+backfilled from the current environment.
+
+For scoped backtests, `validation.json` also retains paradox-comparison
+applicability: `evaluated`, `status`, `comparisons_run`, performed comparisons and
+an `unavailable` list with reasons/population counts. Unavailable evidence is a
+WARNING with an explicitly neutral confidence component, not a clean comparison
+or a substituted zero. Raw metric observations remain unchanged.
+
+New backtests also record this typed `execution.scoring_contract` in the
+manifest and hashed configuration:
 
 ```json
 {
-  "run_id": "abc123def456",
-  "timestamp": "2024-09-07T14:30:45",
-  "lob": "retail",
-
-  "input_data_hash": "a1b2c3d4e5f6",
-  "input_row_count": 52000,
-  "input_series_count": 1000,
-  "date_range_start": "2023-01-07",
-  "date_range_end": "2024-09-07",
-
-  "validation_applied": true,
-  "validation_passed": true,
-  "validation_warnings": 5,
-  "validation_errors": 0,
-
-  "cleansing_applied": true,
-  "outliers_clipped": 42,
-  "stockout_periods_imputed": 127,
-  "rows_modified": 169,
-
-  "regressor_screen_applied": true,
-  "regressors_dropped": ["low_variance_feature"],
-
-  "config_hash": "a1b2c3d4",
-  "champion_model_id": "lgbm_direct",
-  "backtest_wmape": 0.087,
-
-  "forecast_horizon": 39,
-  "forecast_row_count": 39000,
-  "forecast_file": "forecast_retail_2024-09-07.parquet"
+  "version": 1,
+  "policy": "raw-observations-v1",
+  "primary_metric": "wmape",
+  "secondary_metric": "normalized_bias",
+  "competition_scope": "lob"
 }
 ```
 
-This manifest provides full provenance — you can trace exactly what data, config, and model produced any forecast.
+An absent historical contract stays unknown. It is not filled from current
+defaults. `leaderboard.parquet` is a result artifact: exact-run reads and exports
+preserve its values/order/rank rather than running the current scorer on old
+metric rows. New rankings retain `(competition_scope, group_key, model_id)` and
+within-competition `rank`; no comparison across distinct competitions is implied.
+
+Normalized raw input is not the original CSV/Parquet upload byte stream. Prepared
+data is SeriesBuilder output; forecasters may do additional internal preparation.
+Fitted models/pickles, remote provider responses and external model weights are
+not captured or promised deterministic. Configuration omits descriptions,
+credentials, webhook/network settings and private server paths. No secret-bearing
+raw YAML or model `__dict__` dump is saved. Canonical JSON uses sorted keys and
+explicit tags for dates/nonfinite metadata, not arbitrary object repr.
+Supported weighted ensembles and constrained wrappers also record ordered,
+recursively sanitized component parameters in `models[].components`, including
+nested omissions. Each constrained node records its own declared constraint
+configuration separately from its child, so stacked caps cannot overwrite their
+parent's provenance. This changes their canonical effective configuration identity
+when a constituent changes, without serializing fitted state or changing predictions.
+
+Historical `forecast_*_manifest.json` and `manifest_*.json` sidecars remain legacy
+schema zero, with unknown/unverified lineage. They are not upgraded into verified
+run identities. See [local storage/recovery](DEPLOYMENT.md#immutable-local-runs-and-recovery)
+for visibility, filesystem and durability boundaries.
+
+Derived BI Parquet exports add `source_run_id` and `actuals_run_id` string columns
+to the report data. Null identifies unbound/legacy provenance; these are not new
+forecast run IDs. Each export has a short date-plus-UUID filename and is an atomic
+standalone file, not a second authoritative run store.
 
 ---
 
 ## Output: Pipeline Execution Response
 
 `POST /pipeline/backtest` and `POST /pipeline/forecast` return a typed
-`PipelineRunResponse` (also documented in OpenAPI). Existing fields such as
+`PipelineRunResponse` (also documented in OpenAPI). Required `run_id`, `run_type`
+and relative `links` identify the committed bundle; no filesystem paths are returned.
+Existing fields such as
 `champion_model`, `leaderboard`, `model_id`, `horizon`, `forecast_rows`, and
 `forecast_preview` remain available where applicable. The required `execution`
 object makes resolved intent explicit:
@@ -301,7 +361,9 @@ start a pipeline or replace existing output.
 
 ## Output: Metric Store (Parquet)
 
-Backtest results are stored in a date-partitioned Parquet metric store.
+Pipeline backtests store metric records inside their committed run bundle.
+Standalone appends retain explicit legacy partitions and unique atomic filenames.
+Raw observations, not cached metric-column means, drive new scoring.
 
 | Column | Type | Description |
 |--------|------|-------------|
@@ -310,10 +372,20 @@ Backtest results are stored in a date-partitioned Parquet metric store.
 | `model_id` | String | Model name (e.g., `"lgbm_direct"`) |
 | `fold` | Int | Walk-forward fold number |
 | `series_id` | String | Series identifier |
-| `wmape` | Float | Weighted Mean Absolute Percentage Error |
-| `normalized_bias` | Float | Normalized bias (positive = over-forecast) |
+| `target_week` | Date | Actual target period label |
+| `forecast_step` | Int | Actual lead from training end, including any gap |
+| `actual`, `forecast` | Float | Paired finite observations used by the scorer |
+| `mase_scale` | Float / null | Training-only seasonal-naive error scale |
+| `competition_scope` | String | Declared comparison scope; equal coverage is required within it |
+| `wmape` | Float / null | Per-observation ratio; do not average to reconstruct volume WMAPE |
+| `normalized_bias` | Float / null | Per-observation signed ratio; aggregate from raw values |
 | `mae` | Float | Mean Absolute Error |
 | `rmse` | Float | Root Mean Squared Error |
+
+New leaderboard `wmape` is pooled absolute error divided by pooled absolute
+actual volume. Explicit `macro_wmape` instead equally weights series/fold ratios.
+Undefined denominators remain null. See
+[numerical reliability](NUMERICAL_RELIABILITY.md) for formulas and policy limits.
 
 ---
 

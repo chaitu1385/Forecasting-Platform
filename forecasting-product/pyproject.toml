@@ -1,65 +1,83 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools==84.2.0", "wheel==0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "forecasting-product"
 version = "0.2.0"
 description = "Modular time series forecasting product for retail/supply-chain S&OP"
-readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11,<3.14"
 license = {text = "MIT"}
 dependencies = [
-    "numpy>=1.21.0",
-    "pandas>=1.3.0",
-    "polars>=0.20.0",
-    "pyyaml>=5.4.0",
-    "statsforecast>=1.6.0",
-    "mlforecast>=0.12.0",
-    "lightgbm>=3.3.0",
-    "xgboost>=1.5.0",
-    "scikit-learn>=1.0.0",
-    "duckdb>=0.9.0",
-    "fastapi>=0.100.0,<0.116.0",
-    "uvicorn>=0.20.0",
-    "python-multipart>=0.0.7",
-    "pyjwt>=2.0.0,<3.0",
+    "numpy>=2.4.6,<3",
+    "pandas>=2.3.3,<3",
+    "polars>=2.0.0,<3",
+    "pyarrow>=26.0.0,<27",
+    "pyyaml>=6.0.3,<7",
+    "scipy>=1.17.1,<2",
+    "statsforecast>=2.1.1,<3",
+    "mlforecast>=1.1.0,<2",
+    "hierarchicalforecast>=1.5.3,<2",
+    "lightgbm>=4.7.0,<5",
+    "xgboost-cpu>=3.2.0,<4; sys_platform != 'darwin'",
+    "xgboost>=3.2.0,<4; sys_platform == 'darwin'",
+    "scikit-learn>=1.9.1,<2",
+    "rapidfuzz>=3.14.6,<4",
+    "wrapt>=2.5.1,<2.5.2",
 ]
 
 [project.optional-dependencies]
+api = [
+    "fastapi>=0.151.0,<0.163",
+    "starlette>=1.3.1,<1.4",
+    "uvicorn>=0.54.0,<0.55",
+    "python-multipart>=0.0.32,<0.1",
+    "pyjwt>=2.15.1,<3",
+    "duckdb>=2.0.0,<3",
+]
 dev = [
-    "pytest>=7.0.0",
-    "pytest-cov>=4.0.0",
-    "pytest-timeout>=2.3.0",
-    "httpx>=0.24.0",
-    "ruff>=0.1.0",
+    "pytest>=9.1.1,<10",
+    "pytest-cov>=7.1.0,<8",
+    "pytest-timeout>=2.4.0,<2.5",
+    "httpx>=0.28.1,<1",
+    "ruff>=0.14.0,<1",
+    "pip==26.2.2",
+    "pip-tools==7.6.2",
+    "pip-audit==2.10.1",
+    "build==1.6.1",
+    "setuptools==84.2.0",
+    "wheel==0.48.0",
 ]
 auth = [
-    "pyjwt>=2.0.0",
-    "bcrypt>=4.0.0",
+    "pyjwt>=2.15.1,<3",
 ]
 sku-mapping = [
-    "rapidfuzz>=3.0.0",
+    "rapidfuzz>=3.14.6,<4",
 ]
 explainability = [
-    "shap>=0.42.0",
+    "shap>=0.48.0,<1",
 ]
 holidays = [
-    "holidays>=0.40",
+    "holidays>=0.40,<1",
 ]
 ai = [
-    "anthropic>=0.40.0,<1.0.0",
+    "anthropic>=0.125.0,<1",
 ]
 spark = [
-    "pyspark>=3.4.0",
-    "delta-spark>=2.4.0",
+    "pyspark>=4.1.0,<4.2",
+    "delta-spark>=4.2.0,<4.3",
 ]
 azure = [
-    "azure-identity>=1.15.0",
-    "azure-storage-file-datalake>=12.14.0",
+    "azure-identity>=1.15.0,<2",
+    "azure-storage-file-datalake>=12.14.0,<13",
+]
+visualization = [
+    "matplotlib>=3.11.2,<4",
+    "seaborn>=0.13.2,<1",
+    "plotly>=7.1.0,<8",
 ]
 all = [
-    "forecasting-product[dev,auth,sku-mapping,explainability,holidays,ai,spark,azure]",
+    "forecasting-product[api,dev,auth,sku-mapping,explainability,holidays,ai,spark,azure,visualization]",
 ]
 
 [tool.setuptools.packages.find]
@@ -80,7 +98,7 @@ markers = [
 omit = ["src/visualization/*", "src/spark/*", "src/fabric/*"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 100
 src = ["src"]
 

@@ -40,6 +40,7 @@ export function setupApiMocks() {
       // Forecasts
       getForecasts: vi.fn().mockResolvedValue(mockForecast),
       getForecastSeries: vi.fn().mockResolvedValue(mockForecast),
+      listRuns: vi.fn().mockResolvedValue({ count: 0, runs: [] }),
 
       // Metrics
       getLeaderboard: vi.fn().mockResolvedValue(mockLeaderboard),

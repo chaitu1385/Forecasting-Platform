@@ -11,12 +11,14 @@ Steps:
 
 import logging
 from datetime import date
+from threading import Lock
 from typing import Optional
 
 import polars as pl
 
 from ..backtesting.champion import ChampionSelector
 from ..backtesting.engine import BacktestEngine
+from ..backtesting.scoring import require_fold_local_preprocessing
 from ..config.schema import PlatformConfig
 from ..forecasting.ensemble import WeightedEnsembleForecaster
 from ..forecasting.registry import registry
@@ -24,7 +26,15 @@ from ..metrics.store import MetricStore
 from ..observability.context import PipelineContext
 from ..observability.metrics import MetricsEmitter
 from ..series.builder import SeriesBuilder
-from .validation_step import ValidationError, run_post_validation
+from .manifest import (
+    PipelineManifest,
+    build_manifest,
+    model_metadata,
+    runtime_metadata,
+    scoring_metadata,
+)
+from .run_store import RunStore, resolve_run_root, utc_timestamp
+from .validation_step import run_post_validation
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +51,15 @@ class BacktestPipeline:
     >>> results = pipeline.run(actuals_df)
     """
 
-    def __init__(self, config: PlatformConfig, context: Optional[PipelineContext] = None):
+    def __init__(
+        self, config: PlatformConfig, context: Optional[PipelineContext] = None,
+        source_kind: str = "programmatic",
+    ):
         self.config = config
+        self._parent_context = context
+        if source_kind not in {"programmatic", "api", "cli", "spark-local"}:
+            raise ValueError("Unknown pipeline source kind")
+        self._source_kind = source_kind
         self.context = context or PipelineContext(lob=config.lob)
         self._emitter = MetricsEmitter(
             backend=config.observability.metrics_backend,
@@ -50,9 +67,11 @@ class BacktestPipeline:
             prefix=config.observability.metrics_prefix,
         )
         self._series_builder = SeriesBuilder(config)
-        self._metric_store = MetricStore(config.output.metrics_path)
+        self._metric_store = MetricStore(config.output.metrics_path, str(resolve_run_root(config, "backtest")))
         self._backtest_engine = BacktestEngine(config, self._metric_store)
         self._champion_selector = ChampionSelector(config.backtest)
+        self.last_run: Optional[PipelineManifest] = None
+        self._run_lock = Lock()
 
     def run(
         self,
@@ -62,6 +81,45 @@ class BacktestPipeline:
         forecast_origin: Optional[date] = None,
         overrides: Optional[pl.DataFrame] = None,
         external_features: Optional[pl.DataFrame] = None,
+    ) -> dict:
+        """Evaluate, validate and atomically commit one independent attempt."""
+        if not self._run_lock.acquire(blocking=False):
+            raise RuntimeError("This pipeline instance already has a running attempt")
+        try:
+            self.context = PipelineContext(
+                lob=self.config.lob,
+                parent_run_id=self._parent_context.run_id if self._parent_context else None,
+            )
+            self._emitter.set_context(self.context)
+            self.last_run = None
+            self._series_builder = SeriesBuilder(self.config)
+            self._metric_store = MetricStore(
+                self.config.output.metrics_path, str(resolve_run_root(self.config, "backtest")),
+            )
+            self._backtest_engine = BacktestEngine(self.config, self._metric_store)
+            self._champion_selector = ChampionSelector(self.config.backtest)
+            return self._run(
+                actuals.clone(),
+                product_master.clone() if product_master is not None else None,
+                mapping_table.clone() if mapping_table is not None else None,
+                forecast_origin,
+                overrides.clone() if overrides is not None else None,
+                external_features.clone() if external_features is not None else None,
+            )
+        except Exception as exc:
+            logger.error("Backtest attempt failed: run_id=%s error_type=%s", self.context.run_id, type(exc).__name__)
+            raise
+        finally:
+            self._run_lock.release()
+
+    def _run(
+        self,
+        actuals: pl.DataFrame,
+        product_master: Optional[pl.DataFrame],
+        mapping_table: Optional[pl.DataFrame],
+        forecast_origin: Optional[date],
+        overrides: Optional[pl.DataFrame],
+        external_features: Optional[pl.DataFrame],
     ) -> dict:
         """
         Run the full backtest pipeline.
@@ -74,6 +132,7 @@ class BacktestPipeline:
           - "leaderboard": aggregated model ranking
         """
         fc = self.config.forecast
+        require_fold_local_preprocessing(self.config)
 
         run_id = self.context.run_id
 
@@ -116,7 +175,8 @@ class BacktestPipeline:
         logger.info("[%s] Running backtesting (%d folds)...", run_id, self.config.backtest.n_folds)
         with self._emitter.timer("backtest_run"):
             results = self._backtest_engine.run(
-                series, forecasters, sparse_forecasters=sparse_forecasters
+                series, forecasters, sparse_forecasters=sparse_forecasters,
+                run_id=run_id, persist=False,
             )
         self._emitter.counter("backtest_folds_completed", self.config.backtest.n_folds)
 
@@ -128,13 +188,7 @@ class BacktestPipeline:
             )
 
         if results.is_empty():
-            logger.warning("Backtesting produced no results.")
-            return {
-                "backtest_results": results,
-                "champions": pl.DataFrame(),
-                "leaderboard": pl.DataFrame(),
-                "failures": failures,
-            }
+            raise ValueError("Backtesting produced no results; no run was committed")
 
         # Step 4: Select champion / build ensemble
         strategy = self.config.backtest.selection_strategy
@@ -144,15 +198,15 @@ class BacktestPipeline:
             logger.info("Building weighted ensemble from backtest results...")
             weights = self._champion_selector.compute_ensemble_weights(results)
             ensemble = WeightedEnsembleForecaster(
-                forecasters=forecasters,
+                forecasters=[model for model in forecasters if weights.get(model.name, 0) > 0],
                 weights=weights,
             )
             # Create a synthetic champion row describing the ensemble
             champions = pl.DataFrame({
                 "group_key": [self.config.lob],
                 "model_id": ["weighted_ensemble"],
-                self.config.backtest.primary_metric: [0.0],
-                self.config.backtest.secondary_metric: [0.0],
+                self.config.backtest.primary_metric: [None],
+                self.config.backtest.secondary_metric: [None],
             })
             logger.info("Ensemble: %s", ensemble)
         elif self.config.backtest.horizon_buckets:
@@ -165,9 +219,8 @@ class BacktestPipeline:
             champions = self._champion_selector.select(results)
 
         # Step 5: Build leaderboard
-        leaderboard = self._metric_store.leaderboard(
-            run_type="backtest",
-            lob=self.config.lob,
+        leaderboard = MetricStore.leaderboard_from_records(
+            results,
             primary_metric=self.config.backtest.primary_metric,
             secondary_metric=self.config.backtest.secondary_metric,
         )
@@ -201,26 +254,68 @@ class BacktestPipeline:
         # Step 6: Post-pipeline validation (4-layer + confidence grade)
         validation_result = None
         if self.config.post_validation.enabled and not results.is_empty():
-            try:
-                with self._emitter.timer("post_validation"):
-                    validation_result = run_post_validation(
-                        results_df=results,
-                        config=self.config.post_validation,
-                        lob=self.config.lob,
-                    )
-                self._emitter.gauge(
-                    "validation_score",
-                    float(validation_result.get("score", -1)),
+            with self._emitter.timer("post_validation"):
+                validation_result = run_post_validation(
+                    results_df=results,
+                    config=self.config.post_validation,
+                    lob=self.config.lob,
                 )
-            except ValidationError:
-                raise
-            except Exception:
-                logger.warning(
-                    "Post-validation failed (non-fatal)", exc_info=True
-                )
+            self._emitter.gauge("validation_score", float(validation_result.get("score", -1)))
+
+        model_ids = champions["model_id"].unique().to_list() if "model_id" in champions.columns else []
+        selected_model = model_ids[0] if len(model_ids) == 1 else "multi_model"
+        actuals = self._series_builder.normalized_input_snapshot(actuals)
+        manifest = build_manifest(
+            run_id=run_id, config=self.config, actuals=actuals,
+            series_builder=self._series_builder, champion_model_id=selected_model,
+            forecast=results, forecast_file="",
+            post_validation_result=validation_result,
+        )
+        manifest.run_type = "backtest"
+        manifest.started_at = utc_timestamp(self.context.started_at)
+        manifest.timestamp = manifest.started_at
+        manifest.models = [
+            model_metadata(model, fc.frequency, self.config.backtest.val_periods)
+            for model in [*forecasters, *(sparse_forecasters or [])]
+        ]
+        manifest.execution = {
+            "run_type": "backtest", "frequency": fc.frequency,
+            "horizon_periods": fc.horizon_periods, "validation_periods": self.config.backtest.val_periods,
+            "models": manifest.models, "scoring_contract": scoring_metadata(self.config, results),
+        }
+        manifest.source = {**runtime_metadata(), "entrypoint": self._source_kind}
+        optional_inputs = {
+            kind: frame for kind, frame in {
+                "product_master": product_master, "mapping_table": mapping_table,
+                "overrides": overrides, "external_features": external_features,
+                "conformal_residuals": conformal_residuals,
+            }.items() if frame is not None
+        }
+        manifest.reproducibility = {
+            "raw_snapshot": "normalized input DataFrame including configured series ID, not original upload bytes",
+            "prepared_snapshot": "SeriesBuilder output; each model may apply additional preparation",
+            "optional_inputs_snapshotted": sorted(optional_inputs),
+            "fitted_model_persisted": False,
+            "model_fold_failures": [
+                {key: row[key] for key in ("model_id", "fold", "error_type")}
+                for row in failures.to_dicts()
+            ],
+            "limits": ["No guarantee of deterministic retraining or frozen external provider/model weights",
+                       "Credential settings and server locations are deliberately omitted"],
+        }
+        manifest.total_seconds = self.context.elapsed_seconds
+        champion_snapshot = champions if champions.columns else pl.DataFrame(schema={"model_id": pl.Utf8})
+        self.last_run = RunStore(resolve_run_root(self.config, "backtest")).publish(
+            manifest, self.config,
+            {"input": actuals, "prepared": series, "metrics": results, "champions": champion_snapshot,
+             "leaderboard": leaderboard, **optional_inputs},
+            validation_result or {"skipped": True},
+        )
 
         logger.info("[%s] Backtest pipeline complete.", run_id)
         return {
+            "run_id": run_id,
+            "manifest": self.last_run,
             "backtest_results": results,
             "champions": champions,
             "leaderboard": leaderboard,

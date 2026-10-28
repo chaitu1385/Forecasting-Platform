@@ -165,6 +165,13 @@ def _score_paradox(result: Optional[dict]) -> dict:
             "skipped": False,
         }
 
+    if result.get("evaluated") is False:
+        return {
+            "score": 50, "factor_name": "paradox",
+            "issues": [f"Paradox comparison unavailable ({result.get('status', 'not_evaluable')}); neutral contribution"],
+            "skipped": True, "evaluated": False, "unavailable": True,
+        }
+
     return {"score": 100, "factor_name": "paradox", "issues": [],
             "skipped": False}
 

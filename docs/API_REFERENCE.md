@@ -55,13 +55,16 @@ Query the audit log. **Requires** `VIEW_AUDIT_LOG` permission.
 
 ### `GET /forecast/{lob}`
 
-Return the latest forecast for a LOB. Reads the most recent `forecast_*.parquet` file.
+Return an exact committed run or deterministic latest for the LOB. New runs take
+precedence over explicitly labelled legacy files; failed/partial runs are invisible.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `lob` | path, required | Line of business name |
 | `series_id` | query, optional | Filter to a single series |
-| `horizon` | query, optional | Limit output to first N weeks |
+| `horizon` | query, optional | Limit output to first N periods |
+| `run_id` | query, optional | Exact server UUID32; wrong LOB/type or missing commit returns 404 |
+| `legacy` | query, default false | Explicit old-file adapter; cannot be combined with a run ID |
 
 **Response:** `ForecastResponse`
 
@@ -86,7 +89,10 @@ Return the latest forecast for a LOB. Reads the most recent `forecast_*.parquet`
 
 ### `GET /forecast/{lob}/{series_id}`
 
-Return the latest forecast for a single series within a LOB.
+Return the latest or selected `run_id` for a single series within a LOB.
+Responses include `run_id`, `artifact_source`, `config_hash` and `input_data_hash`;
+legacy identity/hashes are null. Nonfinite numeric transport values are JSON null,
+not zero; stored artifact bytes and scientific metric formulas are unchanged.
 
 ---
 
@@ -94,12 +100,15 @@ Return the latest forecast for a single series within a LOB.
 
 ### `GET /metrics/leaderboard/{lob}`
 
-Model leaderboard from the metric store, ranked by WMAPE (ascending).
+Return a committed run's stored ranking and scoring provenance, or a separately
+labelled current analysis of unbundled raw metrics. Stored history is never
+re-scored or re-sorted using current formulas.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `lob` | path, required | LOB name |
 | `run_type` | query, default `"backtest"` | `"backtest"` or `"live"` |
+| `run_id` | query, optional | Exact committed backtest UUID32; otherwise latest committed run for the LOB |
 
 **Response:** `LeaderboardResponse`
 
@@ -118,6 +127,15 @@ Model leaderboard from the metric store, ranked by WMAPE (ascending).
   ]
 }
 ```
+
+Responses additionally include `run_id`, `artifact_source` and
+`scoring_provenance`: `source` (`stored`/`computed`), `status`
+(`recorded`/`unknown`), metadata version, policy, primary/secondary metric and
+competition scope. Missing historical metadata stays unknown. Entries retain
+stored `rank`, add `scores`, `primary_score`, `group_key` and `competition_scope`,
+and keep `wmape`/`normalized_bias` compatibility fields nullable. For a stored
+macro-WMAPE ranking, an absent volume-WMAPE value is null, never substituted with
+the macro score. Multi-cohort results have no inferred global winner.
 
 ### `GET /metrics/drift/{lob}`
 
@@ -286,7 +304,31 @@ Run the forecast pipeline. Fits the champion model on full history and generates
 | `config_file` | body, optional | YAML config file |
 | `lob` | query, default `"default"` | LOB name |
 | `model_id` | query, optional | Specific model to use |
-| `horizon` | query, default `12` | Forecast horizon in periods |
+| `horizon` | query, optional | Explicit override; otherwise YAML then platform default |
+
+Both operations return the committed `run_id`, `run_type`, safe relative `links`
+and the existing required `execution` settings. Pre-commit errors do not publish.
+A post-commit confirmation/response error is HTTP 409 with `outcome=committed`
+or `uncertain` and its run ID; inspect it rather than assuming rollback or retry
+idempotency.
+
+### Exact-run read API
+
+| Endpoint | Purpose | Permission |
+|----------|---------|------------|
+| `GET /pipeline/runs?lob=...&run_type=forecast` | Complete bundles ordered by attempt start + ID; limit 1-200 | `VIEW_METRICS` |
+| `GET /pipeline/runs/{lob}/{run_id}` | Verified safe manifest and links | `VIEW_METRICS` |
+| `GET /pipeline/runs/{lob}/{run_id}/config` | Canonical saved settings and config identity | `VIEW_METRICS` |
+| `GET /pipeline/runs/{lob}/{run_id}/input` | Raw/prepared input hashes, schema, stages and history link | `VIEW_FORECASTS` |
+
+Forecast/series-history selectors, leaderboard/FVA/calibration/validation and
+governance exports accept exact run scope. History also labels `input` versus
+`prepared` stage. Forecast-actual BI comparison can explicitly select a later
+`actuals_run_id`; otherwise it uses the selected forecast's input, not a quietly
+substituted latest dataset. Exports are unique derived files, not a cross-store
+run transaction. Invalid UUID/path selectors return 400, unauthenticated reads
+401, wrong roles 403, missing/cross-type runs 404, and corrupt/unknown committed
+schemas explicit integrity errors. LOB is a storage namespace, not tenant RLS.
 
 ### `POST /pipeline/analyze-multi-file`
 
@@ -294,7 +336,8 @@ Upload multiple files for auto-classification (actuals, dimensions, regressors) 
 
 ### `GET /pipeline/manifests`
 
-List recent pipeline run manifests with metadata (series counts, champion model, WMAPE, validation status). **Requires** `VIEW_METRICS` permission.
+List verified bundles first and legacy sidecars separately labelled unknown.
+Legacy entries do not receive invented run IDs. **Requires** `VIEW_METRICS`.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

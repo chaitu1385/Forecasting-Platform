@@ -81,7 +81,7 @@ You can't fit an ARIMA model to a series that's 80% zeros — the model wastes i
 
 ### Conformal Prediction / Calibration
 
-A model that claims "80% prediction interval" but actually covers only 65% of outcomes will cause systematic safety stock miscalculation — you'll understock because you trusted the interval. Conformal prediction fixes this without distributional assumptions: it computes nonconformity scores on a calibration set (how wrong was the model?), then widens the prediction intervals symmetrically until empirical coverage matches the nominal target. The platform's calibration report checks whether actual values fall within stated intervals, and `apply_conformal_correction()` adjusts intervals that are too narrow or too wide.
+A model that claims "80% prediction interval" but actually covers only 65% of outcomes can cause systematic safety stock miscalculation. Conformal correction estimates an interval adjustment from held-out nonconformity scores; its coverage guarantees depend on appropriate calibration data and exchangeability, not merely ordered bounds. The platform's calibration report measures empirical coverage, and `apply_conformal_correction()` widens or tightens bounds symmetrically without moving the point or P50. Corrections that would cross requested percentiles fail explicitly before publication. Seasonal-naive intervals are median-centered residual quantiles so their P50 remains the raw point; this preserves interval width but does not prove calibration.
 
 *Implementation: `src/evaluation/calibration.py` — `compute_calibration_report()`, `apply_conformal_correction()`*
 
@@ -147,9 +147,16 @@ A model that was 95% accurate last quarter can silently degrade as demand patter
 
 ### Pipeline Provenance
 
-When a forecast looks wrong, the first question is "what produced this?" Without provenance, debugging is archaeology. The `PipelineManifest` is a JSON sidecar written alongside every forecast output, capturing: input data hash, cleansing summary, validation results, regressor screening decisions, config hash, champion model name, backtest WMAPE, and forecast metadata. This creates a complete audit trail from raw data to final forecast, enabling reproducibility and root-cause analysis.
+When a forecast looks wrong, first identify the exact run rather than whichever
+file was written most recently. A versioned bundle binds its input snapshots,
+safe effective settings, model/source metadata, validation and outputs to one
+server-issued ID; checksums detect damaged or inconsistent stored artifacts.
+The final manifest is also the commit marker, so readers cannot treat a partial
+write as success. This is a local provenance/retrieval boundary, not a promise of
+deterministic retraining, signed evidence against a filesystem administrator or
+distributed transactionality; historical sidecars retain unknown lineage.
 
-*Implementation: `src/pipeline/manifest.py` — `PipelineManifest`, `build_manifest()`*
+*Implementation: `src/pipeline/run_store.py`, `readers.py`, `manifest.py`*
 
 ### Model Governance & Audit
 
@@ -167,7 +174,14 @@ Automated forecasts can't know about next month's product launch, the competitor
 
 A weekly-only platform can't serve a monthly S&OP process or daily replenishment cycle. But frequency changes everything: season length (52 for weekly, 12 for monthly), default lags, minimum series length, and date arithmetic all depend on the data frequency. Rather than scattering frequency-specific logic across 20+ modules, the platform uses `FREQUENCY_PROFILES` as a single source of truth — a dict mapping `"D"`, `"W"`, `"M"`, `"Q"` to all frequency-dependent parameters. Every model, backtester, validator, and data processor reads from this profile, so switching frequency is a single YAML config change.
 
-*Implementation: `src/config/schema.py` — `FREQUENCY_PROFILES`, `get_frequency_profile()`, `freq_timedelta()`*
+`PeriodCalendar` validates the configured grid and preserves the observed weekday
+or month/quarter start/end anchor. Calendar periods are not fixed-day durations:
+January 31 advances to February 29 and March 31 in a leap year. Irregular labels
+are rejected rather than guessed. CV gaps count complete calendar periods.
+
+*Implementation: `src/config/schema.py` — frequency defaults;
+`src/utils/calendar.py` — `PeriodCalendar`, `advance_date()`. See also the
+[numerical scoring contract](docs/NUMERICAL_RELIABILITY.md).*
 
 ---
 

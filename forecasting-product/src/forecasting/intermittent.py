@@ -22,12 +22,13 @@ partitions the probability mass between zero and positive demand:
     of historical non-zero demands, re-scaled to the remaining probability mass.
 """
 
-from datetime import timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import polars as pl
 
+from ..config.schema import get_frequency_profile
+from ..utils.calendar import PeriodCalendar
 from .base import BaseForecaster
 from .registry import registry
 
@@ -129,7 +130,7 @@ class CrostonForecaster(BaseForecaster):
 
     name = "croston"
 
-    def __init__(self, alpha: float = 0.1):
+    def __init__(self, alpha: float = 0.1, frequency: str = "W"):
         """
         Parameters
         ----------
@@ -137,6 +138,9 @@ class CrostonForecaster(BaseForecaster):
             Smoothing parameter applied to both demand size and interval.
         """
         self.alpha = alpha
+        get_frequency_profile(frequency)
+        self.frequency = frequency
+        self._calendar: Optional[PeriodCalendar] = None
         # series_id → (z, x)
         self._states: Dict[str, Tuple[float, float]] = {}
         self._last_dates: Dict[str, Any] = {}
@@ -165,6 +169,7 @@ class CrostonForecaster(BaseForecaster):
         self._states = {}
         self._last_dates = {}
         self._history = {}
+        self._calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), self.frequency)
 
         for series_id in df[id_col].unique().to_list():
             series = df.filter(pl.col(id_col) == series_id).sort(time_col)
@@ -195,7 +200,7 @@ class CrostonForecaster(BaseForecaster):
             for h in range(1, horizon + 1):
                 results.append({
                     id_col: series_id,
-                    time_col: max_date + timedelta(weeks=h),
+                    time_col: self._calendar.shift(max_date, h),
                     "forecast": forecast_val,
                 })
 
@@ -242,7 +247,7 @@ class CrostonForecaster(BaseForecaster):
             for h in range(1, horizon + 1):
                 row: Dict[str, Any] = {
                     id_col: series_id,
-                    time_col: max_date + timedelta(weeks=h),
+                    time_col: self._calendar.shift(max_date, h),
                 }
                 for q in quantiles:
                     col = f"forecast_p{int(round(q * 100))}"
@@ -269,7 +274,7 @@ class CrostonForecaster(BaseForecaster):
         return pl.DataFrame(results)
 
     def get_params(self) -> Dict[str, Any]:
-        return {"alpha": self.alpha}
+        return {"alpha": self.alpha, "frequency": self.frequency}
 
 
 @registry.register("croston_sba")
@@ -302,7 +307,7 @@ class TSBForecaster(BaseForecaster):
 
     name = "tsb"
 
-    def __init__(self, alpha_z: float = 0.1, alpha_p: float = 0.1):
+    def __init__(self, alpha_z: float = 0.1, alpha_p: float = 0.1, frequency: str = "W"):
         """
         Parameters
         ----------
@@ -313,6 +318,9 @@ class TSBForecaster(BaseForecaster):
         """
         self.alpha_z = alpha_z
         self.alpha_p = alpha_p
+        get_frequency_profile(frequency)
+        self.frequency = frequency
+        self._calendar: Optional[PeriodCalendar] = None
         # series_id → (p, z)
         self._states: Dict[str, Tuple[float, float]] = {}
         self._last_dates: Dict[str, Any] = {}
@@ -336,6 +344,7 @@ class TSBForecaster(BaseForecaster):
         self._states = {}
         self._last_dates = {}
         self._history = {}
+        self._calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), self.frequency)
 
         for series_id in df[id_col].unique().to_list():
             series = df.filter(pl.col(id_col) == series_id).sort(time_col)
@@ -366,7 +375,7 @@ class TSBForecaster(BaseForecaster):
             for h in range(1, horizon + 1):
                 results.append({
                     id_col: series_id,
-                    time_col: max_date + timedelta(weeks=h),
+                    time_col: self._calendar.shift(max_date, h),
                     "forecast": forecast_val,
                 })
 
@@ -409,7 +418,7 @@ class TSBForecaster(BaseForecaster):
             for h in range(1, horizon + 1):
                 row: Dict[str, Any] = {
                     id_col: series_id,
-                    time_col: max_date + timedelta(weeks=h),
+                    time_col: self._calendar.shift(max_date, h),
                 }
                 for q in quantiles:
                     col = f"forecast_p{int(round(q * 100))}"
@@ -435,4 +444,4 @@ class TSBForecaster(BaseForecaster):
         return pl.DataFrame(results)
 
     def get_params(self) -> Dict[str, Any]:
-        return {"alpha_z": self.alpha_z, "alpha_p": self.alpha_p}
+        return {"alpha_z": self.alpha_z, "alpha_p": self.alpha_p, "frequency": self.frequency}

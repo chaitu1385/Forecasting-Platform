@@ -80,13 +80,16 @@ class TestGetFrequencyProfile(unittest.TestCase):
     ("D", 7, timedelta(days=7)),
     ("W", 1, timedelta(weeks=1)),
     ("W", 4, timedelta(weeks=4)),
-    ("M", 1, timedelta(days=30)),
-    ("M", 3, timedelta(days=90)),
-    ("Q", 1, timedelta(days=91)),
-    ("Q", 2, timedelta(days=182)),
 ])
 def test_freq_timedelta(freq, periods, expected):
     assert freq_timedelta(freq, periods) == expected
+
+
+@pytest.mark.parametrize("freq", ["M", "Q"])
+def test_calendar_frequencies_are_not_fixed_durations(freq):
+    with pytest.raises(ValueError, match="calendar"):
+        freq_timedelta(freq)
+    assert FREQUENCY_PROFILES[freq]["timedelta_kwargs"] is None
 
 
 class TestFreqTimedeltaArithmetic(unittest.TestCase):
@@ -169,41 +172,33 @@ class TestNaiveForecasterFrequency(unittest.TestCase):
         self.assertEqual(f.season_length, 26)
 
     def test_monthly_predict_dates(self):
-        """Monthly frequency should produce ~30-day-apart forecast dates."""
+        """Real month starts must remain month starts across leap February."""
         from src.forecasting.naive import SeasonalNaiveForecaster
         f = SeasonalNaiveForecaster(frequency="M")
         df = pl.DataFrame({
             "series_id": ["A"] * 24,
-            "week": [date(2022, 1, 1) + timedelta(days=30 * i) for i in range(24)],
+            "week": [date(2022 + i // 12, i % 12 + 1, 1) for i in range(24)],
             "quantity": [float(i % 12 + 1) for i in range(24)],
         })
         f.fit(df)
         preds = f.predict(3)
         dates = preds["week"].sort().to_list()
-        # Check that forecast dates are roughly monthly apart
-        for i in range(1, len(dates)):
-            gap = (dates[i] - dates[i - 1]).days
-            self.assertGreaterEqual(gap, 28)
-            self.assertLessEqual(gap, 32)
+        self.assertEqual(dates, [date(2024, 1, 1), date(2024, 2, 1), date(2024, 3, 1)])
 
 
 class TestRegistryFrequencyFiltering(unittest.TestCase):
-    """Tests that registry.build() handles unknown kwargs gracefully."""
+    """Frequency is part of every registered forecasting model's contract."""
 
     def test_build_with_frequency(self):
         from src.forecasting.registry import registry
         f = registry.build("naive_seasonal", frequency="M")
         self.assertEqual(f.frequency, "M")
 
-    def test_build_drops_unknown_kwargs(self):
-        """Models that don't accept frequency should not fail."""
+    def test_build_preserves_intermittent_frequency(self):
         from src.forecasting.registry import registry
-        # Croston doesn't accept frequency — should not raise
-        try:
-            f = registry.build("croston", frequency="M")
-            self.assertEqual(f.name, "croston")
-        except TypeError:
-            self.fail("registry.build() should drop unknown kwargs")
+        f = registry.build("croston", frequency="M")
+        self.assertEqual(f.name, "croston")
+        self.assertEqual(f.frequency, "M")
 
 
 if __name__ == "__main__":

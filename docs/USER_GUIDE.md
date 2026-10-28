@@ -168,10 +168,31 @@ python forecasting-product/scripts/run_forecast.py \
 
 ### Output
 
-- **Forecast Parquet** — Point forecasts and prediction intervals per series per period
-- **Pipeline Manifest** — JSON provenance file tracking what data, config, and model produced the forecast
+- **Run ID** — Fresh server-generated UUID32, also returned by the API and printed by the CLI
+- **Immutable bundle** — Forecast, normalized input, prepared series, safe configuration, validation and provenance under one run directory
 
 See [DATA_FORMAT.md](DATA_FORMAT.md) for complete output schemas.
+
+### Retrieve a Previous Run
+
+The Forecast Viewer offers latest and individual saved run IDs.
+Selecting a prior run changes the actual forecast values, history and stored
+configuration; it does not merely relabel latest. The page shows input/config
+hashes and an expandable data table. Switching LOB clears the old selection.
+Legacy files remain an explicit option with unknown lineage.
+
+Programmatically, keep the `run_id` and relative `links` in a successful pipeline
+response. Use `/pipeline/runs` to list completed attempts,
+`/pipeline/runs/{lob}/{run_id}/config` for safe saved settings, and
+`/forecast/{lob}?run_id=<UUID32>` for exact output. History and metric queries
+also support run scope. These endpoints require the existing authenticated read
+permissions; a LOB name is not tenant isolation.
+
+Latest is ordered by attempt start time, not completion time. An ambiguous
+HTTP/commit outcome should be resolved using the returned ID before starting
+another attempt; a retry is a new run, not exactly-once recovery. For custom
+storage roots, backup and inspection see
+[DEPLOYMENT.md](DEPLOYMENT.md#immutable-local-runs-and-recovery).
 
 ---
 
@@ -341,10 +362,12 @@ python forecasting-product/scripts/serve.py --demo --port 8000
 
 # In a separate terminal, start the frontend
 cd forecasting-product/frontend
-npm install
+npm ci
 npm run dev
 ```
 
+Use Node.js 24.22.1 / npm 11.19.1 and the matching locked Python API profile
+from the [deployment guide](DEPLOYMENT.md#supported-runtimes-and-locked-profiles).
 The frontend runs at `http://localhost:3000` by default. Set `NEXT_PUBLIC_API_URL` in `.env.local` to point to your API server (defaults to `http://localhost:8000`).
 
 ### Pages

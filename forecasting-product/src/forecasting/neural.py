@@ -51,6 +51,7 @@ from typing import Any, Dict, List, Optional
 import polars as pl
 
 from ..config.schema import get_frequency_profile
+from ..utils.calendar import PeriodCalendar
 from .base import BaseForecaster
 from .registry import registry
 
@@ -106,12 +107,14 @@ class _NeuralforecastBase(BaseForecaster):
         self.enable_progress_bar = enable_progress_bar
         self._quantiles = quantiles
         self.frequency = frequency
+        get_frequency_profile(frequency)
 
         self._nf: Optional[Any] = None
         self._id_col: str = "series_id"
         self._time_col: str = "week"
         self._target_col: str = "quantity"
         self._horizon: Optional[int] = None
+        self._train_pdf = None
 
     def _get_model(self, horizon: int):
         """Return a configured neuralforecast model instance."""
@@ -146,16 +149,13 @@ class _NeuralforecastBase(BaseForecaster):
         )
         pdf["ds"] = pdf["ds"].astype("datetime64[ns]")
 
-        # neuralforecast needs the horizon at model construction time.
-        # Infer a sensible default from the data: use 13 weeks (one quarter).
-        # The actual horizon is set at predict() time — if it differs from the
-        # trained horizon, we refit (neuralforecast requires h at init).
-        self._horizon = 13
+        self._calendar = PeriodCalendar.from_dates(df[time_col].unique().to_list(), self.frequency)
+        self._train_pdf = pdf
+        self._horizon = get_frequency_profile(self.frequency)["default_val_periods"]
         model = self._get_model(self._horizon)
-        sf_freq = get_frequency_profile(self.frequency)["statsforecast_freq"]
         self._nf = NeuralForecast(
             models=[model],
-            freq=sf_freq,
+            freq=self._calendar.pandas_frequency,
         )
 
         is_cpu = self.accelerator == "cpu"
@@ -183,6 +183,7 @@ class _NeuralforecastBase(BaseForecaster):
     ) -> pl.DataFrame:
         if self._nf is None:
             raise RuntimeError(f"{self.name}: call fit() before predict()")
+        self._ensure_horizon(horizon)
 
         result_pdf = self._nf.predict()
 
@@ -228,6 +229,7 @@ class _NeuralforecastBase(BaseForecaster):
         """
         if self._nf is None:
             raise RuntimeError(f"{self.name}: call fit() before predict_quantiles()")
+        self._ensure_horizon(horizon)
 
         # Determine coverage levels from lower quantiles
         lower_qs = sorted(q for q in quantiles if q < 0.5 - 1e-6)
@@ -271,6 +273,17 @@ class _NeuralforecastBase(BaseForecaster):
 
         output = self._trim_horizon(output, horizon, id_col, time_col)
         return output
+
+    def _ensure_horizon(self, horizon: int) -> None:
+        """Refit at a longer requested horizon rather than silently truncating it."""
+        if horizon < 1:
+            raise ValueError("Forecast horizon must be at least one period")
+        if self._horizon is not None and horizon > self._horizon:
+            self._nf = NeuralForecast(
+                models=[self._get_model(horizon)], freq=self._calendar.pandas_frequency,
+            )
+            self._nf.fit(df=self._train_pdf)
+            self._horizon = horizon
 
     def _trim_horizon(
         self, df: pl.DataFrame, horizon: int, id_col: str, time_col: str,
@@ -358,6 +371,7 @@ class NBEATSForecaster(_NeuralforecastBase):
         batch_size: int = 32,
         accelerator: str = "cpu",
         random_seed: int = 42,
+        frequency: str = "W",
     ):
         super().__init__(
             max_steps=max_steps,
@@ -365,6 +379,7 @@ class NBEATSForecaster(_NeuralforecastBase):
             batch_size=batch_size,
             accelerator=accelerator,
             random_seed=random_seed,
+            frequency=frequency,
         )
         self.input_size_multiplier = input_size_multiplier
         self.stack_types = stack_types or ["trend", "seasonality"]
@@ -391,6 +406,7 @@ class NBEATSForecaster(_NeuralforecastBase):
             "learning_rate": self.learning_rate,
             "input_size_multiplier": self.input_size_multiplier,
             "stack_types": self.stack_types,
+            "frequency": self.frequency,
         }
 
 
@@ -429,6 +445,7 @@ class NHITSForecaster(_NeuralforecastBase):
         batch_size: int = 32,
         accelerator: str = "cpu",
         random_seed: int = 42,
+        frequency: str = "W",
     ):
         super().__init__(
             max_steps=max_steps,
@@ -436,6 +453,7 @@ class NHITSForecaster(_NeuralforecastBase):
             batch_size=batch_size,
             accelerator=accelerator,
             random_seed=random_seed,
+            frequency=frequency,
         )
         self.input_size_multiplier = input_size_multiplier
         self.n_blocks = n_blocks or [1, 1, 1]
@@ -460,6 +478,7 @@ class NHITSForecaster(_NeuralforecastBase):
             "learning_rate": self.learning_rate,
             "input_size_multiplier": self.input_size_multiplier,
             "n_blocks": self.n_blocks,
+            "frequency": self.frequency,
         }
 
 
@@ -502,6 +521,7 @@ class TFTForecaster(_NeuralforecastBase):
         batch_size: int = 32,
         accelerator: str = "cpu",
         random_seed: int = 42,
+        frequency: str = "W",
     ):
         super().__init__(
             max_steps=max_steps,
@@ -509,6 +529,7 @@ class TFTForecaster(_NeuralforecastBase):
             batch_size=batch_size,
             accelerator=accelerator,
             random_seed=random_seed,
+            frequency=frequency,
         )
         self.input_size_multiplier = input_size_multiplier
         self.hidden_size = hidden_size
@@ -535,4 +556,5 @@ class TFTForecaster(_NeuralforecastBase):
             "learning_rate": self.learning_rate,
             "hidden_size": self.hidden_size,
             "n_head": self.n_head,
+            "frequency": self.frequency,
         }

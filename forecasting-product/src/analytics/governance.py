@@ -199,6 +199,9 @@ class ModelCard:
     n_observations: int = 0
     backtest_wmape: Optional[float] = None
     backtest_bias: Optional[float] = None
+    scoring_policy: str = "unspecified"
+    metric_population: str = ""
+    n_runs: Optional[int] = None
     champion_since: Optional[date] = None
     features: List[str] = field(default_factory=list)
     config_hash: str = ""
@@ -230,16 +233,15 @@ class ModelCard:
             else backtest_results
         )
 
-        wmape = (
-            float(model_rows["wmape"].drop_nulls().mean())
-            if not model_rows.is_empty() and "wmape" in model_rows.columns
-            else None
+        from ..metrics.aggregation import observation_metrics
+
+        scores = (
+            observation_metrics(model_rows, ["wmape", "normalized_bias"], preserve_context=False)
+            .row(0, named=True)
+            if not model_rows.is_empty() else {}
         )
-        bias = (
-            float(model_rows["normalized_bias"].drop_nulls().mean())
-            if not model_rows.is_empty() and "normalized_bias" in model_rows.columns
-            else None
-        )
+        wmape = scores.get("wmape")
+        bias = scores.get("normalized_bias")
         n_series = (
             model_rows["series_id"].n_unique()
             if "series_id" in model_rows.columns
@@ -263,6 +265,9 @@ class ModelCard:
             n_observations=len(model_rows),
             backtest_wmape=wmape,
             backtest_bias=bias,
+            scoring_policy=scores.get("scoring_policy", "unavailable"),
+            metric_population=scores.get("metric_population", ""),
+            n_runs=scores.get("n_runs"),
             champion_since=champion_since or date.today(),
             features=features or [],
             config_hash=config_hash,
@@ -377,7 +382,6 @@ class ForecastLineage:
 
     def __init__(self, base_path: str = "data/lineage/"):
         self._path = Path(base_path)
-        self._path.mkdir(parents=True, exist_ok=True)
 
     def record(
         self,
@@ -404,9 +408,9 @@ class ForecastLineage:
             "user_id": user_id,
         }])
 
-        ts = (run_date or date.today()).isoformat()
-        fname = f"lineage_{lob}_{ts}_{model_id[:12]}.parquet"
-        row.write_parquet(str(self._path / fname))
+        from ..pipeline.run_store import atomic_frame_append
+
+        atomic_frame_append(row, self._path, prefix="lineage")
 
     def history(
         self,
@@ -418,11 +422,19 @@ class ForecastLineage:
 
         Returns a DataFrame sorted by run_date descending.
         """
-        pattern = str(self._path / "*.parquet")
-        try:
-            df = pl.read_parquet(pattern)
-        except Exception:
+        from ..pipeline.run_store import RunIntegrityError, checked_child
+
+        files = sorted(self._path.glob("*.parquet"))
+        if not files:
             return pl.DataFrame(schema=self._SCHEMA)
+        try:
+            frames = [
+                pl.read_parquet(checked_child(self._path, filename.name), hive_partitioning=False)
+                for filename in files
+            ]
+            df = pl.concat(frames, how="diagonal_relaxed")
+        except Exception as exc:
+            raise RunIntegrityError("unreadable_legacy_lineage") from exc
 
         if lob:
             df = df.filter(pl.col("lob") == lob)

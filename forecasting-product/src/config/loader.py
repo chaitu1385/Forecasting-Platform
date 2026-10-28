@@ -227,6 +227,7 @@ def _dict_to_config(d: Dict[str, Any]) -> PlatformConfig:
         grain=out_raw.get("grain", {}),
         forecast_path=out_raw.get("forecast_path", "data/forecasts/"),
         metrics_path=out_raw.get("metrics_path", "data/metrics/"),
+        runs_path=out_raw.get("runs_path"),
         bi_export_path=out_raw.get("bi_export_path", "data/bi_exports/"),
         format=out_raw.get("format", "parquet"),
     )

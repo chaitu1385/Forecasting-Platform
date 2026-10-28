@@ -18,12 +18,24 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0, Node 24
         with:
-          python-version: "3.11"
-      - run: pip install ruff
+          python-version-file: forecasting-product/.python-version
+          cache: pip
+          cache-dependency-path: forecasting-product/requirements/**/*.txt
+      - run: >-
+          python -m pip install --require-hashes --only-binary=:all:
+          -r forecasting-product/requirements/py312/dev.txt
+      - run: python forecasting-product/scripts/lock_dependencies.py --check --upstream
       - run: ruff check forecasting-product/src/
+      - name: Audit all locked Python dependency closures
+        run: |
+          for profile in forecasting-product/requirements/py*/dev.txt forecasting-product/requirements/py*/spark.txt; do
+            python -m pip_audit --disable-pip --no-deps --progress-spinner off -r "$profile"
+          done
+      - name: Build with the locked packaging tools
+        run: python -m build --no-isolation forecasting-product --outdir "${{ runner.temp }}/package-dist"
 
   validation:
     name: Forecast validation (Polars ${{ matrix.polars }})
@@ -34,23 +46,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        polars: ["0.20.0", "2.0.0"]
+        polars: ["2.0.0"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0, Node 24
         with:
-          python-version: "3.11"
+          python-version-file: forecasting-product/.python-version
           cache: pip
-          cache-dependency-path: forecasting-product/pyproject.toml
+          cache-dependency-path: forecasting-product/requirements/**/*.txt
 
       - name: Install validation dependencies
         run: |
-          python -m pip install \
-            "numpy>=1.21.0" \
-            "pandas>=1.3.0" \
-            "polars==${{ matrix.polars }}" \
-            "pyyaml>=5.4.0" \
-            "pytest>=7.0.0"
+          python -m pip install --require-hashes --only-binary=:all: \
+            -r forecasting-product/requirements/py312/dev.txt
+          python -c "import polars; assert polars.__version__ == '${{ matrix.polars }}'"
 
       - name: Run validation regressions
         working-directory: forecasting-product
@@ -77,7 +86,7 @@ jobs:
 
       - name: Upload validation results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
         with:
           name: validation-results-polars-${{ matrix.polars }}
           path: |
@@ -94,25 +103,17 @@ jobs:
       POLARS_MAX_THREADS: "2"
       OMP_NUM_THREADS: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0, Node 24
         with:
-          python-version: "3.11"
+          python-version-file: forecasting-product/.python-version
           cache: pip
-          cache-dependency-path: forecasting-product/pyproject.toml
+          cache-dependency-path: forecasting-product/requirements/**/*.txt
 
       - name: Install forecast API dependencies
         run: |
-          python -m pip install \
-            "numpy>=1.21.0" \
-            "pandas>=1.3.0" \
-            "polars==2.0.0" \
-            "pyyaml>=5.4.0" \
-            "pytest>=7.0.0" \
-            "fastapi>=0.100.0,<0.116.0" \
-            "httpx>=0.24.0" \
-            "python-multipart>=0.0.7" \
-            "pyjwt>=2.0.0,<3.0"
+          python -m pip install --require-hashes --only-binary=:all: \
+            -r forecasting-product/requirements/py312/dev.txt
 
       - name: Run forecast intent regressions
         working-directory: forecasting-product
@@ -126,7 +127,7 @@ jobs:
 
       - name: Upload forecast intent results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
         with:
           name: forecast-intent-results
           path: forecasting-product/forecast-intent-results.xml
@@ -140,7 +141,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        include:
+          - python-version: "3.11.18"
+            profile: py311
+          - python-version: "3.12.16"
+            profile: py312
+          - python-version: "3.13.18"
+            profile: py313
     env:
       POLARS_MAX_THREADS: "2"
       OMP_NUM_THREADS: "1"
@@ -150,14 +157,16 @@ jobs:
       PYTHONUNBUFFERED: "1"
       PYTHONFAULTHANDLER: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0, Node 24
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: forecasting-product/requirements.txt
+          cache-dependency-path: forecasting-product/requirements/**/*.txt
       - name: Install dependencies
-        run: python -m pip install -r forecasting-product/requirements.txt pytest-cov pytest-timeout
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all:
+          -r forecasting-product/requirements/${{ matrix.profile }}/dev.txt
       - name: Run bounded process regressions
         working-directory: forecasting-product
         run: |
@@ -167,13 +176,13 @@ jobs:
             --junitxml=process-results.xml
       - name: Upload process diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
         with:
           name: process-results-python-${{ matrix.python-version }}
           path: forecasting-product/process-results.xml
 
   authentication:
-    name: Authentication (${{ matrix.os }})
+    name: Authentication (${{ matrix.os }}, Python ${{ matrix.runtime.python }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     permissions:
@@ -182,6 +191,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        runtime:
+          - python: "3.11.18"
+            profile: py311
+          - python: "3.12.16"
+            profile: py312
+          - python: "3.13.18"
+            profile: py313
     env:
       POLARS_MAX_THREADS: "2"
       OMP_NUM_THREADS: "1"
@@ -191,49 +207,97 @@ jobs:
       PYTHONUTF8: "1"
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0, Node 24
+        if: runner.os == 'Linux'
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.runtime.python }}
           cache: pip
-          cache-dependency-path: forecasting-product/requirements.txt
+          cache-dependency-path: forecasting-product/requirements/**/*.txt
+      - name: Provision exact native Windows security-release Python
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          UV_PYTHON_INSTALL_DIR: ${{ runner.temp }}/forecast-python
+          UV_CACHE_DIR: ${{ runner.temp }}/forecast-uv-cache
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'forecast-uv.zip'
+          $tools = Join-Path $env:RUNNER_TEMP 'forecast-uv'
+          Invoke-WebRequest 'https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-pc-windows-msvc.zip' -OutFile $archive
+          $expected = 'a2a8820d5eea32f08ef467ef3b7f66883a9b076d5737a2fc2fbb5f458d1bb50f'
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+            throw 'The uv archive does not match the pinned upstream SHA256'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $tools
+          $uv = Join-Path $tools 'uv.exe'
+          & $uv python install '${{ matrix.runtime.python }}' --no-bin --no-registry
+          if ($LASTEXITCODE -ne 0) { throw 'Managed Python installation failed' }
+          $python = & $uv python find '${{ matrix.runtime.python }}' --managed-python
+          if ($LASTEXITCODE -ne 0) { throw 'Managed Python lookup failed' }
+          $venv = Join-Path $env:RUNNER_TEMP 'forecast-runtime'
+          & $python -m venv $venv
+          if ($LASTEXITCODE -ne 0) { throw 'Isolated Python environment creation failed' }
+          $scripts = Join-Path $venv 'Scripts'
+          & (Join-Path $scripts 'python.exe') -c "import platform, sysconfig; assert platform.python_version() == '${{ matrix.runtime.python }}'; assert platform.machine().lower() in ('amd64', 'x86_64'); assert sysconfig.get_platform() == 'win-amd64'"
+          if ($LASTEXITCODE -ne 0) { throw 'The native interpreter does not match the qualified target' }
+          $scripts | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Install authentication test dependencies
-        run: python -m pip install -r forecasting-product/requirements.txt pytest-timeout
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all:
+          -r forecasting-product/requirements/${{ matrix.runtime.profile }}/dev.txt
+      - name: Verify clean native Windows profiles and model intervals
+        if: runner.os == 'Windows'
+        working-directory: forecasting-product
+        run: python scripts/check_dependency_profile.py --all --output "${{ runner.temp }}/native-profiles"
       - name: Verify real launcher, JWT/RBAC and private operator output
         working-directory: forecasting-product
         run: >
           python -m pytest tests/test_authentication.py tests/test_auth_startup.py
           tests/test_docker_seed.py -q --capture=tee-sys -o addopts="" -o faulthandler_timeout=60
           --timeout=120 --timeout-method=thread --junitxml=authentication-results.xml
-      - uses: actions/setup-node@v4
-        if: runner.os == 'Linux'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0, Node 24
+        if: runner.os == 'Linux' && matrix.runtime.profile == 'py312'
         with:
-          node-version: "20"
+          node-version-file: forecasting-product/frontend/.nvmrc
           cache: npm
           cache-dependency-path: forecasting-product/frontend/package-lock.json
       - name: Install frontend test dependencies
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.runtime.profile == 'py312'
         working-directory: forecasting-product/frontend
         run: npm ci
+      - name: Build the production frontend for private authentication checks
+        if: runner.os == 'Linux' && matrix.runtime.profile == 'py312'
+        working-directory: forecasting-product/frontend
+        env:
+          NEXT_PUBLIC_API_URL: http://127.0.0.1:8197
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
       - name: Verify production token login with a real isolated API and browser
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.runtime.profile == 'py312'
         working-directory: forecasting-product/frontend
         env:
           AUTH_E2E_ROOT: ${{ runner.temp }}/forecast-auth-browser
+          AUTH_E2E_FRONTEND_MODE: production
           PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
         run: npm run test:auth-browser
       - name: Verify explicit-demo browser login
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.runtime.profile == 'py312'
         working-directory: forecasting-product/frontend
         env:
           PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
         run: npx playwright test login-flow.spec.ts --project=chromium --workers=1 --retries=0 --reporter=line
       - name: Upload authentication results (never credentials or browser traces)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
         with:
-          name: authentication-results-${{ matrix.os }}
+          name: authentication-results-${{ matrix.os }}-${{ matrix.runtime.profile }}
           path: forecasting-product/authentication-results.xml
+      - name: Upload native Windows profile evidence
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
+        with:
+          name: native-profiles-${{ matrix.os }}-${{ matrix.runtime.profile }}
+          path: ${{ runner.temp }}/native-profiles/
 
   test:
     name: Test (Python ${{ matrix.python-version }})
@@ -250,22 +314,53 @@ jobs:
       NUMBA_NUM_THREADS: "1"
       PYTHONUNBUFFERED: "1"
       PYTHONFAULTHANDLER: "1"
+      M5_PROFILE_LOCK: ${{ github.workspace }}/forecasting-product/requirements/${{ matrix.profile }}/dev.txt
+      M5_BASELINE_PATH: ${{ github.workspace }}/forecasting-product/tests/integration/baselines/m5_daily_baseline_${{ matrix.profile }}_linux.json
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        include:
+          - python-version: "3.11.18"
+            profile: py311
+          - python-version: "3.12.16"
+            profile: py312
+          - python-version: "3.13.18"
+            profile: py313
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0, Node 24
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: forecasting-product/requirements.txt
+          cache-dependency-path: forecasting-product/requirements/**/*.txt
+
+      - name: Prepare fresh native M5 evidence
+        shell: bash
+        env:
+          M5_EVIDENCE_DIR: ${{ runner.temp }}/m5-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+          mkdir "$M5_EVIDENCE_DIR"
+          cp "$M5_PROFILE_LOCK" "$M5_EVIDENCE_DIR/dev.txt"
+          cp forecasting-product/requirements/manifest.json "$M5_EVIDENCE_DIR/manifest.json"
+          printf '%s\n' \
+            "M5_EVIDENCE_DIR=$M5_EVIDENCE_DIR" \
+            "M5_PROFILE_INSTALL_REPORT=$M5_EVIDENCE_DIR/install.json" \
+            "M5_PROFILE_QUALIFICATION=$M5_EVIDENCE_DIR/native-profiles/dev.json" \
+            "M5_CANDIDATE_OUTPUT=$M5_EVIDENCE_DIR/candidate.json" >> "$GITHUB_ENV"
 
       - name: Install dependencies
+        shell: bash
         run: |
-          pip install -r forecasting-product/requirements.txt
-          pip install pytest pytest-cov pytest-timeout httpx rapidfuzz
+          set -euo pipefail
+          python -m pip install --require-hashes --only-binary=:all: --force-reinstall \
+            --report "$M5_PROFILE_INSTALL_REPORT" -r "$M5_PROFILE_LOCK" \
+            2>&1 | tee "$M5_EVIDENCE_DIR/install.log"
+          python -m pip check 2>&1 | tee "$M5_EVIDENCE_DIR/pip-check.log"
+
+      - name: Verify clean native Linux profiles and model intervals
+        working-directory: forecasting-product
+        run: python scripts/check_dependency_profile.py --all --output "$M5_EVIDENCE_DIR/native-profiles"
 
       - name: Run tests
         working-directory: forecasting-product
@@ -281,18 +376,112 @@ jobs:
             --junitxml=test-results.xml
 
       - name: Upload coverage
-        if: always() && matrix.python-version == '3.11'
-        uses: actions/upload-artifact@v4
+        if: always() && matrix.profile == 'py312'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
         with:
           name: coverage-report
           path: forecasting-product/coverage.xml
 
       - name: Upload backend results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
         with:
           name: backend-results-python-${{ matrix.python-version }}
           path: forecasting-product/test-results.xml
+      - name: Upload native Linux profile evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
+        with:
+          name: native-profiles-linux-${{ matrix.profile }}
+          path: ${{ runner.temp }}/m5-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.profile }}/native-profiles/
+
+      - name: Upload unapproved native M5 candidate and raw predictions
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
+        with:
+          name: m5-native-candidate-${{ matrix.profile }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/m5-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.profile }}/
+          if-no-files-found: error
+
+  run-artifacts:
+    name: Run artifacts (${{ matrix.os }}, Python ${{ matrix.runtime.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        runtime:
+          - python: "3.11.18"
+            profile: py311
+          - python: "3.12.16"
+            profile: py312
+          - python: "3.13.18"
+            profile: py313
+    env:
+      POLARS_MAX_THREADS: "2"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMBA_NUM_THREADS: "1"
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0, Node 24
+        if: runner.os == 'Linux'
+        with:
+          python-version: ${{ matrix.runtime.python }}
+          cache: pip
+          cache-dependency-path: forecasting-product/requirements/**/*.txt
+      - name: Provision exact native Windows security-release Python
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          UV_PYTHON_INSTALL_DIR: ${{ runner.temp }}/forecast-python
+          UV_CACHE_DIR: ${{ runner.temp }}/forecast-uv-cache
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'forecast-uv.zip'
+          $tools = Join-Path $env:RUNNER_TEMP 'forecast-uv'
+          Invoke-WebRequest 'https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-pc-windows-msvc.zip' -OutFile $archive
+          $expected = 'a2a8820d5eea32f08ef467ef3b7f66883a9b076d5737a2fc2fbb5f458d1bb50f'
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+            throw 'The uv archive does not match the pinned upstream SHA256'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $tools
+          $uv = Join-Path $tools 'uv.exe'
+          & $uv python install '${{ matrix.runtime.python }}' --no-bin --no-registry
+          if ($LASTEXITCODE -ne 0) { throw 'Managed Python installation failed' }
+          $python = & $uv python find '${{ matrix.runtime.python }}' --managed-python
+          if ($LASTEXITCODE -ne 0) { throw 'Managed Python lookup failed' }
+          $venv = Join-Path $env:RUNNER_TEMP 'forecast-runtime'
+          & $python -m venv $venv
+          if ($LASTEXITCODE -ne 0) { throw 'Isolated Python environment creation failed' }
+          $scripts = Join-Path $venv 'Scripts'
+          & (Join-Path $scripts 'python.exe') -c "import platform, sysconfig; assert platform.python_version() == '${{ matrix.runtime.python }}'; assert platform.machine().lower() in ('amd64', 'x86_64'); assert sysconfig.get_platform() == 'win-amd64'"
+          if ($LASTEXITCODE -ne 0) { throw 'The native interpreter does not match the qualified target' }
+          $scripts | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Install local filesystem regression dependencies
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all:
+          -r forecasting-product/requirements/${{ matrix.runtime.profile }}/dev.txt
+      - run: python -m pip check
+      - name: Verify native publication, faults, races, restart, roots and authorized retrieval
+        working-directory: forecasting-product
+        run: >
+          python -m pytest tests/test_run_store.py tests/test_run_artifacts.py
+          tests/test_run_store_process.py tests/test_run_cli.py
+          tests/test_run_scoring_integration.py tests/test_scoped_simpson_integration.py
+          tests/test_runtime_provenance.py
+          -q -o addopts="" -o faulthandler_timeout=90
+          --timeout=150 --timeout-method=thread --junitxml=run-artifact-results.xml
+      - name: Upload run artifact evidence (no credentials or input datasets)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
+        with:
+          name: run-artifact-results-${{ matrix.os }}-${{ matrix.runtime.profile }}
+          path: forecasting-product/run-artifact-results.xml
 
   build:
     name: Docker Build
@@ -302,12 +491,13 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24
 
       - name: Build production image
         run: |
           docker build \
             --target api \
+            --build-arg FORECAST_BUILD_REVISION=${{ github.sha }} \
             -t forecasting-product:${{ github.sha }} \
             .
 
@@ -338,9 +528,26 @@ jobs:
       - name: Verify production authentication and secure container startup
         run: python3 .github/scripts/docker-auth-smoke.py "forecasting-product:${{ github.sha }}"
 
+      - name: Build and verify the non-root production frontend image
+        run: |
+          docker build --target runner -t forecasting-frontend:${{ github.sha }} forecasting-product/frontend
+          container=$(docker run --detach --rm --publish 127.0.0.1::3000 forecasting-frontend:${{ github.sha }})
+          trap 'docker rm --force "$container" >/dev/null 2>&1 || true' EXIT
+          address=$(docker port "$container" 3000/tcp)
+          ready=false
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent "http://$address/login" >/dev/null; then
+              ready=true
+              break
+            fi
+            sleep 2
+          done
+          test "$ready" = true
+          test "$(docker exec "$container" id -u)" = 1001
+
       - name: Upload Docker smoke evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
         with:
           name: docker-smoke-results
           path: docker-smoke-results/
@@ -355,16 +562,25 @@ jobs:
       run:
         working-directory: forecasting-product/frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0, Node 24
         with:
-          node-version: "20"
+          node-version-file: forecasting-product/frontend/.nvmrc
           cache: npm
           cache-dependency-path: forecasting-product/frontend/package-lock.json
       - run: npm ci
+      - run: npm run lock:integrity -- --check-upstream
+        env:
+          npm_config_cache: ${{ runner.temp }}/npm-integrity-cache
+      - run: npm audit --audit-level=high
+      - run: npm run lint
       - run: npm run typecheck
       - run: npm run test:e2e
       - run: npm run build
+      - name: Verify real Plotly charts against the production standalone server
+        env:
+          PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
+        run: npm run test:runtime-browser
 
   automation:
     name: Automation safety
@@ -373,29 +589,29 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0, Node 24
         with:
-          node-version: "20"
+          node-version-file: forecasting-product/frontend/.nvmrc
       - run: node --test .github/scripts/*.test.cjs
 
   ci-gate:
     name: CI gate
     if: always()
-    needs: [lint, validation, forecast-intent, process-safety, test, build, frontend, automation, authentication]
+    needs: [lint, validation, forecast-intent, process-safety, test, build, frontend, automation, authentication, run-artifacts]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0, Node 24
         with:
-          node-version: "20"
+          node-version-file: forecasting-product/frontend/.nvmrc
       - name: Require every constituent job to succeed
         env:
           CI_NEEDS: ${{ toJSON(needs) }}

@@ -1,52 +1,6 @@
-# ── Core ──────────────────────────────────────────────────────────────────────
-numpy>=1.21.0
-pandas>=1.3.0
-polars>=0.20.0
-pyyaml>=5.4.0
-
-# ── Forecasting (Nixtla stack) ───────────────────────────────────────────────
-statsforecast>=1.6.0
-mlforecast>=0.12.0
-hierarchicalforecast>=0.4.0     # Hierarchical reconciliation (MinT, OLS, WLS, ERM)
-
-# ── ML models ────────────────────────────────────────────────────────────────
-lightgbm>=3.3.0
-xgboost>=1.5.0
-scikit-learn>=1.0.0
-
-# ── String matching (SKU mapping) ────────────────────────────────────────────
-rapidfuzz>=3.0.0
-
-# ── Override store ───────────────────────────────────────────────────────────
-duckdb>=0.9.0
-
-# ── Visualization ────────────────────────────────────────────────────────────
-matplotlib>=3.4.0
-seaborn>=0.11.0
-
-# ── Visualization ─────────────────────────────────────────────────────────
-plotly>=5.18.0
-
-# ── Testing ──────────────────────────────────────────────────────────────────
-pytest>=7.0.0
-httpx>=0.23.0
-
-# ── REST API server ──────────────────────────────────────────────────────────
-fastapi>=0.100.0,<0.116.0
-uvicorn>=0.20.0
-python-multipart>=0.0.7
-pyjwt>=2.0.0,<3.0
-anthropic>=0.40.0,<1.0.0
-
-# ── Spark / Microsoft Fabric layer ──────────────────────────────────────────
-# PySpark (use the version that matches your Fabric Spark runtime)
-# pyspark>=3.4.0  # install via the [spark] extra when needed
-
-# Delta Lake (open-source; Fabric uses the managed Delta runtime automatically)
-# Install only for local development / testing outside Fabric.
-# delta-spark>=2.4.0  # install via the [spark] extra when needed
-
-# Microsoft Fabric / Azure SDK (optional — needed only for REST API calls,
-# token-based auth, or notebookutils alternatives outside Fabric notebooks)
-# azure-identity>=1.15.0
-# azure-storage-file-datalake>=12.14.0
+# Default local development profile: CPython 3.12, Windows/Linux x86-64.
+# Python 3.11 and 3.13 must use their matching requirements/py311 or py313 files.
+# Regenerate from pyproject.toml with scripts/lock_dependencies.py; never edit pins.
+--require-hashes
+--only-binary=:all:
+-r requirements/py312/dev.txt

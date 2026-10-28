@@ -11,7 +11,7 @@ Secondary metrics (available for deeper analysis):
 All functions operate on Polars Series for vectorised computation.
 """
 
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import polars as pl
 
@@ -38,7 +38,17 @@ def wmape(actual: pl.Series, forecast: pl.Series) -> Optional[float]:
     return float(abs_error / abs_actual)
 
 
-def normalized_bias(actual: pl.Series, forecast: pl.Series) -> float:
+def macro_wmape_component(actual: pl.Series, forecast: pl.Series) -> Optional[float]:
+    """WMAPE of one series/fold, the atomic term of ``macro_wmape``.
+
+    Panel-level macro scoring requires the grouping keys and is implemented by
+    ``aggregate_metrics``; a flat pair of Series cannot identify those groups.
+    Registration exposes this criterion to the existing configuration allowlist.
+    """
+    return wmape(actual, forecast)
+
+
+def normalized_bias(actual: pl.Series, forecast: pl.Series) -> Optional[float]:
     """
     Normalized Bias — measures systematic over/under-forecasting.
 
@@ -47,11 +57,12 @@ def normalized_bias(actual: pl.Series, forecast: pl.Series) -> float:
     - Positive → over-forecasting (forecast > actual on average)
     - Negative → under-forecasting (forecast < actual on average)
     - Range: (-∞, +∞), closer to 0 is better.
+    - Undefined (``None``) when total absolute actual volume is zero.
     """
     signed_error = (forecast - actual).sum()
     abs_actual = actual.abs().sum()
     if abs_actual == 0:
-        return 0.0
+        return None
     return float(signed_error / abs_actual)
 
 
@@ -127,11 +138,68 @@ def make_mase(
 
 METRIC_REGISTRY: Dict[str, Callable[[pl.Series, pl.Series], float]] = {
     "wmape": wmape,
+    "macro_wmape": macro_wmape_component,
     "normalized_bias": normalized_bias,
     "mape": mape,
     "mae": mae,
     "rmse": rmse,
 }
+
+# Aggregation semantics and ranking direction are shared by all selectors.
+# ``macro_wmape`` is the explicitly named equal-(series, fold) alternative;
+# it is not an alias for the volume-weighted WMAPE used by default.
+METRIC_DIRECTIONS = {
+    "wmape": "minimize",
+    "macro_wmape": "minimize",
+    "normalized_bias": "minimize_absolute",
+    "mape": "minimize",
+    "mae": "minimize",
+    "rmse": "minimize",
+    "mase": "minimize",
+}
+
+
+def metric_expression(name: str, *, aggregate: bool = True) -> pl.Expr:
+    """Canonical Polars expression over raw ``actual``/``forecast`` rows.
+
+    The nonaggregate form describes one observation, not a repeated full-fold
+    score. MASE additionally requires its training-only ``mase_scale`` column.
+    """
+    actual = pl.col("actual")
+    error = pl.col("forecast") - actual
+    absolute = error.abs()
+    volume = actual.abs()
+    if name in ("wmape", "normalized_bias"):
+        numerator = absolute if name == "wmape" else error
+        if aggregate:
+            numerator, volume = numerator.sum(), volume.sum()
+        expression = pl.when(volume > 0).then(numerator / volume).otherwise(None)
+    elif name == "mape":
+        expression = pl.when(volume > 0).then(absolute / volume).otherwise(None)
+        if aggregate:
+            expression = expression.mean()
+    elif name == "mae":
+        expression = absolute.mean() if aggregate else absolute
+    elif name == "rmse":
+        expression = (error.pow(2).mean()).sqrt() if aggregate else absolute
+    elif name == "mase":
+        scale = pl.col("mase_scale")
+        valid = scale.is_not_null() & scale.is_finite() & (scale > 0)
+        expression = pl.when(valid).then(absolute / scale).otherwise(None)
+        if aggregate:
+            expression = pl.when(valid.all()).then(expression.mean()).otherwise(None)
+    else:
+        raise ValueError(f"Unknown or non-additive metric {name!r}")
+    return expression.cast(pl.Float64).alias(name)
+
+
+def validate_metric_inputs(actual: pl.Series, forecast: pl.Series) -> None:
+    """Reject empty, misaligned, null or nonfinite observations before scoring."""
+    if len(actual) == 0 or len(actual) != len(forecast):
+        raise ValueError("Scoring requires nonempty actual/forecast arrays of equal length")
+    for label, values in (("actual", actual), ("forecast", forecast)):
+        if not values.dtype.is_numeric() or values.null_count() or not values.is_finite().all():
+            raise ValueError(f"Scoring requires finite, non-null numeric {label} values")
 
 # Metrics that require extra context (e.g. in-sample data) beyond actual/forecast.
 # Key = metric name, value = context key expected in the ``context`` dict.
@@ -144,8 +212,8 @@ def compute_all_metrics(
     actual: pl.Series,
     forecast: pl.Series,
     metric_names: Optional[List[str]] = None,
-    context: Optional[Dict[str, pl.Series]] = None,
-) -> Dict[str, float]:
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Optional[float]]:
     """
     Compute multiple metrics at once.
 
@@ -165,6 +233,7 @@ def compute_all_metrics(
     """
     if metric_names is None:
         metric_names = list(METRIC_REGISTRY.keys())
+    validate_metric_inputs(actual, forecast)
 
     results = {}
     for name in metric_names:
@@ -177,7 +246,7 @@ def compute_all_metrics(
         if name in CONTEXT_METRICS:
             ctx_key = CONTEXT_METRICS[name]
             if context and ctx_key in context:
-                fn = make_mase(context[ctx_key])
+                fn = make_mase(context[ctx_key], seasonal_period=context.get("seasonal_period", 52))
                 results[name] = fn(actual, forecast)
             else:
                 results[name] = float("nan")

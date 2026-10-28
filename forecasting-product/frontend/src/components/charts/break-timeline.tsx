@@ -14,7 +14,7 @@ import { COLORS, SEVERITY_COLORS } from "@/lib/constants";
 
 interface DataPoint {
   week: string;
-  value: number;
+  value: number | null;
 }
 
 interface Props {

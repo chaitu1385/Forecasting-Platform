@@ -2,18 +2,18 @@
 
 ## Project Overview
 
-Multi-frequency (daily/weekly/monthly/quarterly) sales forecasting product for retail S&OP. Python 3.8+, built on FastAPI (REST API), PySpark (distributed execution), and Polars (data processing). Combines statistical, ML, neural, and foundation model forecasting with hierarchical reconciliation.
+Multi-frequency (daily/weekly/monthly/quarterly) sales forecasting product for retail S&OP. Supported CPython 3.11-3.13 (production 3.12.16), built on FastAPI (REST API), PySpark (distributed execution), and Polars (data processing). Combines statistical, ML, neural, and foundation model forecasting with hierarchical reconciliation.
 
 Main code lives in `forecasting-product/`.
 
 ## Common Commands
 
 ```bash
-# Install dependencies (full)
+# Install the hash-locked Python 3.12 development profile
 pip install -r forecasting-product/requirements.txt
 
-# Install dependencies (Fabric-compatible subset — no DuckDB, PySpark, neuralforecast)
-pip install -r forecasting-product/requirements-fabric.txt
+# Python 3.11/3.13 use the matching requirements/py311 or py313 directory.
+# requirements-fabric.txt is a local Python 3.13 candidate, not a managed-runtime certification.
 
 # Run all tests
 python -m pytest forecasting-product/tests/ -v
@@ -25,7 +25,7 @@ python -m pytest forecasting-product/tests/test_platform.py -v
 python forecasting-product/scripts/serve.py --demo --port 8000 --data-dir data/
 
 # Start Next.js frontend
-cd forecasting-product/frontend && npm install && npm run dev
+cd forecasting-product/frontend && npm ci && npm run dev
 
 # Docker quick-start (API + Next.js)
 docker compose -f docker-compose.yml -f docker-compose.demo.yml up --build
@@ -37,14 +37,14 @@ python forecasting-product/scripts/run_forecast.py --config forecasting-product/
 python forecasting-product/scripts/run_backtest.py --config forecasting-product/configs/platform_config.yaml --lob retail
 
 # Build package
-python forecasting-product/setup.py sdist bdist_wheel
+python -m build --no-isolation forecasting-product
 ```
 
 ## Architecture
 
 ```
 forecasting-product/
-├── src/                    # Source modules (125 files across 36 packages)
+├── src/                    # Application source modules
 │   ├── ai/                 # AI-native features (Claude-powered)
 │   │   ├── base.py         # AIFeatureBase — shared client wrapper
 │   │   ├── nl_query.py     # NaturalLanguageQueryEngine — POST /ai/explain
@@ -60,7 +60,7 @@ forecasting-product/
 │   │       ├── hierarchy.py    # POST /hierarchy/build, aggregate, reconcile
 │   │       ├── sku_mapping.py  # POST /sku-mapping/phase1, phase2
 │   │       ├── overrides.py    # CRUD /overrides
-│   │       ├── pipeline.py     # POST /pipeline/backtest, forecast; GET manifests, costs; POST analyze-multi-file
+│   │       ├── pipeline.py     # POST backtest/forecast; GET exact runs/config/input, manifests, costs; multi-file analysis
 │   │       ├── analytics.py    # GET /metrics/{lob}/fva, calibration; POST shap, decompose, compare, constrain
 │   │       └── governance.py   # GET /governance/model-cards, lineage; POST export
 │   ├── audit/              # Append-only Parquet audit logging
@@ -95,8 +95,10 @@ forecasting-product/
 │   │   ├── alerts.py       # AlertDispatcher — drift alerts → webhooks
 │   │   └── cost.py         # CostEstimator — compute cost tracking
 │   ├── overrides/          # Planner manual override store (DuckDB + Parquet fallback)
-│   ├── pipeline/           # End-to-end backtest + forecast pipelines, provenance manifest
-│   │   ├── manifest.py     # PipelineManifest — provenance sidecar (JSON) for each forecast run
+│   ├── pipeline/           # End-to-end backtest + forecast pipelines, immutable local bundles
+│   │   ├── run_store.py    # RunStore — UUID authority, atomic commit marker, integrity/exact/latest reads
+│   │   ├── readers.py      # RunReader — shared forecast/history discovery and explicit legacy adapters
+│   │   ├── manifest.py     # PipelineManifest — safe versioned provenance, canonical config/model metadata
 │   │   ├── batch_runner.py # BatchInferenceRunner — partitioned parallel forecasting
 │   │   └── scheduler.py    # PipelineScheduler — recurring runs with retry + dead-letter
 │   ├── series/             # Series builder, sparse detector, SKU transitions, structural break detection
@@ -105,7 +107,7 @@ forecasting-product/
 │   ├── spark/              # PySpark distributed execution
 │   ├── fabric/             # Microsoft Fabric / Delta Lake deployment
 │   └── analytics/          # BI export, comparators, explainability, governance, FVA
-├── frontend/               # Next.js 15 frontend (TypeScript, Tailwind, Recharts)
+├── frontend/               # Next.js 16 / Node 24 (TypeScript, Tailwind, Recharts, Plotly)
 │   ├── src/app/            # App Router pages (login + 8 workflow pages)
 │   ├── src/components/     # Reusable components (charts, AI panels, layout, shared)
 │   │   ├── forecast/       # Decomposition, comparison, constrained forecast panels
@@ -114,8 +116,9 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 1691 tests (pytest)
+├── tests/                  # 2047 cases (pytest)
 ├── configs/                # YAML configuration files
+├── requirements/           # Hash-locked CPU/API/dev/AI/Fabric/Spark profiles per Python minor
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 └── notebooks/              # Jupyter notebooks for exploration
 ```
@@ -152,6 +155,41 @@ allowlist, not `asdict(PlatformConfig)`. Keep server paths and credentials out o
 The UI forwards only the current backtest champion/horizon and invalidates dependent
 results when data, LOB, or configuration changes.
 
+### Immutable run storage
+
+`OutputConfig.runs_path` explicitly selects the local authority. Without it,
+direct/custom forecast pipelines use `<forecast_path>/runs`, and backtests use
+`<metrics_path>/runs`; never infer a shared parent or silently redirect to cwd.
+The API/standard CLI/demo deployment pass a shared explicit root
+(`API_RUNS_DIR` / `--runs-dir`, default `data/runs`). The YAML loader constructs
+`OutputConfig` explicitly, so new schema fields require explicit parser wiring.
+
+A fresh UUID32 at each `run()` entry is shared by context, engine metric rows,
+manifest and response. A run is visible only after a no-replace hard link
+publishes fixed `manifest.json` in its exclusive directory. All required members
+must already be closed, fsynced and hashed. Never catch a metadata write failure
+and return completed, mirror to a second authoritative store, delete a committed
+run after an error, or use stale output from the previous invocation.
+`RunPublicationError` distinguishes `not_committed`, `committed` and `uncertain`.
+Latest is attempt-start UTC plus ID within LOB/type; retry means a new attempt.
+
+Exact backtest history must return stored `leaderboard.parquet` unchanged.
+`MetricStore.leaderboard_result` resolves its frame and manifest together;
+`leaderboard_from_records` is the explicit current scorer, not a read adapter.
+New runs persist `execution.scoring_contract` (policy/version, criteria, scope)
+in the manifest and canonical config. Old missing policy stays unknown. Preserve
+stored row order/rank, cohort identity, auth/path checks and config hashes through
+API/notebook/BI/UI consumers; never re-rank history by today's WMAPE.
+
+Readers verify identities, fixed member names, checksums and typed schemas;
+corruption/unknown versions must be explicit, not healthy empty/fallback.
+Pass the same explicit root to MetricStore/notebook readers. Legacy reads are
+read-only/unknown lineage. Keep credential/private-path settings out of
+canonical config/model provenance; input byte hashes do not claim semantic
+equivalence or deterministic fitted-model replay. Managed Spark/Fabric Delta
+storage remains a separate contract. See docs/DEPLOYMENT.md for local filesystem,
+fsync/Windows and offline recovery limitations.
+
 ### Multi-frequency support
 
 The platform supports daily (`"D"`), weekly (`"W"`), monthly (`"M"`), and quarterly (`"Q"`) data frequencies. The `FREQUENCY_PROFILES` dict in `src/config/schema.py` is the single source of truth, mapping each frequency to: `season_length`, `default_lags`, `min_series_length`, `default_val_periods`, `default_horizon`, `statsforecast_freq`, and `timedelta_kwargs`.
@@ -165,7 +203,19 @@ backtest:
   val_periods: 3          # alias for val_weeks (backward-compat)
 ```
 
-Helper functions: `get_frequency_profile(freq)` returns the profile dict; `freq_timedelta(freq, periods)` returns a `timedelta` for date arithmetic. All models, backtesting, validation, and data processing use these instead of hardcoded weekly values.
+`get_frequency_profile(freq)` returns defaults. `utils.calendar.PeriodCalendar`
+validates the explicitly configured frequency and preserves observed weekday,
+month-start/end and quarter-start/end anchors. It drives model, feature, gap-fill
+and CV dates. `freq_timedelta` is only valid for fixed D/W periods; M/Q raise
+instead of approximating months as 30 days. Explicit seasonal parameters are
+never replaced by frequency defaults.
+
+New selection and newly computed leaderboards use `metrics.aggregation` on complete raw observation
+keys, not means of cached metric columns. Default `wmape` is volume-weighted;
+`macro_wmape` explicitly requests equal series/fold weighting. Bias is positive
+for over-forecasting and ranks by absolute magnitude. See
+[the numerical contract](docs/NUMERICAL_RELIABILITY.md), including undefined
+scores, gap lead times, preprocessing restrictions and historical-run migration.
 
 ## Authentication contract
 
@@ -190,14 +240,32 @@ Only explicit demo renders role simulation; production seeding is disabled.
 
 ## Testing
 
+Install the matching committed `requirements/py311`, `py312` or `py313` dev
+profile with `--require-hashes --only-binary=:all:`. Python 3.10 is EOL.
+`scripts/lock_dependencies.py --check` verifies generated provenance offline;
+CI adds `--upstream` to reject yanked/non-upstream artifacts independently of CVEs.
+The hash-export pass must preserve the resolver's exact versions and markers;
+never let a shared wheel cache promote an unrequested prerelease.
+regenerate using the pinned pip/pip-tools and a private Windows/Linux wheel cache.
+Polars 2.0 is the supported application floor. The CPU profile intentionally
+uses `xgboost-cpu`, not a GPU/NCCL distribution; provenance must record the actual
+distribution version. Never replace locks with unconstrained installs to make CI pass.
+
 - Framework: pytest
 - Test files mirror source structure with `test_` prefix
 - Helper fixtures use `_make_*` factory functions (e.g., `_make_weekly_actuals`)
-- 1691 cases across 64 test modules; run the full suite without module exclusions
+- 2047 cases across 77 test modules; run the full suite without module exclusions
 - Key test modules: `test_platform.py` (85 tests), `test_sku_mapping.py` (81), `test_ai_*.py` (73), `test_forecast_explainability.py` (59), `test_intermittent_demand.py` (55), `test_observability.py` (41), `test_file_classifier.py` (26), `test_file_merger.py` (20)
 - Focused forecast-intent coverage: `test_forecast_intent.py` (108 real ASGI cases),
   plus frontend `e2e/pipeline-execution.test.tsx` and `e2e/data-onboarding-state.test.tsx`
   (21 handoff/state cases). These require only core/API and existing frontend test dependencies.
+- Run safety: `test_run_store.py`, `test_run_artifacts.py`,
+  `test_run_store_process.py` and `test_run_cli.py` cover publication faults on
+  both sides of the marker, exact/legacy/auth/path contracts, actual multiprocess
+  completion races, owned-process interruption/restart, isolated restore and
+  explicit root precedence. Required Linux/Windows CI jobs do not skip these.
+  `e2e/run-selection.test.tsx` and the private production Playwright case exercise
+  exact older-run values/config, stale response isolation and no POST retries.
 - Process safety: `test_process_execution.py` has five real subprocess cases,
   including the ASGI backtest path, configured model/frequency parity, and
   serialization errors. Both production pools use a local `spawn` context, never
@@ -224,9 +292,15 @@ Only explicit demo renders role simulation; production seeding is disabled.
 
 ## Key Dependencies
 
-Core: polars, statsforecast, mlforecast, lightgbm, xgboost, scikit-learn, fastapi, pyyaml, duckdb, pyjwt
-Frontend: next, react, typescript, tailwindcss, recharts, @tanstack/react-query, next-auth, plotly
-Optional: neuralforecast, pyspark, shap, bcrypt, holidays, delta-spark, azure-identity
+Core CPU/scientific: polars, numpy, scipy, pandas, pyarrow, statsforecast, mlforecast, hierarchicalforecast, lightgbm, xgboost-cpu, scikit-learn, pyyaml, rapidfuzz
+API: fastapi, starlette, uvicorn, python-multipart, duckdb, pyjwt; Anthropic SDK included but calls require explicit configuration
+Frontend: Node 24.22.1, npm 11.19.1, Next 16.4.2, React 19, TypeScript, Tailwind 3, Recharts, @tanstack/react-query, Plotly 4
+Optional: neuralforecast, pyspark, shap, holidays, delta-spark, azure-identity
+
+Keep the supported Webpack flag during the Next 16 migration; no bundler rewrite
+is implied. `npm run lint` is noninteractive. `npm run test:runtime-browser`
+checks actual fan/sunburst React pages in the production standalone server using
+synthetic API interception, without provider calls or external map resources.
 
 ## Documentation Convention
 

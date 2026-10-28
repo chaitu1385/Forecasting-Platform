@@ -12,6 +12,8 @@ from typing import List, Optional
 
 import polars as pl
 
+from ..utils.calendar import PeriodCalendar, advance_date
+
 logger = logging.getLogger(__name__)
 
 # Holiday generation — optional dependency
@@ -92,33 +94,29 @@ def generate_holiday_calendar(
             "holiday_count": pl.Int32,
         })
 
-    # Get all holidays in the range
-    years = list(range(start_date.year, end_date.year + 1))
+    calendar = PeriodCalendar.from_dates([start_date], frequency)
+    years = list(range(advance_date(start_date, frequency, -1).year, advance_date(end_date, frequency, 1).year + 1))
     country_holidays = _holidays_lib.country_holidays(country, years=years)
 
     # Generate date range at the configured frequency
-    _interval_map = {"D": "1d", "W": "1w", "M": "1mo", "Q": "1q"}
-    interval = _interval_map.get(frequency, "1w")
-    _window_days = {"D": 1, "W": 7, "M": 30, "Q": 91}
-    window = _window_days.get(frequency, 7)
-    weeks = pl.date_range(start_date, end_date, interval=interval, eager=True)
+    weeks = []
+    index = 0
+    while calendar.at(index) <= end_date:
+        weeks.append(calendar.at(index))
+        index += 1
 
     holiday_counts = []
     for week_start in weeks:
-        # Count holidays in the period window starting from this date
-        count = 0
-        for day_offset in range(window):
-            check_date = week_start + pl.duration(days=day_offset)
-            if isinstance(check_date, date) and check_date in country_holidays:
-                count += 1
-            else:
-                # Handle polars date type
-                try:
-                    py_date = week_start + timedelta(days=day_offset)
-                    if py_date in country_holidays:
-                        count += 1
-                except Exception:
-                    logger.debug("Failed to check holiday for date offset %d", day_offset, exc_info=True)
+        if frequency in ("M", "Q") and start_date.day != 1:
+            window_start = calendar.shift(week_start, -1) + timedelta(days=1)
+            window_end = week_start + timedelta(days=1)
+        else:
+            window_start = week_start
+            window_end = calendar.shift(week_start, 1)
+        count = sum(
+            window_start + timedelta(days=offset) in country_holidays
+            for offset in range((window_end - window_start).days)
+        )
         holiday_counts.append(count)
 
     return pl.DataFrame({
@@ -136,6 +134,7 @@ def validate_regressors(
     id_column: Optional[str] = None,
     horizon_weeks: int = 0,
     feature_types: Optional[dict] = None,
+    frequency: str = "W",
 ) -> List[str]:
     """
     Validate external regressor data against actuals.
@@ -209,7 +208,8 @@ def validate_regressors(
                 )
 
         if horizon_weeks > 0 and actuals_max is not None and features_max is not None:
-            required_end = actuals_max + timedelta(weeks=horizon_weeks)
+            calendar = PeriodCalendar.from_dates(actuals[time_column].unique().to_list(), frequency)
+            required_end = calendar.shift(actuals_max, horizon_weeks)
             if features_max < required_end:
                 issues.append(
                     f"External features end ({features_max}) does not cover "
