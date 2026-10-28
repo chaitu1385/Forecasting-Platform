@@ -1,0 +1,97 @@
+name: F8 Windows writer observation
+
+on:
+  push:
+    branches: [chaitu1385-f8-windows-diagnostics]
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    name: Observe Windows writer (Python 3.13.18)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      POLARS_MAX_THREADS: "2"
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      NUMBA_NUM_THREADS: "1"
+      PYTHONUTF8: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1, Node 24
+        with:
+          fetch-depth: 0
+      - name: Verify the frozen application and original guards
+        shell: pwsh
+        run: |
+          $changed = git diff --name-only f025cb82dabe44b3da6eb7ab68dce36d48f01ae9 HEAD -- forecasting-product/src forecasting-product/scripts forecasting-product/requirements forecasting-product/pyproject.toml forecasting-product/tests/test_auth_startup.py .github/workflows/ci.yml
+          if ($LASTEXITCODE -ne 0 -or $changed) { throw 'The diagnostic changed the frozen application or original guards' }
+      - name: Provision exact native Windows security-release Python
+        shell: pwsh
+        env:
+          UV_PYTHON_INSTALL_DIR: ${{ runner.temp }}/forecast-python
+          UV_CACHE_DIR: ${{ runner.temp }}/forecast-uv-cache
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'forecast-uv.zip'
+          $tools = Join-Path $env:RUNNER_TEMP 'forecast-uv'
+          Invoke-WebRequest 'https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-pc-windows-msvc.zip' -OutFile $archive
+          $expected = 'a2a8820d5eea32f08ef467ef3b7f66883a9b076d5737a2fc2fbb5f458d1bb50f'
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) {
+            throw 'The uv archive does not match the pinned upstream SHA256'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $tools
+          $uv = Join-Path $tools 'uv.exe'
+          & $uv python install '3.13.18' --no-bin --no-registry
+          if ($LASTEXITCODE -ne 0) { throw 'Managed Python installation failed' }
+          $python = & $uv python find '3.13.18' --managed-python
+          if ($LASTEXITCODE -ne 0) { throw 'Managed Python lookup failed' }
+          $venv = Join-Path $env:RUNNER_TEMP 'forecast-runtime'
+          & $python -m venv $venv
+          if ($LASTEXITCODE -ne 0) { throw 'Isolated Python environment creation failed' }
+          $scripts = Join-Path $venv 'Scripts'
+          & (Join-Path $scripts 'python.exe') -c "import platform, sysconfig; assert platform.python_version() == '3.13.18'; assert platform.machine().lower() in ('amd64', 'x86_64'); assert sysconfig.get_platform() == 'win-amd64'"
+          if ($LASTEXITCODE -ne 0) { throw 'The native interpreter does not match the qualified target' }
+          $scripts | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Install authentication test dependencies
+        run: >-
+          python -m pip install --require-hashes --only-binary=:all:
+          -r forecasting-product/requirements/py313/dev.txt
+      - name: Verify clean native Windows profiles and model intervals
+        working-directory: forecasting-product
+        run: python scripts/check_dependency_profile.py --all --output "${{ runner.temp }}/native-profiles"
+      - name: Run the original suite and operation order with observations
+        working-directory: forecasting-product
+        shell: pwsh
+        run: |
+          $private = Join-Path $env:RUNNER_TEMP 'f8-writer-observation'
+          New-Item -ItemType Directory -Path $private | Out-Null
+          $xml = Join-Path $private 'authentication-results.xml'
+          $log = Join-Path $private 'private-test-output.log'
+          python -m pytest tests/test_authentication.py tests/test_auth_startup.py tests/test_docker_seed.py tests/test_planning_api_contracts.py tests/test_override_store.py tests/test_override_api_contracts.py tests/test_override_store_process.py tests/test_constrained_demand.py tests/test_constraint_api_contracts.py tests/test_decomposition_api_contracts.py -q --capture=tee-sys -o addopts="" -o faulthandler_timeout=60 --timeout=120 --timeout-method=thread --junitxml="$xml" *> $log
+          exit $LASTEXITCODE
+      - name: Produce only allowlisted observations
+        if: always()
+        working-directory: forecasting-product
+        run: >-
+          python tests/windows_writer_diagnostics.py
+          --junit "${{ runner.temp }}/f8-writer-observation/authentication-results.xml"
+          --output "${{ runner.temp }}/f8-writer-observation/observations.json"
+      - name: Upload observations, never raw test output or private files
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2, Node 24
+        with:
+          name: f8-windows-writer-observations-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/f8-writer-observation/observations.json
+          if-no-files-found: error
+      - name: Remove only owned raw diagnostic reports
+        if: always()
+        shell: pwsh
+        run: |
+          $private = Join-Path $env:RUNNER_TEMP 'f8-writer-observation'
+          foreach ($name in @('authentication-results.xml', 'private-test-output.log')) {
+            $file = Join-Path $private $name
+            if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file }
+          }

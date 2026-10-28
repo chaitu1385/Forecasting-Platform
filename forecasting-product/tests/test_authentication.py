@@ -295,7 +295,14 @@ exit 0
     assert result.returncode == 0, "Native Windows ACL verification failed: " + result.stdout + result.stderr
 
 
-def test_private_output_is_new_owner_only_and_cannot_overwrite(tmp_path):
+@pytest.fixture
+def _observe_windows_writer(monkeypatch, record_property):
+    from tests.windows_writer_diagnostics import install_observer
+
+    install_observer(monkeypatch, record_property)
+
+
+def test_private_output_is_new_owner_only_and_cannot_overwrite(tmp_path, _observe_windows_writer):
     output = tmp_path / "credential.jwt"
     write_private_token(output, "synthetic-not-an-actual-credential")
     _assert_private(output)
@@ -304,7 +311,7 @@ def test_private_output_is_new_owner_only_and_cannot_overwrite(tmp_path):
     assert output.read_text().strip() == "synthetic-not-an-actual-credential"
 
 
-def test_private_output_verifier_rejects_a_broader_read_rule(tmp_path):
+def test_private_output_verifier_rejects_a_broader_read_rule(tmp_path, _observe_windows_writer):
     output = tmp_path / "noncredential-acl-check.txt"
     write_private_token(output, "synthetic-not-an-actual-credential")
     if os.name == "nt":
