@@ -1,4 +1,4 @@
-"""Analytics endpoints — FVA, calibration, SHAP, decomposition, comparison, constraints."""
+"""Analytics endpoints — FVA, calibration, decomposition, comparison, constraints."""
 
 from __future__ import annotations
 
@@ -20,7 +20,11 @@ from ..deps import (
     validate_path_param,
     validate_upload_size,
 )
-from ..schemas import ConstrainResponse
+from ..schemas import (
+    ConstrainResponse,
+    DecompositionCompatibilityResponse,
+    DecompositionSummaryResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,90 +114,87 @@ def get_calibration(
     }
 
 
-@router.post("/metrics/{lob}/shap")
-async def compute_shap(
+@router.post("/metrics/{lob}/decomposition", response_model=DecompositionSummaryResponse)
+@router.post("/metrics/{lob}/shap", response_model=DecompositionCompatibilityResponse, deprecated=True)
+async def compute_decomposition(
     lob: str,
     request: Request,
-    file: Optional[UploadFile] = File(None, description="Actuals CSV/Parquet for SHAP computation"),
-    model_name: str = Query("lgbm_direct", description="Model to explain"),
+    file: Optional[UploadFile] = File(None, description="Optional history override; not the committed prepared snapshot"),
+    model_name: Optional[str] = Query(None, description="Ignored compatibility parameter; never model provenance", deprecated=True),
     season_length: int = Query(52),
-    top_k: int = Query(10, description="Number of top features to return"),
+    top_k: int = Query(10, description="Maximum component magnitudes in the deprecated feature_importance field"),
     run_id: Optional[str] = Query(None),
+    legacy: bool = Query(False, description="Explicitly read unverified legacy forecasts; incompatible with run_id"),
+    id_col: str = Query("series_id", description="Uploaded history identifier column"),
+    time_col: str = Query("week", description="Uploaded history time column"),
+    target_col: str = Query("quantity", description="Uploaded history target column"),
     user: User = Depends(require_permission(Permission.VIEW_METRICS)),
 ):
-    """Compute SHAP feature attribution for tree-based models."""
-    from ...analytics.explainer import ForecastExplainer
+    """Describe moving-average components, not fitted-model feature attribution.
+
+    Exact forecast IDs never fall back to another run. Without an upload, a
+    committed forecast uses its own prepared history. The deprecated alias uses
+    the identical computation; its old field names do not represent SHAP.
+    """
+    from ...pipeline.readers import ArtifactRead
     from ...pipeline.run_store import RunIntegrityError, RunNotFoundError
+    from ..decomposition import (
+        DecompositionInputError,
+        UnsupportedDecompositionWindow,
+        decompose_artifacts,
+        read_decomposition_upload,
+    )
 
     validate_path_param(lob, "lob")
+    if top_k < 1 or season_length < 1:
+        raise HTTPException(400, detail="season_length and top_k must be positive integers")
     try:
         reader = run_reader(request)
-        selected = reader.forecast(lob, run_id)
-        forecast_df = selected.frame.rename({
-            selected.id_column: "series_id", selected.time_column: "week",
-        })
-    except (RunIntegrityError, RunNotFoundError, ValueError, OSError) as exc:
-        raise_run_error(exc)
-    # Load data
-    if file:
-        content = await validate_upload_size(file)
-        filename = file.filename or ""
         try:
-            if filename.endswith(".parquet"):
-                df = pl.read_parquet(io.BytesIO(content))
-            else:
-                df = pl.read_csv(io.BytesIO(content), try_parse_dates=True)
-        except (ValueError, UnicodeDecodeError, OSError) as exc:
-            raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}")
-    else:
-        try:
-            history = reader.history(lob, selected.run_id, legacy=selected.source == "legacy")
-            df = history.frame.rename({
-                history.id_column: "series_id", history.time_column: "week",
-                history.target_column: "quantity",
-            })
+            selected = reader.forecast(lob, run_id, legacy=legacy)
         except (RunIntegrityError, RunNotFoundError, ValueError, OSError) as exc:
+            if not isinstance(exc, (RunNotFoundError, ValueError)):
+                logger.exception("Forecast artifact read failed")
             raise_run_error(exc)
-
-    explainer = ForecastExplainer(season_length=season_length)
-
-    try:
-        # explain_ml needs a trained model — for API use, we'll use the decompose + narrative approach
-        # since we don't have a persisted model object. Return decomposition-based feature importance.
-        if forecast_df.is_empty():
-            raise HTTPException(status_code=404, detail="No forecast data available for SHAP analysis.")
-
-        decomp = explainer.decompose(
-            history=df, forecast=forecast_df,
-            id_col="series_id", time_col="week",
-            target_col="quantity", value_col="forecast",
-        )
-
-        # Summarize component importance as proxy for SHAP
-        importance = []
-        for component in ("trend", "seasonal", "residual"):
-            if component in decomp.columns:
-                vals = decomp.filter(pl.col("is_forecast").not_())[component]
-                importance.append({
-                    "feature": component,
-                    "mean_abs_value": round(float(vals.abs().mean()) if vals.len() > 0 else 0.0, 4),
-                    "std": round(float(vals.std()) if vals.len() > 0 else 0.0, 4),
-                })
-
-        importance.sort(key=lambda x: x["mean_abs_value"], reverse=True)
-
+        if file:
+            content = await validate_upload_size(file)
+            frame = read_decomposition_upload(
+                content, file.filename or "", target_col, identifier_column=id_col,
+                identifier_dtype=selected.frame.schema[selected.id_column],
+            )
+            history = ArtifactRead(
+                frame, None, "uploaded", id_col, time_col, target_col, input_stage="uploaded",
+            )
+        else:
+            try:
+                history = reader.history(
+                    lob, selected.run_id, stage="prepared", legacy=selected.source == "legacy",
+                )
+            except (RunIntegrityError, RunNotFoundError, ValueError, OSError) as exc:
+                if not isinstance(exc, (RunNotFoundError, ValueError)):
+                    logger.exception("Forecast history read failed")
+                raise_run_error(exc)
+        summary = decompose_artifacts(lob, selected, history, season_length)
+        ranked = sorted(summary.components, key=lambda component: component.mean_abs_value, reverse=True)
         return {
-            "lob": lob,
-            "run_id": selected.run_id,
-            "artifact_source": selected.source,
-            "model": model_name,
-            "feature_importance": importance[:top_k],
-            "decomposition_preview": decomp.head(50).to_dicts(),
+            **summary.model_dump(),
+            "model": summary.forecast_model,
+            "feature_importance": [
+                {"feature": component.component, **component.model_dump(exclude={"component"})}
+                for component in ranked[:top_k]
+            ],
         }
     except HTTPException:
         raise
-    except (ValueError, KeyError, TypeError) as exc:
-        raise HTTPException(status_code=500, detail=f"SHAP computation failed: {exc}")
+    except UnsupportedDecompositionWindow as exc:
+        raise HTTPException(400, detail={
+            "code": "unsupported_decomposition_window", "message": str(exc),
+        }) from exc
+    except DecompositionInputError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    except Exception:
+        logger.exception("Forecast decomposition failed")
+        raise HTTPException(500, detail="Forecast decomposition did not produce a complete finite result") from None
 
 
 # ── Forecast analytics ──────────────────────────────────────────────────────
@@ -210,7 +211,7 @@ async def decompose_forecast(
     season_length: int = Query(52),
     user: User = Depends(get_current_user),
 ):
-    """Run STL decomposition on historical + forecast data."""
+    """Run centered-moving-average decomposition on historical + forecast data."""
     from ...analytics.explainer import ForecastExplainer
 
     history_content = await validate_upload_size(history_file)

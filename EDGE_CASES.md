@@ -122,6 +122,29 @@ A catalog of the failure modes that break forecasting platforms — what goes wr
 
 **What to watch for:** This catches exact key duplicates but not "soft" duplicates — rows with the same (id, date) but different values, which can occur when preliminary actuals are revised. The validator blocks on the duplicate key but can't determine which value is correct. Pre-process your data to resolve conflicts (keep latest revision, sum if appropriate, etc.) before feeding it to the platform. Also, be aware that some data sources produce duplicates by design (e.g., one row per transaction rather than aggregated demand per period) — these need pre-aggregation.
 
+### Decomposition Coverage, Undefined Edges and Precision
+
+**What happens:** The underlying decomposition can omit forecast series without history,
+lose submicrosecond timestamps during Python conversion, or produce undefined
+components/statistics from short history or its recent-trend extrapolation window.
+Centered-window history edges are legitimately undefined and should not become zeros.
+
+**How the platform handles it:** The canonical decomposition API and compatibility alias
+validate every input key/value, forecast-series history coverage and minimum seasonal
+population before calling the unchanged domain routine. They reject lossy timestamp
+precision (including raw CSV fractions) and validate the entire result before previewing.
+Only expected historical trend/residual edge nulls are allowed; nonfinite results or
+empty statistics are explicit failures. Counts disclose defined and excluded populations.
+
+**What to watch for:** If the recent trend window selects a slope fit but its last-three
+anchor has no defined trend, the requested window combination is explicitly unsupported
+and returns 400 before computation. This condition is derived from the actual defined
+trend ranges, not a seasonal-period whitelist. Do not select a semantically wrong period
+to bypass it; unexpected damaged/nonfinite outputs still log and return 500.
+An upload is alternative history, not a committed training snapshot; legacy
+history has unknown preparation. A failed exact forecast ID never resolves to another
+run, and the backtest leaderboard ID must not be used as a forecast selector.
+
 ---
 
 ## 13. Discontinued Products

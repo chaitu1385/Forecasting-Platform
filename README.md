@@ -50,7 +50,7 @@ A production-grade, modular multi-frequency sales forecasting product (daily, we
 │  LLMAnalyzer (Claude-powered interpretation)                │
 │  ForecastAnalytics (notebook API) · BIExporter              │
 │  ForecastComparator · ExceptionEngine                       │
-│  ForecastExplainer (STL + SHAP + narrative)                 │
+│  ForecastExplainer (moving average + fitted SHAP)           │
 │  DriftDetector · ModelCard · ModelCardRegistry              │
 │  ForecastLineage · FVAAnalyzer                              │
 ├─────────────────────────────────────────────────────────────┤
@@ -466,9 +466,17 @@ Business-rule exception flags for S&OP review queues:
 All thresholds configurable at construction. `exception_summary()` groups by series with flagged-week counts, sorted by `total_exception_weeks` descending.
 
 #### `ForecastExplainer`
-- **`decompose(history, forecast)`** — STL-style: trend (centered MA, window=`season_length`) + seasonal (mean de-trended per position) + residual; trend extrapolated linearly over `trend_window` periods into forecast horizon
+- **`decompose(history, forecast)`** — moving-average decomposition, not LOESS STL: centered trend window `2 * floor(season_length / 2) + 1`, seasonal-position de-trended averages and residuals; extrapolation uses the existing recent-trend routine
 - **`explain_ml(model, features_df, top_k=5)`** — SHAP attribution for LightGBM/XGBoost; lazy import, graceful empty-DataFrame fallback if `shap` not installed
 - **`narrative(decomposition, comparison)`** — templated natural-language string per series (YoY direction, primary driver, gap vs external, uncertainty label)
+
+`POST /metrics/{lob}/decomposition` exposes descriptive components, **not fitted-model
+attribution**. The `api/decomposition.py` adapter validates complete input/output
+coverage and precision, uses the selected forecast's prepared history, and reports
+recorded model/run/history provenance plus historical magnitudes and defined/null
+counts. `/metrics/{lob}/shap` is a deprecated compatibility alias; caller `model_name`
+is ignored. Backtest Results selects and pins a separate forecast ID, never its
+backtest leaderboard ID. See [the API contract](docs/API_REFERENCE.md#post-metricslobdecomposition).
 
 #### Model Governance (`governance.py`)
 
@@ -595,8 +603,9 @@ require verified JWTs by default; only an explicit unauthenticated demo opts out
 | `/pipeline/analyze-multi-file` | POST | Multi-file classification and merge | Yes (`RUN_PIPELINE`) |
 | `/metrics/{lob}/fva` | GET | FVA cascade analysis | Yes |
 | `/metrics/{lob}/calibration` | GET | Prediction interval calibration | Yes |
-| `/metrics/{lob}/shap` | POST | SHAP feature attribution | Yes |
-| `/forecast/decompose` | POST | STL seasonal decomposition | Yes |
+| `/metrics/{lob}/decomposition` | POST | Run-bound moving-average component summary | Yes |
+| `/metrics/{lob}/shap` | POST | Deprecated decomposition compatibility alias; not SHAP | Yes |
+| `/forecast/decompose` | POST | Uploaded-history moving-average decomposition | Yes |
 | `/forecast/compare` | POST | Cross-forecast comparison | Yes |
 | `/forecast/constrain` | POST | Apply capacity/budget constraints | Yes (`RUN_PIPELINE`) |
 | `/governance/model-cards` | GET | List model cards | Yes |
@@ -1055,7 +1064,8 @@ only mocked chart component tests.
 | `test_dependency_profiles.py` | 30 | Profile locks/hashes, CPU-only boundaries, audited closure/marker coverage, release policy, stale/tampered exports and native capture/reference wiring |
 | `test_m5_baseline.py` | 67 | Original empirical thresholds, complete observations, profile compatibility and audit-bound initial reference integrity |
 | `test_forecast_intent.py` | 113 | Real ASGI champion/horizon/config handoff, aliases, safe execution settings, invalid-input no-publication guarantees |
-| `test_forecast_explainability.py` | 59 | Comparator, ExceptionEngine, Explainer (STL+SHAP+narrative), ModelCard, Registry, DriftDetector, Lineage |
+| `test_forecast_explainability.py` | 59 | Comparator, ExceptionEngine, Explainer (moving average + fitted SHAP + narrative), ModelCard, Registry, DriftDetector, Lineage |
+| `test_decomposition_api_contracts.py` | 217 | Authenticated canonical/alias provenance, prepared history, legacy/custom upload columns, exact CSV/Parquet keys, derived window admission, finite full-frame coverage and independent component oracle |
 | `test_intermittent_demand.py` | 55 | SparseDetector, Croston, CrostonSBA, TSB, backtest routing |
 | `test_mint_reconciliation.py` | 46 | S-matrix math, OLS/WLS/MinT correctness, coherence, edge cases |
 | `test_planning_api_contracts.py` | 116 | Real authenticated hierarchy uploads, independent matrix/parent oracles, full-frame checks, timestamp identity and unchanged run artifacts |

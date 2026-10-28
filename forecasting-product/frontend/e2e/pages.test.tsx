@@ -329,7 +329,7 @@ describe("E2E Page Rendering Tests", () => {
     });
 
     expect(screen.getByText("Prediction Interval Calibration")).toBeInTheDocument();
-    expect(screen.getByText("SHAP Feature Attribution")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Forecast decomposition" })).toBeInTheDocument();
 
     // Metric cards
     await waitFor(() => {

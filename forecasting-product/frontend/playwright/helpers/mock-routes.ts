@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import { ROLE_PERMISSIONS } from "../../src/lib/constants";
 import type { Role } from "../../src/lib/types";
+import { mockDecomposition, mockShap } from "../../e2e/fixtures/mock-data";
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Mock API responses for Playwright tests.
@@ -173,18 +174,8 @@ const MOCK = {
     per_series_preview: [],
   },
 
-  shap: {
-    lob: "retail",
-    model: "lgbm_direct",
-    feature_importance: [
-      { feature: "lag_1", mean_abs_value: 0.45, std: 0.12 },
-      { feature: "rolling_mean_4", mean_abs_value: 0.32, std: 0.08 },
-      { feature: "month_sin", mean_abs_value: 0.18, std: 0.05 },
-      { feature: "promo_flag", mean_abs_value: 0.15, std: 0.04 },
-      { feature: "temperature", mean_abs_value: 0.08, std: 0.03 },
-    ],
-    decomposition_preview: [],
-  },
+  decomposition: mockDecomposition,
+  shap: mockShap,
 
   modelCards: {
     count: 2,
@@ -352,11 +343,12 @@ export async function mockApiRoutes(page: Page) {
       });
     }
 
-    // Metrics — leaderboard, drift, FVA, calibration, SHAP
+    // Metrics — leaderboard, drift, FVA, calibration, decomposition
     if (path.includes("/metrics/leaderboard/")) return json(MOCK.leaderboard);
     if (path.includes("/metrics/drift/")) return json(MOCK.drift);
     if (path.includes("/fva")) return json(MOCK.fva);
     if (path.includes("/calibration")) return json(MOCK.calibration);
+    if (path.includes("/metrics/") && path.endsWith("/decomposition")) return json(MOCK.decomposition);
     if (path.includes("/shap")) return json(MOCK.shap);
 
     // Forecast

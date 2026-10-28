@@ -242,6 +242,19 @@ Forecasting platforms generate data (metrics, drift alerts, leaderboards) that p
 
 ## Product & UX
 
+### Descriptive Decomposition Is Not Model Attribution
+
+Moving-average decomposition describes historical observations as trend, seasonal-position
+averages and residuals, then extends those components into a supplied forecast.
+It does not explain how a fitted model used its features or establish causality,
+so component magnitudes must not be presented as SHAP or feature importance.
+Use it to inspect a selected forecast's shape alongside its recorded prepared history,
+checking the defined/null counts and actual model/source metadata; a backtest
+leaderboard run is a different artifact from that forecast.
+
+*Implementation: `src/api/decomposition.py`, `POST /metrics/{lob}/decomposition`,
+`frontend/src/components/backtest/forecast-decomposition-panel.tsx`*
+
 ### Next.js Frontend
 
 A forecasting product that only data scientists can operate is incomplete — demand planners need to see forecasts, compare models, and review exceptions; platform admins need to monitor health and drift. The Next.js frontend provides a browser-based interface with eight pages mapped to four user personas: Data Onboarding (upload data, assess forecastability, get a recommended config), Series Explorer (SBC classification, structural breaks, cleansing audit, AI Q&A), SKU Transitions (predecessor matching, planner overrides), Hierarchy Manager (tree visualization with sunburst, reconciliation), Backtest Results (model leaderboard with FVA cascade), Forecast Viewer (interactive fan chart with seasonal decomposition), Platform Health (drift alerts, pipeline manifests, compute cost), and S&OP Meeting (AI commentary, cross-run comparison, governance, BI export). It communicates with the FastAPI backend over REST, using TypeScript, Tailwind CSS, React Query, and role-based authentication. All features are backed by live API endpoints.

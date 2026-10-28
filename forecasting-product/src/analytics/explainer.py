@@ -3,14 +3,14 @@ ForecastExplainer — business and technical forecast attribution.
 
 Two explanation paths:
 
-  Statistical (STL-style decomposition)
+  Statistical (moving-average decomposition, not LOESS STL)
   ──────────────────────────────────────
   Works for any model.  Decomposes the history into trend + seasonal +
   residual components, then attributes the forecast to the same components
   using a linear trend extrapolation and the stored seasonal pattern.
 
   Components:
-    trend      — centered moving average (window = season_length)
+    trend      — centered moving average (window = 2 * floor(season_length / 2) + 1)
     seasonal   — average (value - trend) per seasonal position
     residual   — value - trend - seasonal
     forecast_trend    — linear trend extrapolated from last trend_window obs

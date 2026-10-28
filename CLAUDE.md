@@ -55,13 +55,14 @@ forecasting-product/
 │   │   ├── app.py          # create_app() factory, core endpoints, router registration
 │   │   ├── schemas.py      # Pydantic request/response models
 │   │   ├── deps.py         # Shared dependencies
+│   │   ├── decomposition.py # Lossless panel admission, full-result checks, component/provenance summaries
 │   │   └── routers/        # Domain-specific API routers
 │   │       ├── series.py       # GET /series/{lob}, POST /series/breaks, cleansing-audit, regressor-screen
 │   │       ├── hierarchy.py    # Build/aggregate; admitted real-level reconciliation, top-down history, scoped coherence
 │   │       ├── sku_mapping.py  # POST /sku-mapping/phase1, phase2
 │   │       ├── overrides.py    # CRUD /overrides
 │   │       ├── pipeline.py     # POST backtest/forecast; GET exact runs/config/input, manifests, costs; multi-file analysis
-│   │       ├── analytics.py    # GET /metrics/{lob}/fva, calibration; POST shap, decompose, compare, constrain
+│   │       ├── analytics.py    # GET /metrics/{lob}/fva, calibration; POST decomposition (legacy shap), decompose, compare, constrain
 │   │       └── governance.py   # GET /governance/model-cards, lineage; POST export
 │   ├── audit/              # Append-only Parquet audit logging
 │   ├── auth/               # AuthSettings, strict JWT/RBAC, owner-only operator token output
@@ -110,6 +111,7 @@ forecasting-product/
 ├── frontend/               # Next.js 16 / Node 24 (TypeScript, Tailwind, Recharts, Plotly)
 │   ├── src/app/            # App Router pages (login + 8 workflow pages)
 │   ├── src/components/     # Reusable components (charts, AI panels, layout, shared)
+│   │   ├── backtest/       # Run-pinned, session-owned forecast decomposition
 │   │   ├── forecast/       # Decomposition, comparison, constrained forecast panels
 │   │   ├── governance/     # Model cards, lineage, BI export panels
 │   │   ├── pipeline/       # Multi-file analysis, pipeline execution panels
@@ -332,6 +334,13 @@ distribution version. Never replace locks with unconstrained installs to make CI
   cover actual numbers, historical input, late responses, role denial and unchanged
   stored runs. The required native authentication job includes the backend module;
   browser captures remain disabled.
+- Decomposition: `test_decomposition_api_contracts.py` has 217 authenticated
+  canonical/alias, provenance, coverage, precision and independent hand-oracle cases.
+  `e2e/decomposition-contracts.test.tsx` has 37 client/page/session ownership cases.
+  The method is `moving_average_decomposition`, never LOESS STL or fitted attribution.
+  Committed forecasts pair with their own prepared history; backtest IDs are not
+  forecast IDs. Unsupported/nonfinite domain results fail explicitly; do not repair
+  the domain math or substitute latest for a failed exact selector in this adapter.
 - Run safety: `test_run_store.py`, `test_run_artifacts.py`,
   `test_run_store_process.py` and `test_run_cli.py` cover publication faults on
   both sides of the marker, exact/legacy/auth/path contracts, actual multiprocess

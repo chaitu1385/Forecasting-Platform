@@ -17,6 +17,7 @@ import {
   mockCosts,
   mockFVA,
   mockCalibration,
+  mockDecomposition,
   mockShap,
   mockModelCards,
   mockLineage,
@@ -182,6 +183,7 @@ export function setupApiMocks() {
       getFVA: vi.fn().mockResolvedValue(mockFVA),
       getCalibration: vi.fn().mockResolvedValue(mockCalibration),
       getShap: vi.fn().mockResolvedValue(mockShap),
+      getForecastDecomposition: vi.fn().mockResolvedValue(mockDecomposition),
       decomposeForecast: vi.fn().mockResolvedValue({
         decomposition: [],
         narratives: {},

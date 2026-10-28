@@ -43,7 +43,7 @@ QueryProvider          -- TanStack React Query (staleTime: 5min, retry: 1)
 | `/data-onboarding` | Data Onboarding | File upload, auto-analysis, config generation, backtest-to-forecast execution |
 | `/series-explorer` | Series Explorer | SBC classification, break detection, cleansing audit, regressor screening |
 | `/hierarchy` | Hierarchy | Tree building, sunburst visualization, aggregation, reconciliation |
-| `/backtest` | Backtest Results | Pipeline execution, leaderboard, FVA, calibration, SHAP, AI config tuner |
+| `/backtest` | Backtest Results | Leaderboard, FVA, calibration, run-pinned forecast decomposition, AI config tuner |
 | `/forecast` | Forecast Viewer | Fan chart, decomposition, comparison, constraints, NL query |
 | `/sku-transitions` | SKU Transitions | Phase 1/2 SKU mapping, planner override management |
 | `/sop` | S&OP Meeting | AI commentary, model cards, lineage, BI export |
@@ -82,6 +82,8 @@ src/components/
     config-tuner-panel # AI-recommended config changes
     commentary-panel   # Executive S&OP commentary generation
     confidence-badge   # High/Medium/Low confidence indicator
+  backtest/            # Descriptive forecast analysis
+    forecast-decomposition-panel # Exact forecast source, history/model provenance, component magnitudes
   charts/              # 12 components — Data visualization
     time-series-line   # Basic time series line chart (Recharts)
     fan-chart          # Forecast with prediction intervals
@@ -100,7 +102,7 @@ src/components/
     data-table         # TanStack Table with sorting/filtering
     config-viewer      # YAML config display
   forecast/            # 4 components — Forecast analysis
-    decomposition-panel      # STL trend/seasonal/residual
+    decomposition-panel      # Uploaded moving-average trend/seasonal/residual
     comparison-panel         # Model vs external forecast
     constrained-forecast-panel # Full-population bounds/point budgets, measured strategy/scope, input-owned results
     cross-run-comparison-panel # Cross-run forecast comparison
@@ -130,6 +132,26 @@ src/components/
 ## API Client
 
 The centralized API client (`src/lib/api-client.ts`) provides typed methods for the backend endpoints.
+
+`getForecastDecomposition(lob, params, historyFile?)` calls the canonical
+`POST /metrics/{lob}/decomposition` endpoint and verifies method, forecast identity
+and paired history metadata before display. `getShap` remains a deprecated typed
+compatibility client; its names represent component magnitudes, not feature attribution.
+
+The Backtest Results decomposition panel lists **forecast-kind** runs separately
+from its leaderboard. Loading pins the latest listed or explicitly selected forecast
+ID; refresh is an explicit new source selection. It never submits a leaderboard ID
+or substitutes latest after an exact read failure. Legacy files remain explicitly
+unverified, with no immutable run ID. Component bars show historical mean absolute
+magnitudes, defined/undefined counts and sample signed-value standard deviations,
+not model features. The UI identifies the recorded model (or unknown), actual
+moving-average method and same-run prepared history, without claiming LOESS STL.
+
+The existing `useAsyncOperation.run/reset` generation guard owns requests. Source,
+season, LOB, leaderboard/run-type and authentication changes clear data; identity
+object ownership also covers replacement login for the **same username**. An
+additional render-time owner check prevents a prior result/error from appearing
+before effect cleanup. No credential persistence or new generic async hook is added.
 
 **Features:**
 - Verified JWT injection from per-tab memory, never persistent browser storage

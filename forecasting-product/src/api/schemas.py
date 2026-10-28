@@ -4,11 +4,11 @@ Pydantic response models for the forecasting product REST API.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, FiniteFloat
 
 
 class HealthResponse(BaseModel):
@@ -67,6 +67,72 @@ class ConstrainResponse(BaseModel):
         description="Maximum measured positive per-period excess; null when no budget was supplied",
     )
     constraint_scope: Literal["point", "point_and_quantiles"]
+
+
+class DecompositionComponent(BaseModel):
+    """Pooled historical observations, not model-feature attribution."""
+
+    component: Literal["trend", "seasonal", "residual"]
+    mean_abs_value: Optional[FiniteFloat]
+    std: Optional[FiniteFloat] = Field(description="Sample standard deviation of signed values (ddof=1)")
+    defined_count: int = Field(ge=0)
+    undefined_count: int = Field(ge=0)
+
+
+class DecompositionPoint(BaseModel):
+    series_id: str | int
+    week: date | datetime
+    value: FiniteFloat
+    trend: Optional[FiniteFloat]
+    seasonal: FiniteFloat
+    residual: Optional[FiniteFloat]
+    is_forecast: bool
+
+
+class DecompositionSummaryResponse(BaseModel):
+    """Descriptive moving-average components of one resolved forecast artifact."""
+
+    lob: str
+    run_id: Optional[str]
+    artifact_source: Literal["committed", "legacy"]
+    forecast_model: Optional[str]
+    forecast_model_source: Literal["manifest", "forecast_frame", "unknown"]
+    history_source: Literal["committed", "uploaded", "legacy"]
+    history_stage: Literal["prepared", "uploaded", "unknown"]
+    history_run_id: Optional[str]
+    method: Literal["moving_average_decomposition"] = "moving_average_decomposition"
+    model_specific: Literal[False] = False
+    season_length: int
+    trend_window: int = Field(description="Actual centered window: 2 * floor(season_length / 2) + 1")
+    seasonal_basis: Literal["observation_position"] = "observation_position"
+    statistics_population: Literal["history_rows_for_forecast_series"] = "history_rows_for_forecast_series"
+    std_ddof: Literal[1] = 1
+    series_count: int
+    history_rows: int
+    excluded_history_rows: int
+    forecast_rows: int
+    checked_rows: int
+    preview_rows: int
+    preview_truncated: bool
+    components: List[DecompositionComponent]
+    decomposition_preview: List[DecompositionPoint]
+
+
+class DecompositionCompatibilityMagnitude(BaseModel):
+    feature: Literal["trend", "seasonal", "residual"]
+    mean_abs_value: Optional[FiniteFloat]
+    std: Optional[FiniteFloat]
+    defined_count: int
+    undefined_count: int
+
+
+class DecompositionCompatibilityResponse(DecompositionSummaryResponse):
+    """Deprecated field names only; this response contains no SHAP values."""
+
+    model: Optional[str] = Field(description="Recorded forecast model, never the model_name query")
+    feature_importance: List[DecompositionCompatibilityMagnitude] = Field(
+        description="Historical component magnitudes, NOT model-specific feature importance",
+    )
 
 
 class LeaderboardEntry(BaseModel):
