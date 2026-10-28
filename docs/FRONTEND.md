@@ -377,10 +377,13 @@ with `NEXT_PUBLIC_API_URL` matching the chosen loopback `AUTH_E2E_API_PORT`, the
 run `npm run test:auth-browser`. `AUTH_E2E_FRONTEND_PORT` selects a separate owned
 port, and `AUTH_E2E_ROOT` must be fresh for each invocation. The fixture pins its
 run authority beneath that private root, regardless of inherited API settings.
-CI includes the constraint contracts in all six existing native authentication
-matrix runs and retains the full backend/M5 gates. The production job records
-credential-free browser JUnit with `--reporter=line,junit`; captures stay off and
-credential directories are never uploaded.
+CI includes all four F8 API/store contracts in all six existing native
+authentication matrix runs and retains the full backend/M5 gates. The production
+job records credential-free browser JUnit with `--reporter=line,junit` and uses a
+separate private output directory so the later demo test run cannot clear its
+evidence. Only JUnit and explicitly named decomposition, override and F8 evidence
+JSON files are uploaded. Captures stay off; credential directories are never
+uploaded, and the owned synthetic credential files are removed after the run.
 
 ## Type System
 
@@ -399,8 +402,8 @@ All TypeScript interfaces (`src/lib/types.ts`) mirror the FastAPI Pydantic schem
 
 ## Testing
 
-- **Unit tests:** Vitest + React Testing Library (`npm run test:e2e` — note: script name is misleading, runs Vitest)
-- **Override editing:** 29 component/client cases within the 125-case suite cover
+- **Unit tests:** 203 cases in 12 files using Vitest + React Testing Library (`npm run test:e2e` — note: script name is misleading, runs Vitest)
+- **Override editing:** 29 component/client cases within the 203-case suite cover
   nullable patches, stable IDs, retained failure input, permission hints and
   late-response/session isolation.
 - **E2E tests:** Playwright (`@playwright/test` in devDependencies)
@@ -417,6 +420,18 @@ All TypeScript interfaces (`src/lib/types.ts`) mirror the FastAPI Pydantic schem
   history, an unchanged real API response delayed behind a newer request,
   viewer denial, session replacement and unchanged run hashes. The existing
   production-auth configuration collects it with captures and retries disabled.
+- **Combined F8:** `playwright/auth/f8-integration.spec.ts` is distinct from the
+  retained hierarchy, override, constraint, decomposition and authentication
+  component specs. The eight-case private production suite includes this real
+  single-login/client-navigation flow: hierarchy totals, create/edit of one stable
+  override ID, largest-first budget values, and decomposition of the original
+  forecast with exact run/model/method/prepared-history evidence. Its `finally`
+  cleanup deletes only its own new override through the real API, verifies prior
+  records, and compares every immutable run-member hash before and after.
+  All private specs use `playwright/fixtures/authentication.ts` for credential
+  submission without token-bearing action diagnostics. This tests combined
+  wiring, not a new one-click workflow, joint hierarchy/budget optimizer, F7 job
+  service, F9 approval lifecycle or probabilistic aggregate-budget allocation.
 
 ## Environment Variables
 

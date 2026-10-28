@@ -118,7 +118,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # Full pytest unit + integration suite
+├── tests/                  # 2939 cases (pytest)
 ├── configs/                # YAML configuration files
 ├── requirements/           # Hash-locked CPU/API/dev/AI/Fabric/Spark profiles per Python minor
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
@@ -319,7 +319,7 @@ distribution version. Never replace locks with unconstrained installs to make CI
 - Framework: pytest
 - Test files mirror source structure with `test_` prefix
 - Helper fixtures use `_make_*` factory functions (e.g., `_make_weekly_actuals`)
-- Run the full suite without module exclusions; native reports record collected counts.
+- 2939 cases across 82 test modules; run the full suite without module exclusions.
 - Constraint coverage: `test_constrained_demand.py` (128 cases) and
   `test_constraint_api_contracts.py` (104 real authenticated API/domain/publication cases)
   assert distinct hand allocations, full populations, exact keys and explicit
@@ -356,6 +356,13 @@ distribution version. Never replace locks with unconstrained installs to make CI
   `e2e/override-management.test.tsx` adds 29 editor/client state cases. The private
   production browser flow proves edit/reload, a real SQL failure with retained
   input/unchanged record, denied mutations and byte-identical run artifacts.
+- Combined F8 coverage: `playwright/auth/f8-integration.spec.ts` navigates all four
+  workflows in one production-built authenticated session, checks real hierarchy
+  and budget allocations, patches the same override ID, and decomposes the exact
+  original forecast with recorded model/method/history evidence. It removes only
+  its own created override through the real API in `finally`, preserving prior
+  records and every immutable run-member hash. This is combined wiring coverage,
+  not a joint optimizer, approval lifecycle or new probabilistic capability.
 - Process safety: `test_process_execution.py` has five real subprocess cases,
   including the ASGI backtest path, configured model/frequency parity, and
   serialization errors. Both production pools use a local `spawn` context, never
@@ -376,7 +383,7 @@ distribution version. Never replace locks with unconstrained installs to make CI
   no failed/cancelled/skipped constituent may pass it.
 - Authentication: 61 JWT/RBAC/private-output cases, 18 real startup cases and
   11 seeder cases run in a required Linux/Windows job. Frontend coverage includes
-  20 memory/session cases, eight explicit-demo browser cases and three isolated
+  20 memory/session cases, eight explicit-demo browser cases and eight isolated
   production browser/API flows with private synthetic credentials and capture
   disabled. Never upload that fixture's credentials or enable tracing.
 
