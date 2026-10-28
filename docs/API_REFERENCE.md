@@ -447,9 +447,37 @@ Create a new planner override. **Requires** `CREATE_OVERRIDE` permission.
 
 Update an existing override. **Requires** `CREATE_OVERRIDE` permission.
 
+This is a patch of the existing ID, not a delete/create replacement. Supply at
+least one of `proportion`, `scenario`, `ramp_shape`, `effective_date`, or `notes`.
+Omitted fields remain unchanged. Only `effective_date` and `notes` accept explicit
+`null` to clear a value. `proportion` must be finite and in `[0, 1]`, including
+zero; dates use valid `YYYY-MM-DD` strings. Scenario and ramp shape remain strings,
+not a new enumeration.
+
+```json
+{"proportion": 0, "notes": null}
+```
+
+The response is `{"override_id": "<same ID>", "status": "updated"}`. SKU keys,
+creator/creation time, status and approval metadata remain exactly as stored.
+Preserving approval metadata does **not** mean the edited decision was reapproved;
+approval lifecycle/history and stale-edit detection remain separate work.
+
+Unknown/immutable fields and malformed typed values return **422**. An empty
+patch or invalid date string returns **400**; a missing ID returns **404**.
+Detected local file-store contention returns **409**, including a read that
+overlaps another file operation; retry explicitly. Unexpected storage errors
+return a logged **500** without exposing private paths. No mutation is retried
+automatically. Independent-field patches retain both changes after a busy retry;
+same-field changes are serialized last-writer-wins, not ETag-protected edits.
+
 ### `DELETE /overrides/{override_id}`
 
-Delete an override. **Requires** `CREATE_OVERRIDE` permission.
+Delete an override. **Requires** `DELETE_OVERRIDE` permission. A missing ID
+returns **404** on every backend rather than claiming a successful deletion.
+
+These CRUD operations do not modify immutable forecast/run artifacts. See
+[local persistence limits](DEPLOYMENT.md#mutable-local-overrides).
 
 ---
 

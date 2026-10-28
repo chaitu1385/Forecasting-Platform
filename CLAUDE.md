@@ -94,7 +94,7 @@ forecasting-product/
 │   │   ├── metrics.py      # MetricsEmitter — timing, counters, gauges (log/statsd)
 │   │   ├── alerts.py       # AlertDispatcher — drift alerts → webhooks
 │   │   └── cost.py         # CostEstimator — compute cost tracking
-│   ├── overrides/          # Planner manual override store (DuckDB + Parquet fallback)
+│   ├── overrides/          # Stable-ID patches; transactional DuckDB / locked local Parquet and CSV
 │   ├── pipeline/           # End-to-end backtest + forecast pipelines, immutable local bundles
 │   │   ├── run_store.py    # RunStore — UUID authority, atomic commit marker, integrity/exact/latest reads
 │   │   ├── readers.py      # RunReader — shared forecast/history discovery and explicit legacy adapters
@@ -116,7 +116,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 2047 cases (pytest)
+├── tests/                  # 2387 cases (pytest)
 ├── configs/                # YAML configuration files
 ├── requirements/           # Hash-locked CPU/API/dev/AI/Fabric/Spark profiles per Python minor
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
@@ -133,7 +133,7 @@ forecasting-product/
 - **Polars DataFrames** throughout production code (not Pandas)
 - **Dataclasses** for configuration (`src/config/schema.py`)
 - **ABCs** for extensible interfaces (`BaseForecaster`)
-- PEP 8 conventions (no explicit linter configured)
+- PEP 8 conventions (Ruff rules configured in `forecasting-product/pyproject.toml`)
 
 ## Configuration
 
@@ -189,6 +189,25 @@ canonical config/model provenance; input byte hashes do not claim semantic
 equivalence or deterministic fitted-model replay. Managed Spark/Fabric Delta
 storage remains a separate contract. See docs/DEPLOYMENT.md for local filesystem,
 fsync/Windows and offline recovery limitations.
+
+### Mutable override patches
+
+`OverrideStore` and `ParquetOverrideStore` expose
+`update_override(override_id, changes: Mapping[str, object]) -> bool`. Only
+proportion, scenario, ramp shape, effective date and notes are editable. Use
+`exclude_unset=True` at the API boundary; omitted fields stay unchanged, and
+only date/notes accept explicit null. Never delete/recreate an update or change
+SKU, creation, status or approval metadata. Retained approval metadata does not
+claim business reapproval; the approval lifecycle remains separate work.
+
+DuckDB uses parameterized transactional UPDATE/DELETE with real row existence.
+Parquet and legacy direct CSV serialize all mutations and local reads using a
+per-canonical-path mutex plus native nonblocking sidecar lock. Read bytes rather
+than retaining a mapped Windows file handle. Replace only a flushed/closed
+same-directory temporary file; preserve old bytes on pre-replace failure and
+never unlink the live lock inode. Contention is explicit `OverrideStoreBusy` /
+HTTP 409, not an automatic retry. This is local cooperative locking, not
+OneLake/network locking, power-loss ACID or an ETag/stale-edit guarantee.
 
 ### Multi-frequency support
 
@@ -254,7 +273,7 @@ distribution version. Never replace locks with unconstrained installs to make CI
 - Framework: pytest
 - Test files mirror source structure with `test_` prefix
 - Helper fixtures use `_make_*` factory functions (e.g., `_make_weekly_actuals`)
-- 2047 cases across 77 test modules; run the full suite without module exclusions
+- 2387 cases across 79 test modules; run the full suite without module exclusions
 - Key test modules: `test_platform.py` (85 tests), `test_sku_mapping.py` (81), `test_ai_*.py` (73), `test_forecast_explainability.py` (59), `test_intermittent_demand.py` (55), `test_observability.py` (41), `test_file_classifier.py` (26), `test_file_merger.py` (20)
 - Focused forecast-intent coverage: `test_forecast_intent.py` (108 real ASGI cases),
   plus frontend `e2e/pipeline-execution.test.tsx` and `e2e/data-onboarding-state.test.tsx`
@@ -266,6 +285,11 @@ distribution version. Never replace locks with unconstrained installs to make CI
   explicit root precedence. Required Linux/Windows CI jobs do not skip these.
   `e2e/run-selection.test.tsx` and the private production Playwright case exercise
   exact older-run values/config, stale response isolation and no POST retries.
+- Override safety: `test_override_store.py`, `test_override_api_contracts.py`
+  and `test_override_store_process.py` cover real DuckDB/Parquet/CSV patches,
+  unchanged identity/metadata/run hashes, rollback/replace faults, real JWT/RBAC,
+  native nonblocking locks and explicit contention retry. They run in the
+  required Linux/Windows authentication matrix as well as the full backend suite.
 - Process safety: `test_process_execution.py` has five real subprocess cases,
   including the ASGI backtest path, configured model/frequency parity, and
   serialization errors. Both production pools use a local `spawn` context, never

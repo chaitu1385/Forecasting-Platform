@@ -566,6 +566,37 @@ markerless directory may be an active writer. Stop/identify the owner before any
 operator-approved cleanup. There is no automatic purge, repair or destructive
 legacy migration.
 
+## Mutable Local Overrides
+
+Overrides are mutable planning records, separate from immutable run publication.
+DuckDB patches use a parameterized `UPDATE ... RETURNING` within a transaction;
+failed writes roll back. Parquet and the direct legacy CSV fallback use a
+per-canonical-path process mutex plus a native nonblocking advisory sidecar lock
+(`fcntl.flock` on Linux, `msvcrt.locking` on Windows). All add/update/delete
+operations share that lock. File readers also acquire it and read into memory,
+closing file handles before releasing it so Windows replacement is safe.
+Different store paths are independent. Keep the `.lock` sidecar in place: deleting
+it during use can split writers across different lock identities.
+
+File mutations write a unique temporary file in the same directory, flush and
+close it, then use `os.replace`. Serialization/flush/pre-replacement failures
+leave the old bytes intact and remove only the operation's own temporary file.
+Missing IDs do not create data files or records. Duplicate IDs, missing columns
+and invalid stored values fail explicitly rather than being interpreted as an
+empty store. No schema/history migration or automatic repair is performed.
+
+Busy file operations return HTTP 409; callers must retry explicitly, not silently
+spin. Independent-field patches preserve both changes after an explicit retry.
+For the same field, the last serialized writer wins. There is no ETag/stale-edit
+guarantee. ID, SKU keys, creator/time, status and approval metadata are retained,
+but retained approval metadata does not certify business reapproval.
+
+This is a cooperative **single-host local-filesystem** contract, not a guarantee
+for network shares, OneLake/FUSE, distributed notebooks or machine power loss.
+External tools that bypass the lock can still conflict. Do not substitute
+`RunStore`'s immutable no-replace publication helpers for mutable replacement,
+and do not rewrite archived forecasts to apply these record edits.
+
 ## Authentication Setup
 
 The factory, `serve.py`, and container entrypoint share one fail-closed contract.
