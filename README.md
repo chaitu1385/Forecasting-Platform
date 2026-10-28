@@ -143,7 +143,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 2387 unit + integration cases
+├── tests/                  # 2390 unit + integration cases
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 ├── notebooks/              # Jupyter notebooks for exploration
@@ -1004,7 +1004,7 @@ POLARS_MAX_THREADS=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1 \
   python -m pytest -v --timeout=180 --timeout-method=thread \
     -o faulthandler_timeout=60
-# 2387 cases across 79 test modules; no test module exclusions
+# 2390 cases across 79 test modules; no test module exclusions
 # Use the matching py311/py313 profile with those interpreters; no module exclusions.
 ```
 
@@ -1064,7 +1064,7 @@ only mocked chart component tests.
 | `test_rbac.py` | 14 | Role permissions, User model, AuditEvent, AuditLogger log/query/filters |
 | `test_override_store.py` | 197 | Real DuckDB/Parquet/CSV patches, preserved metadata, atomic failure controls, canonical-path locking and DuckDB Arrow compatibility |
 | `test_override_api_contracts.py` | 152 | Authenticated stable-ID patches, input/permission/error contracts, missing IDs and unchanged immutable-run hashes |
-| `test_override_store_process.py` | 10 | Native file locks, all-mutation contention, independent-field explicit retry and complete-file readers |
+| `test_override_store_process.py` | 13 | Native file locks, deterministic empty-sidecar races, all-mutation contention, independent-field explicit retry and complete-file readers |
 | `test_break_detection.py` | 14 | Structural break detection |
 | `test_mase.py` | 13 | MASE metric computation |
 | `test_statistical_forecasters.py` | 12 | AutoARIMA, AutoETS fit/predict/quantiles |

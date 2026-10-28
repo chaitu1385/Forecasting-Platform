@@ -1,5 +1,6 @@
 """Bounded native OS locking, two-process patches and atomic reader controls."""
 
+import errno
 import multiprocessing
 import os
 from pathlib import Path
@@ -73,6 +74,60 @@ def _repeated_writer(backend, path, override_id, channel):
         channel.close()
 
 
+def _first_use_add(backend, path, channel):
+    store = _open_store(backend, Path(path))
+    original = storage.os.fstat
+    observed = False
+
+    def pause_after_empty_observation(descriptor):
+        nonlocal observed
+        result = original(descriptor)
+        if not observed and result.st_size == 0:
+            observed = True
+            channel.send("observed-empty")
+            assert channel.recv() == "resume"
+        return result
+
+    storage.os.fstat = pause_after_empty_observation
+    try:
+        store.add_override("first-old", "first-new", 0.5)
+    except storage.OverrideStoreBusy:
+        channel.send("busy")
+    except Exception as exc:
+        channel.send(f"error:{type(exc).__name__}:{getattr(exc, 'errno', None)}")
+    else:
+        channel.send("created")
+    finally:
+        storage.os.fstat = original
+        store.close()
+        channel.close()
+
+
+def _first_use_competitor(path, channel):
+    try:
+        with open(str(path) + ".lock", "r+b") as handle:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                    raise
+                channel.send("busy")
+                return
+            handle.write(b"A")
+            handle.flush()
+            channel.send("locked")
+            assert channel.recv() == "release"
+    finally:
+        channel.close()
+
+
 def _start(target, *args):
     context = multiprocessing.get_context("spawn")
     parent, child = context.Pipe()
@@ -102,6 +157,56 @@ def _stop(process, channel):
         process.join(timeout=5)
     channel.close()
     process.close()
+
+
+@pytest.mark.parametrize("backend", ["parquet", "csv"])
+def test_fresh_sidecar_race_never_writes_before_native_lock_or_misclassifies_busy(
+    tmp_path, backend, record_property,
+):
+    path = tmp_path / f"overrides.{backend}"
+    first, first_channel = _start(_first_use_add, backend, path)
+    second = second_channel = None
+    try:
+        assert _receive(first_channel) == "observed-empty"
+        second, second_channel = _start(_first_use_competitor, path)
+        competitor = _receive(second_channel)
+        assert competitor in {"busy", "locked"}
+        first_channel.send("resume")
+        outcome = _receive(first_channel)
+        if competitor == "locked":
+            second_channel.send("release")
+        _finish(first)
+        _finish(second)
+        record_property("first_use_competitor", competitor)
+        record_property("first_use_add", outcome)
+        if competitor == "locked":
+            assert outcome == "busy"
+            assert path.with_name(path.name + ".lock").read_bytes() == b"A"
+            assert not path.exists()
+        else:
+            assert outcome == "created"
+            store = _open_store(backend, path)
+            try:
+                assert store.get_all().height == 1
+            finally:
+                store.close()
+    finally:
+        _stop(first, first_channel)
+        if second is not None:
+            _stop(second, second_channel)
+
+
+def test_empty_first_use_initializes_a_reusable_native_lock(tmp_path):
+    path = tmp_path / "overrides.parquet"
+    sidecar = path.with_name(path.name + ".lock")
+    sidecar.touch()
+    inode = sidecar.stat().st_ino
+    with storage._override_file_lock(path):
+        pass
+    assert sidecar.read_bytes() == b"\0"
+    with storage._override_file_lock(path):
+        pass
+    assert sidecar.stat().st_ino == inode
 
 
 @pytest.mark.parametrize("backend", ["parquet", "csv"])

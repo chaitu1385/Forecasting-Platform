@@ -190,9 +190,6 @@ def _override_file_lock(path: Path) -> Iterator[None]:
     try:
         descriptor = os.open(path.with_name(path.name + ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
         with os.fdopen(descriptor, "r+b") as handle:
-            if os.fstat(handle.fileno()).st_size == 0:
-                handle.write(b"\0")
-                handle.flush()
             handle.seek(0)
             try:
                 if os.name == "nt":
@@ -210,6 +207,9 @@ def _override_file_lock(path: Path) -> Iterator[None]:
                     ) from exc
                 raise
             try:
+                if os.fstat(handle.fileno()).st_size == 0:
+                    handle.write(b"\0")
+                    handle.flush()
                 yield
             finally:
                 handle.seek(0)
