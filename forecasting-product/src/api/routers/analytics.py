@@ -119,9 +119,9 @@ async def compute_decomposition(
     top_k: int = Query(10, description="Maximum component magnitudes in the deprecated feature_importance field"),
     run_id: Optional[str] = Query(None),
     legacy: bool = Query(False, description="Explicitly read unverified legacy forecasts; incompatible with run_id"),
-    id_col: Optional[str] = Query(None, description="Uploaded history identifier column; defaults to recorded column"),
-    time_col: Optional[str] = Query(None, description="Uploaded history time column; defaults to recorded column"),
-    target_col: Optional[str] = Query(None, description="Uploaded history target column; defaults to recorded column"),
+    id_col: str = Query("series_id", description="Uploaded history identifier column"),
+    time_col: str = Query("week", description="Uploaded history time column"),
+    target_col: str = Query("quantity", description="Uploaded history target column"),
     user: User = Depends(require_permission(Permission.VIEW_METRICS)),
 ):
     """Describe moving-average components, not fitted-model feature attribution.
@@ -152,16 +152,12 @@ async def compute_decomposition(
             raise_run_error(exc)
         if file:
             content = await validate_upload_size(file)
-            target = target_col if target_col is not None else selected.target_column
-            identifier = id_col if id_col is not None else selected.id_column
             frame = read_decomposition_upload(
-                content, file.filename or "", target, identifier_column=identifier,
+                content, file.filename or "", target_col, identifier_column=id_col,
                 identifier_dtype=selected.frame.schema[selected.id_column],
             )
             history = ArtifactRead(
-                frame, None, "uploaded", identifier,
-                time_col if time_col is not None else selected.time_column,
-                target, input_stage="uploaded",
+                frame, None, "uploaded", id_col, time_col, target_col, input_stage="uploaded",
             )
         else:
             try:

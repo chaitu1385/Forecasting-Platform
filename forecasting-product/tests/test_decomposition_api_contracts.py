@@ -288,8 +288,7 @@ def test_uploaded_history_is_explicit_override_not_committed_snapshot(api, route
     assert _hashes(api[2].root) == before
 
 
-@pytest.mark.parametrize("route", ROUTES)
-def test_recorded_custom_columns_and_separate_uploaded_columns(api, route):
+def _custom_recorded_source(api):
     config = PlatformConfig(lob="retail")
     config.forecast.series_id_column = "item"
     config.forecast.time_column = "period"
@@ -297,6 +296,12 @@ def test_recorded_custom_columns_and_separate_uploaded_columns(api, route):
     history = _history().rename({"series_id": "item", "week": "period", "quantity": "units"})
     forecast = _forecast().rename({"series_id": "item", "week": "period"})
     run_id = _publish(api[2], history=history, raw=history, forecast=forecast, config=config)
+    return history, run_id
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_recorded_custom_columns_and_separate_uploaded_columns(api, route):
+    _, run_id = _custom_recorded_source(api)
     expected = _post(api, route, run_id=run_id)
     assert expected.status_code == 200, expected.text
     uploaded = _upload(
@@ -305,6 +310,29 @@ def test_recorded_custom_columns_and_separate_uploaded_columns(api, route):
     )
     assert uploaded.status_code == 200, uploaded.text
     assert uploaded.json()["decomposition_preview"] == expected.json()["decomposition_preview"]
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_standard_csv_defaults_remain_compatible_with_custom_recorded_columns(api, route):
+    _, run_id = _custom_recorded_source(api)
+    typed = _post(api, route, run_id=run_id)
+    assert typed.status_code == 200, typed.text
+    before = _source_hashes(api)
+    uploaded = _upload(api, _history(), route, fmt="csv", run_id=run_id)
+    assert uploaded.status_code == 200, uploaded.text
+    assert uploaded.json()["decomposition_preview"] == typed.json()["decomposition_preview"]
+    assert _source_hashes(api) == before
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_explicit_custom_csv_columns_remain_supported(api, route):
+    history, run_id = _custom_recorded_source(api)
+    response = _upload(
+        api, history, route, fmt="csv", run_id=run_id,
+        id_col="item", time_col="period", target_col="units",
+    )
+    assert response.status_code == 200, response.text
+    assert len(response.json()["decomposition_preview"]) == 15
 
 
 def _legacy(api, *, model=True, history=None, forecast=None):

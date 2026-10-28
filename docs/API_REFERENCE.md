@@ -210,7 +210,7 @@ No fitted model is loaded or trained and no AI provider is called.
 | `run_id` | query, optional | Exact **forecast-kind** run ID; never a backtest leaderboard ID |
 | `legacy` | query, default `false` | Explicit unverified legacy source; incompatible with `run_id` |
 | `file` | body, optional | Alternative history CSV/Parquet, explicitly labeled `uploaded` |
-| `id_col`, `time_col`, `target_col` | query, optional | Uploaded history columns; default to the forecast's recorded column names |
+| `id_col`, `time_col`, `target_col` | query, optional | Uploaded history columns; legacy-compatible defaults `series_id`, `week`, `quantity` |
 | `season_length` | query, default `52` | Positive seasonal period in observation positions, not inferred calendar intervals |
 
 **Response:** `DecompositionSummaryResponse` includes `method="moving_average_decomposition"`,
@@ -227,6 +227,11 @@ Uploaded history is labeled `uploaded` with no history run ID; legacy history is
 (or legacy when no committed forecast exists); clients should retain the returned
 identity. An explicit missing/wrong-kind run returns 404, malformed selectors 400,
 and corruption the existing 500 `run_integrity_error`, without selecting another run.
+
+Upload column defaults remain `series_id`, `week`, `quantity`, including when the
+selected forecast has custom recorded column names. Set the three column query
+parameters for custom uploads. Without an upload, the reader always uses the
+same-run prepared snapshot's recorded columns, independent of upload defaults.
 
 `components` always names trend, seasonal and residual. `mean_abs_value` is the
 mean absolute value across **defined historical observations of forecast series**;
