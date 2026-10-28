@@ -143,7 +143,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 2199 unit + integration cases
+├── tests/                  # 2260 unit + integration cases
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 ├── notebooks/              # Jupyter notebooks for exploration
@@ -1007,7 +1007,7 @@ POLARS_MAX_THREADS=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1 \
   python -m pytest -v --timeout=180 --timeout-method=thread \
     -o faulthandler_timeout=60
-# 2199 cases across 78 test modules; no test module exclusions
+# 2260 cases across 78 test modules; no test module exclusions
 # Use the matching py311/py313 profile with those interpreters; no module exclusions.
 ```
 
@@ -1048,7 +1048,7 @@ only mocked chart component tests.
 | `test_m5_baseline.py` | 67 | Original empirical thresholds, complete observations, profile compatibility and audit-bound initial reference integrity |
 | `test_forecast_intent.py` | 113 | Real ASGI champion/horizon/config handoff, aliases, safe execution settings, invalid-input no-publication guarantees |
 | `test_forecast_explainability.py` | 59 | Comparator, ExceptionEngine, Explainer (moving average + fitted SHAP + narrative), ModelCard, Registry, DriftDetector, Lineage |
-| `test_decomposition_api_contracts.py` | 152 | Authenticated canonical/alias provenance, prepared history, exact keys, derived window admission, finite full-frame coverage and independent component oracle |
+| `test_decomposition_api_contracts.py` | 213 | Authenticated canonical/alias provenance, prepared history, exact CSV/Parquet keys, derived window admission, finite full-frame coverage and independent component oracle |
 | `test_intermittent_demand.py` | 55 | SparseDetector, Croston, CrostonSBA, TSB, backtest routing |
 | `test_mint_reconciliation.py` | 46 | S-matrix math, OLS/WLS/MinT correctness, coherence, edge cases |
 | `test_foundation_models.py` | 41 | Chronos, TimeGPT fit/predict/quantiles, error handling, zero-shot property |

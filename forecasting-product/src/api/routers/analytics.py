@@ -153,10 +153,13 @@ async def compute_decomposition(
         if file:
             content = await validate_upload_size(file)
             target = target_col if target_col is not None else selected.target_column
-            frame = read_decomposition_upload(content, file.filename or "", target)
+            identifier = id_col if id_col is not None else selected.id_column
+            frame = read_decomposition_upload(
+                content, file.filename or "", target, identifier_column=identifier,
+                identifier_dtype=selected.frame.schema[selected.id_column],
+            )
             history = ArtifactRead(
-                frame, None, "uploaded",
-                id_col if id_col is not None else selected.id_column,
+                frame, None, "uploaded", identifier,
                 time_col if time_col is not None else selected.time_column,
                 target, input_stage="uploaded",
             )

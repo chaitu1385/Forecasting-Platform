@@ -307,15 +307,149 @@ def test_recorded_custom_columns_and_separate_uploaded_columns(api, route):
     assert uploaded.json()["decomposition_preview"] == expected.json()["decomposition_preview"]
 
 
-def _legacy(api, *, model=True):
+def _legacy(api, *, model=True, history=None, forecast=None):
     data = Path(api[3]["data_dir"])
     forecasts = data / "forecasts" / "retail"
-    history = data / "history" / "retail"
+    history_dir = data / "history" / "retail"
     forecasts.mkdir(parents=True)
-    history.mkdir(parents=True)
-    frame = _forecast() if model else _forecast().drop("model")
+    history_dir.mkdir(parents=True)
+    frame = _forecast() if forecast is None else forecast
+    if not model:
+        frame = frame.drop("model")
     frame.write_parquet(forecasts / "forecast_retail_2026-04-01.parquet")
-    _history().write_parquet(history / "history.parquet")
+    historical = _history() if history is None else history
+    historical.write_parquet(history_dir / "history.parquet")
+
+
+def _identifier_source(api, source, identifier):
+    value = pl.lit(identifier, dtype=pl.Int64) if isinstance(identifier, int) else pl.lit(identifier)
+    history = _history().with_columns(value.alias("series_id"))
+    forecast = _forecast().with_columns(value.alias("series_id"))
+    if source == "legacy":
+        _legacy(api, history=history, forecast=forecast)
+        params = {}
+    else:
+        params = {"run_id": _publish(api[2], history=history, raw=history, forecast=forecast)}
+    return history, params
+
+
+def _source_hashes(api):
+    data = Path(api[3]["data_dir"])
+    return {
+        "runs": _hashes(api[2].root),
+        "legacy_forecasts": _hashes(data / "forecasts"),
+        "legacy_history": _hashes(data / "history"),
+    }
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("source", ["committed", "legacy"])
+@pytest.mark.parametrize("identifier", [123, 0, -123, 2**53 - 1, -(2**53 - 1)])
+def test_canonical_integer_csv_history_matches_typed_history(api, route, source, identifier):
+    history, params = _identifier_source(api, source, identifier)
+    before = _source_hashes(api)
+    typed = _post(api, route, **params)
+    assert typed.status_code == 200, typed.text
+    assert len(typed.json()["decomposition_preview"]) == 15
+    uploaded = _upload(api, history, route, fmt="csv", **params)
+    assert uploaded.status_code == 200, uploaded.text
+    body = uploaded.json()
+    assert body["decomposition_preview"] == typed.json()["decomposition_preview"]
+    assert body["components"] == typed.json()["components"]
+    assert {row["series_id"] for row in body["decomposition_preview"]} == {identifier}
+    assert body["history_source"] == body["history_stage"] == "uploaded"
+    assert body["history_run_id"] is None
+    assert body["run_id"] == typed.json()["run_id"]
+    assert _source_hashes(api) == before
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("identifier", ["123", "00123"])
+def test_numeric_looking_string_csv_identifiers_remain_strings(api, route, identifier):
+    history, params = _identifier_source(api, "committed", identifier)
+    response = _upload(api, history, route, fmt="csv", **params)
+    assert response.status_code == 200, response.text
+    assert {row["series_id"] for row in response.json()["decomposition_preview"]} == {identifier}
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("identifier", [
+    "00123", "+123", "123.0", "1.23e2", "-0", " 123", "123 ", "123\n",
+    "", "NaN", str(2**53), str(-(2**53)), str(2**80),
+])
+def test_ambiguous_or_overflow_integer_csv_identifiers_are_rejected(api, monkeypatch, route, identifier):
+    history, params = _identifier_source(api, "committed", 123)
+    before = _source_hashes(api)
+    history = history.with_columns(pl.lit(identifier).alias("series_id"))
+    blocked = Mock(side_effect=AssertionError("Lossy CSV identifier reached domain math"))
+    monkeypatch.setattr("src.analytics.explainer.ForecastExplainer.decompose", blocked)
+    response = _upload(api, history, route, fmt="csv", **params)
+    assert response.status_code == 400, response.text
+    assert "CSV integer identifiers" in response.json()["detail"]
+    blocked.assert_not_called()
+    assert _source_hashes(api) == before
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_parquet_identifiers_keep_explicit_types_instead_of_csv_coercion(api, route):
+    history, params = _identifier_source(api, "committed", 123)
+    assert _upload(api, history, route, **params).status_code == 200
+    strings = history.with_columns(pl.col("series_id").cast(pl.String))
+    response = _upload(api, strings, route, **params)
+    assert response.status_code == 400
+    assert "identifier types must match" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_empty_integer_csv_history_remains_a_client_error(api, route):
+    history, params = _identifier_source(api, "committed", 123)
+    assert _upload(api, history.head(0), route, fmt="csv", **params).status_code == 400
+
+
+@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("dtype,identifier", [(pl.Int8, "128"), (pl.UInt8, "-1")])
+def test_csv_does_not_broaden_the_recorded_integer_type(api, route, dtype, identifier):
+    history = _history().with_columns(pl.lit(123, dtype=dtype).alias("series_id"))
+    forecast = _forecast().with_columns(pl.lit(123, dtype=dtype).alias("series_id"))
+    run_id = _publish(api[2], history=history, raw=history, forecast=forecast)
+    response = _upload(
+        api, history.with_columns(pl.lit(identifier).alias("series_id")), route,
+        fmt="csv", run_id=run_id,
+    )
+    assert response.status_code == 400
+    assert "CSV integer identifiers" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_integer_csv_upload_uses_requested_column_with_recorded_forecast_type(api, route):
+    history, params = _identifier_source(api, "committed", 123)
+    response = _upload(api, history.rename({"series_id": "item"}), route, fmt="csv", id_col="item", **params)
+    assert response.status_code == 200, response.text
+    assert {row["series_id"] for row in response.json()["decomposition_preview"]} == {123}
+
+
+def test_csv_identifier_admission_does_not_infer_unrelated_metadata(api, monkeypatch):
+    from src.api import decomposition
+
+    history, params = _identifier_source(api, "committed", 123)
+    history = history.with_columns(
+        pl.lit("00123").alias("auxiliary_code"), pl.lit("1e9999").alias("literal_text"),
+    )
+    captured = []
+    real_read = decomposition.read_decomposition_upload
+
+    def observe(*args, **kwargs):
+        frame = real_read(*args, **kwargs)
+        captured.append(frame)
+        return frame
+
+    monkeypatch.setattr(decomposition, "read_decomposition_upload", observe)
+    response = _upload(api, history, fmt="csv", **params)
+    assert response.status_code == 200, response.text
+    assert captured[0].schema["series_id"] == pl.Int64
+    for column, value in (("auxiliary_code", "00123"), ("literal_text", "1e9999")):
+        assert captured[0].schema[column] == pl.String
+        assert captured[0][column].to_list() == [value] * 12
 
 
 @pytest.mark.parametrize("route", ROUTES)

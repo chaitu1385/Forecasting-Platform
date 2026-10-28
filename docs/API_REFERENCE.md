@@ -265,7 +265,14 @@ Dates and microsecond-exact datetimes are supported; timezone-aware datetimes
 normalize to UTC without changing instants. Date/datetime or aware/naive mixtures
 are rejected. Submicrosecond values, including raw CSV fractions, are rejected
 before inference/rounding; nanosecond-typed data is allowed only when microsecond-exact.
-CSV IDs remain strings; use Parquet for integer IDs. Quantities must be numeric,
+CSV identifier admission uses the selected forecast's declared identifier type:
+string IDs remain exact strings (including numeric-looking and leading-zero IDs);
+integer forecasts accept only canonical decimal integer text within the recorded
+integer type and exact JSON bounds. Leading zeros, plus signs, negative zero,
+padding, decimal/exponent notation and overflow are rejected rather than guessed.
+No other metadata column is inferred. Parquet retains explicit types; a String
+identifier column is not coerced to match an integer forecast.
+Quantities must be numeric,
 with integral values within the exact JSON integer range. The existing upload
 limit and server-owned path containment remain in force. Stored artifacts are
 never modified by either route.

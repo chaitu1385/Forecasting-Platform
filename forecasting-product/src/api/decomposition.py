@@ -69,14 +69,37 @@ def _time_column(values: pl.Series) -> pl.Series:
     return values
 
 
-def read_decomposition_upload(content: bytes, filename: str, target_column: str) -> pl.DataFrame:
-    """Preserve raw CSV identifiers and fractional time text before admission."""
+def read_decomposition_upload(
+    content: bytes, filename: str, target_column: str, *,
+    identifier_column: str, identifier_dtype: pl.DataType,
+) -> pl.DataFrame:
+    """Admit CSV IDs against the forecast type without general inference."""
     try:
         if filename.lower().endswith(".parquet"):
             return pl.read_parquet(io.BytesIO(content))
         frame = pl.read_csv(io.BytesIO(content), infer_schema=False, try_parse_dates=False)
+        if frame.is_empty():
+            raise DecompositionInputError("History uploads must contain observations")
         if target_column not in frame.columns:
             raise DecompositionInputError("Uploaded history is missing the requested target column")
+        if identifier_dtype.is_integer():
+            if identifier_column not in frame.columns:
+                raise DecompositionInputError("Uploaded history is missing the requested identifier column")
+            identifiers = frame[identifier_column]
+            if identifiers.null_count() or not identifiers.str.contains(r"\A(?:0|-?[1-9][0-9]*)\z").all():
+                raise DecompositionInputError(
+                    "CSV integer identifiers must be canonical decimal integers "
+                    "(no leading zeros, plus sign, padding, decimal point or exponent)",
+                )
+            try:
+                integers = identifiers.cast(pl.Int64, strict=True)
+                if integers.min() < -_MAX_EXACT_INTEGER or integers.max() > _MAX_EXACT_INTEGER:
+                    raise DecompositionInputError("CSV integer identifiers must fit the exact JSON integer range")
+                frame = frame.with_columns(integers.cast(identifier_dtype, strict=True))
+            except pl.exceptions.PolarsError as exc:
+                raise DecompositionInputError(
+                    "CSV integer identifiers must fit the recorded integer type and exact JSON range",
+                ) from exc
         return frame.with_columns(pl.col(target_column).cast(pl.Float64, strict=True))
     except (pl.exceptions.PolarsError, UnicodeDecodeError, OSError) as exc:
         raise DecompositionInputError("Cannot read the history upload as CSV or Parquet") from exc
