@@ -197,21 +197,87 @@ Compute Forecast Value Add (FVA) cascade — shows which model layer adds or des
 
 Compute prediction interval calibration report — compares nominal vs. empirical coverage at 50% and 80% intervals. **Requires** `VIEW_METRICS` permission.
 
-### `POST /metrics/{lob}/shap`
+### `POST /metrics/{lob}/decomposition`
 
-Compute SHAP feature attribution for tree-based models. Accepts an optional file upload; otherwise loads from data directory. **Requires** `VIEW_METRICS` permission.
+Describe forecast/history components using a centered moving average, seasonal-position
+averages and residuals. **Requires** `VIEW_METRICS` permission. This is **not**
+LOESS STL, SHAP, fitted-model feature attribution or a causal explanation.
+No fitted model is loaded or trained and no AI provider is called.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `lob` | path, required | LOB name |
-| `file` | body, optional | Actuals CSV/Parquet |
-| `model_name` | query, default `"lgbm_direct"` | Model to explain |
-| `season_length` | query, default `52` | Season length |
-| `top_k` | query, default `10` | Number of top features |
+| `run_id` | query, optional | Exact **forecast-kind** run ID; never a backtest leaderboard ID |
+| `legacy` | query, default `false` | Explicit unverified legacy source; incompatible with `run_id` |
+| `file` | body, optional | Alternative history CSV/Parquet, explicitly labeled `uploaded` |
+| `id_col`, `time_col`, `target_col` | query, optional | Uploaded history columns; default to the forecast's recorded column names |
+| `season_length` | query, default `52` | Positive seasonal period in observation positions, not inferred calendar intervals |
+
+**Response:** `DecompositionSummaryResponse` includes `method="moving_average_decomposition"`,
+`model_specific=false`, `lob`, actual `run_id`/`artifact_source`, and
+`forecast_model` (recorded manifest model, otherwise a uniform recorded frame model,
+otherwise null). `forecast_model_source` identifies that evidence, not the current
+configuration or caller text. A multi-model/partially unknown frame without manifest
+model identity does not become an invented single model.
+
+Without an upload, a committed forecast is paired with **its own prepared history**:
+`history_source="committed"`, `history_stage="prepared"`, `history_run_id=run_id`.
+Uploaded history is labeled `uploaded` with no history run ID; legacy history is
+`legacy`/`unknown` with no verified ID. Omitting selectors resolves the latest forecast
+(or legacy when no committed forecast exists); clients should retain the returned
+identity. An explicit missing/wrong-kind run returns 404, malformed selectors 400,
+and corruption the existing 500 `run_integrity_error`, without selecting another run.
+
+`components` always names trend, seasonal and residual. `mean_abs_value` is the
+mean absolute value across **defined historical observations of forecast series**;
+`std` is sample standard deviation of their **signed** values (`std_ddof=1`).
+There is no per-series averaging or forecast-row weighting. `defined_count` and
+`undefined_count` disclose the population; expected centered-window trend/residual
+edges remain null, not zero. Standard deviation is nullable when fewer than two
+values exist; empty statistics are rejected, never fabricated.
+`history_rows`, `excluded_history_rows`, `forecast_rows`, `series_count` and
+`checked_rows` describe full-frame scope. History-only series are excluded from
+statistics after input validation. `decomposition_preview` is at most 50 rows;
+`preview_rows` and `preview_truncated` disclose truncation.
+
+Inputs must be nonempty, finite, have unique non-null series/time keys and history
+for every forecast series, with forecast times strictly after that series' history.
+Each forecast series needs at least
+`2 * floor(season_length / 2) + max(season_length, 2)` historical observations so
+no seasonal position is filled by the domain's missing-position zero fallback.
+The actual centered `trend_window` is `2 * floor(season_length / 2) + 1`.
+Invalid/unsupported inputs return 400 (malformed typed query fields return 422).
+All output keys, values, edge nulls, finite components, reconstruction and statistics
+are checked **before** preview truncation; an undefined/nonfinite domain result is
+a logged 500, not a successful summary. In particular, some windows leave no
+defined trend in the unchanged extrapolator's last-three sample; this API rejects
+that result rather than silently changing the numerical algorithm.
+
+String IDs (including CSV leading zeros) and JSON-exact integer IDs are supported.
+Dates and microsecond-exact datetimes are supported; timezone-aware datetimes
+normalize to UTC without changing instants. Date/datetime or aware/naive mixtures
+are rejected. Submicrosecond values, including raw CSV fractions, are rejected
+before inference/rounding; nanosecond-typed data is allowed only when microsecond-exact.
+CSV IDs remain strings; use Parquet for integer IDs. Quantities must be numeric,
+with integral values within the exact JSON integer range. The existing upload
+limit and server-owned path containment remain in force. Stored artifacts are
+never modified by either route.
+
+### `POST /metrics/{lob}/shap` (deprecated compatibility alias)
+
+The same handler, permissions, selectors, history and computation as the canonical
+route. `DecompositionCompatibilityResponse` adds `model` as an alias of the
+**recorded** `forecast_model`, and `feature_importance` as descending historical
+**component magnitudes**, not SHAP values. `model_name` remains accepted but is
+ignored. Positive `top_k` (default 10) limits only this legacy list, not the three
+canonical `components`, full validation or statistics. Migrate to the canonical
+route and labels; no fitted-model attribution contract is provided.
 
 ### `POST /forecast/decompose`
 
-Run STL decomposition on historical + forecast data. Returns trend, seasonal, and residual components plus per-series narratives.
+Run centered-moving-average decomposition on historical + forecast data. Returns
+trend, seasonal, and residual components plus per-series narratives; not LOESS STL.
+This separate upload-only endpoint does not claim immutable-run provenance.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|

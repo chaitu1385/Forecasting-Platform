@@ -253,7 +253,8 @@ jobs:
         working-directory: forecasting-product
         run: >
           python -m pytest tests/test_authentication.py tests/test_auth_startup.py
-          tests/test_docker_seed.py -q --capture=tee-sys -o addopts="" -o faulthandler_timeout=60
+          tests/test_docker_seed.py tests/test_decomposition_api_contracts.py
+          -q --capture=tee-sys -o addopts="" -o faulthandler_timeout=60
           --timeout=120 --timeout-method=thread --junitxml=authentication-results.xml
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0, Node 24
         if: runner.os == 'Linux' && matrix.runtime.profile == 'py312'
