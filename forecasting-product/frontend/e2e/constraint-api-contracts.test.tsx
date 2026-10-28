@@ -1,5 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConstrainedForecastPanel } from "@/components/forecast/constrained-forecast-panel";
 import { AuthBoundary } from "@/components/layout/auth-boundary";
@@ -245,14 +246,91 @@ describe("constraint request ownership", () => {
 });
 
 function PrivateAuthHarness() {
-  const { mode, loginWithToken, logout } = useAuth();
+  const { mode, loginWithToken, logout, user } = useAuth();
+  const [verified, setVerified] = useState(0);
+  const signIn = async (token: string) => {
+    await loginWithToken(token);
+    setVerified(count => count + 1);
+  };
   return <>
-    <button disabled={mode !== "production"} onClick={() => void loginWithToken("synthetic-first")}>First session</button>
-    <button disabled={mode !== "production"} onClick={() => void loginWithToken("synthetic-replacement")}>Replacement session</button>
+    <button disabled={mode !== "production"} onClick={() => void signIn("synthetic-first")}>First session</button>
+    <button disabled={mode !== "production"} onClick={() => void signIn("synthetic-replacement")}>Replacement session</button>
     <button onClick={logout}>End session</button>
+    <p data-testid="verified-sessions">{verified}</p>
+    <p data-testid="session-user">{user?.username ?? "signed out"}</p>
     <AuthBoundary><ConstrainedForecastPanel /></AuthBoundary>
   </>;
 }
+
+describe("direct protected-session replacement without logout", () => {
+  for (const username of ["first", "replacement"]) {
+    for (const timing of ["immediate", "deferred"] as const) {
+      it.each(["completed", "error", "pending-success", "pending-failure"] as const)(
+        `${username} / ${timing} identity cannot retain %s constraint state`,
+        async previous => {
+          const pending = deferred<Response>();
+          const identity = deferred<Response>();
+          let identityCalls = 0;
+          const verifiedIdentity = (name: string) => response({
+            mode: "production", username: name, email: "", role: "data_scientist",
+            permissions: ROLE_PERMISSIONS.data_scientist,
+            expires_at: Math.floor(Date.now() / 1000) + 3600,
+          });
+          fetchMock.mockImplementation(async url => {
+            const path = new URL(String(url)).pathname;
+            if (path === "/auth/status") return response({ mode: "production", auth_required: true });
+            if (path === "/auth/me") {
+              identityCalls += 1;
+              if (identityCalls === 1) return verifiedIdentity("first");
+              return timing === "immediate" ? verifiedIdentity(username) : identity.promise;
+            }
+            if (path === "/forecast/constrain") {
+              if (previous === "completed") return response(result());
+              if (previous === "error") return response({ detail: "previous constraint failure" }, 400);
+              return pending.promise;
+            }
+            throw new Error("Unexpected test endpoint");
+          });
+          const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+          render(<QueryClientProvider client={client}><AuthProvider><PrivateAuthHarness /></AuthProvider></QueryClientProvider>);
+          await waitFor(() => expect(screen.getByRole("button", { name: "First session" })).toBeEnabled());
+          fireEvent.click(screen.getByRole("button", { name: "First session" }));
+          await waitFor(() => expect(screen.getByTestId("verified-sessions")).toHaveTextContent("1"));
+          selectFile();
+          setLimit("Aggregate Max (per period)", "50");
+          submit();
+          if (previous === "completed") await screen.findByRole("region", { name: "Constraint result" });
+          else if (previous === "error") await screen.findByRole("alert");
+          else expect(screen.getByRole("button", { name: "Applying Constraints..." })).toBeDisabled();
+          client.setQueryData(["private-constraint"], { owner: "first" });
+
+          fireEvent.click(screen.getByRole("button", { name: "Replacement session" }));
+          if (timing === "deferred") {
+            expect(screen.queryByRole("region", { name: "Constrained Forecast" })).not.toBeInTheDocument();
+            await act(async () => { identity.resolve(verifiedIdentity(username)); await identity.promise; });
+          }
+          await waitFor(() => expect(screen.getByTestId("verified-sessions")).toHaveTextContent("2"));
+          expect(identityCalls).toBe(2);
+          expect(screen.getByTestId("session-user")).toHaveTextContent(username);
+          if (previous.startsWith("pending")) {
+            await act(async () => {
+              if (previous === "pending-success") pending.resolve(response(result({ after_total: 49 })));
+              else pending.reject(new Error("previous delayed constraint failure"));
+              await pending.promise.catch(() => undefined);
+            });
+          }
+          expect(screen.queryByRole("region", { name: "Constraint result" })).not.toBeInTheDocument();
+          expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+          expect(screen.queryByText("Selected file: points.csv")).not.toBeInTheDocument();
+          expect(screen.getByRole("button", { name: "Apply Constraints" })).toBeDisabled();
+          expect(screen.getByLabelText("Aggregate Max (per period)")).toHaveValue(null);
+          expect(client.getQueryCache().getAll()).toHaveLength(0);
+          client.clear();
+        },
+      );
+    }
+  }
+});
 
 it("clears completed/pending constraint state and protected cache on logout and replacement login", async () => {
   const pending = deferred<Response>();

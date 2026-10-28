@@ -288,7 +288,11 @@ successes/errors cannot replace a newer request. Failed/infeasible requests show
 an error instead of an applied result; Retry is an explicit POST. Existing
 session ownership and `AuthBoundary` continue to protect logout/replacement.
 
-`e2e/constraint-api-contracts.test.tsx` has 25 component/client/ownership cases.
+`e2e/constraint-api-contracts.test.tsx` has 41 component/client/ownership cases,
+including direct token replacement without logout for the same or a different
+username, immediate/deferred identity responses, and completed/error/pending
+constraint states. These exercise the actual `AuthProvider`/`AuthBoundary`;
+no separate authentication behavior is added to the async hook or panel.
 The two real cases in `playwright/auth/constraint-api-contracts.spec.ts` exercise
 both exact allocation strategies, 400 infeasible/aggregate-quantile responses,
 quantile-only row accounting, a delayed **real** API response and unchanged stored
