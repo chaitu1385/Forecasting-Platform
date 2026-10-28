@@ -119,11 +119,17 @@ test("production decomposition pins actual forecast provenance and preserves eve
   expect(previous.components[0].mean_abs_value).toBe(10);
   await expect(page.getByTestId("decomposition-run-id")).toHaveText(older.run_id);
   await expect(page.getByTestId("component-trend")).toContainText("10.0000");
+  await page.getByLabel("Season length (observations)").fill("7");
+  await expect(page.getByTestId("decomposition-result")).toHaveCount(0);
+  const unsupported = await loadDecomposition(page, 400);
+  expect((await unsupported.json()).detail.code).toBe("unsupported_decomposition_window");
+  await expect(section).toContainText("unsupported_decomposition_window");
+  await expect(page.getByTestId("decomposition-result")).toHaveCount(0);
   expect(storedHashes(runsRoot)).toEqual(before);
   safe();
   writeFileSync(testInfo.outputPath("decomposition-evidence.json"), JSON.stringify({
     source_sha: process.env.GITHUB_SHA ?? null, mode: "production", captures: "off",
-    latest: result, older: previous, stored_hashes_before: before,
+    latest: result, older: previous, unsupported_window_status: 400, stored_hashes_before: before,
     stored_hashes_after: storedHashes(runsRoot), private_values_exposed: false,
   }, null, 2));
 });
