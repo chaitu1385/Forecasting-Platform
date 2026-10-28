@@ -90,7 +90,14 @@ test("production operator tokens enforce identity, roles and memory-only lifetim
   expect(priorData.run_id).toBe(priorRun.run_id);
   expect(priorData.points.map((point: { forecast: number }) => point.forecast)).toEqual([10, 10, 10, 10]);
   await expect(page.getByTestId("forecast-run-id")).toHaveText(priorRun.run_id);
+  // Run selection can remount the disclosure before the previous toggle reaches React state.
+  const priorSummary = page.getByText("Forecast data", { exact: true });
+  if (await priorSummary.locator("..").getAttribute("open") === null) {
+    await priorSummary.click();
+  }
+  await expect(priorSummary.locator("..")).toHaveAttribute("open", "");
   await expect(page.getByRole("cell", { name: "10.00", exact: true }).first()).toBeVisible();
+  await expect(page.getByRole("cell", { name: "10.00", exact: true })).toHaveCount(4);
   await expect(page.getByRole("cell", { name: "20.00", exact: true })).toHaveCount(0);
   const savedConfiguration = page.waitForResponse(response =>
     new URL(response.url()).pathname === `/pipeline/runs/retail/${priorRun.run_id}/config`);
