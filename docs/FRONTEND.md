@@ -49,6 +49,29 @@ QueryProvider          -- TanStack React Query (staleTime: 5min, retry: 1)
 | `/sop` | S&OP Meeting | AI commentary, model cards, lineage, BI export |
 | `/health` | Platform Health | Drift monitoring, alert triage, audit log, cost tracking |
 
+### Hierarchy reconciliation
+
+`/hierarchy` accepts CSV/Parquet and uses the last declared hierarchy level as
+the leaf ID. Bottom-up/OLS/WLS/MinT take complete leaf forecasts with hierarchy
+columns; top-down takes root forecasts plus the conditional **Historical actuals**
+upload and **History value column** (default `quantity`). The current UI uses
+`week` and `forecast`; the typed client also accepts explicit time/value names.
+Top-down cannot run without history, and returning to that method requires a
+fresh file selection rather than silently reusing an invisible upload.
+
+The result displays requested/effective methods, source/output levels, full
+counts and the scoped coherence check alongside the numeric preview.
+**WLS (structural)** and **MinT (structural fallback)** do not advertise estimated
+residual covariance. Middle-out remains unavailable. API errors remain visible;
+a rejected request is never shown as applied.
+
+Build, aggregation and reconciliation reuse `useAsyncOperation.run/reset`.
+Changing the file/levels resets dependent results; method/history/value-column
+changes invalidate reconciliation, and target changes invalidate aggregation.
+Generation checks prevent a replaced request from painting a late result/error.
+`AuthBoundary` unmounting and the client's existing session-owner guard prevent
+old protected results from crossing logout or replacement login.
+
 ## Component Structure
 
 ```
@@ -276,7 +299,7 @@ tests exclude this directory and use explicit demo login, not storage injection.
 
 All TypeScript interfaces (`src/lib/types.ts`) mirror the FastAPI Pydantic schemas (`src/api/schemas.py`):
 
-- 46 exported interfaces/types covering all API request and response shapes
+- 69 exported interfaces/types covering API request and response shapes
 - Strict typing for roles (`Role` union type), severity levels, trends, confidence levels
 - `Record<string, unknown>` used for flexible/dynamic data (e.g., per-series stats)
 
@@ -297,6 +320,13 @@ All TypeScript interfaces (`src/lib/types.ts`) mirror the FastAPI Pydantic schem
   and sunburst React components. It checks quantile traces, series changes,
   legend toggles, hierarchy values and drilldown; API data is synthetic and
   off-host requests fail the tests.
+- **Hierarchy contracts:** `e2e/planning-api-contracts.test.tsx` adds 22 focused
+  numerical-display, upload, method-label, request-ownership and transport cases.
+  `playwright/auth/planning-api-contracts.spec.ts` uses the real authenticated
+  API and production-built app for exact bottom-up/top-down values, invalid
+  history, an unchanged real API response delayed behind a newer request,
+  viewer denial, session replacement and unchanged run hashes. The existing
+  production-auth configuration collects it with captures and retries disabled.
 
 ## Environment Variables
 

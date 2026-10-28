@@ -1,6 +1,14 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { mockApiRoutes } from "../helpers/mock-routes";
 import { loginDemo, navigateWithinApp } from "../helpers/auth";
+
+async function uploadHierarchy(page: Page) {
+  await page.getByLabel("Upload CSV or Parquet").setInputFiles({
+    name: "hierarchy_data.csv", mimeType: "text/csv",
+    buffer: Buffer.from("sku,category,region,week,quantity,forecast\nsku_001,electronics,east,2025-01-06,100,100\n"),
+  });
+  await page.getByLabel("Hierarchy Levels (comma-separated)").fill("category,region,sku");
+}
 
 test.describe("Hierarchy Flow", () => {
   test.beforeEach(async ({ page }) => {
@@ -15,69 +23,29 @@ test.describe("Hierarchy Flow", () => {
     await expect(page.locator('input[type="file"]')).toBeVisible();
   });
 
-  test("reconciliation method selector has all 6 methods", async ({ page }) => {
-    // Methods displayed as both cards and a select dropdown
+  test("reconciliation selector exposes supported methods and discloses middle-out", async ({ page }) => {
     await expect(page.getByRole("heading", { name: "Bottom-Up" })).toBeVisible({ timeout: 5_000 });
     await expect(page.getByRole("heading", { name: "Top-Down" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Middle-Out" })).toBeVisible();
+    await expect(page.getByLabel("Method", { exact: true }).locator("option")).toHaveCount(5);
+    await expect(page.getByRole("option", { name: /middle-out/i })).toHaveCount(0);
+    await expect(page.getByText(/Middle-out is unavailable/)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "WLS (structural)", exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "MinT (structural fallback)", exact: true })).toBeVisible();
   });
 
   test("uploading a file and building hierarchy shows results", async ({ page }) => {
-    // Upload CSV
-    const fileInput = page.locator('input[type="file"]');
-    await fileInput.setInputFiles({
-      name: "hierarchy_data.csv",
-      mimeType: "text/csv",
-      buffer: Buffer.from(
-        "series_id,category,region,week,quantity\nsku_001,electronics,east,2025-01-06,100\n",
-      ),
-    });
-
-    // Fill levels input
-    const levelsInput = page.locator('input[type="text"]').last();
-    if (await levelsInput.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      await levelsInput.fill("category,region");
-    }
-
-    // Click build hierarchy button
-    const buildBtn = page.locator("button:has-text('Build')");
-    if (await buildBtn.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      await buildBtn.click();
-      // Mock returns levels: ["category", "region", "sku"], n_nodes: 15
-      await page.waitForTimeout(3_000);
-      // Check that build result metrics are displayed
-      await expect(page.locator("text=15").first()).toBeVisible({ timeout: 10_000 });
-    }
+    await uploadHierarchy(page);
+    await page.getByRole("button", { name: "Build Hierarchy", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Level Stats", exact: true })).toBeVisible();
+    await expect(page.getByText("3 x 3", { exact: true })).toBeVisible();
   });
 
   test("reconciliation with bottom-up method", async ({ page }) => {
-    // First we need hierarchy to be built — upload and build
-    const fileInput = page.locator('input[type="file"]');
-    await fileInput.setInputFiles({
-      name: "hierarchy_data.csv",
-      mimeType: "text/csv",
-      buffer: Buffer.from(
-        "series_id,category,region,week,quantity\nsku_001,electronics,east,2025-01-06,100\n",
-      ),
-    });
-
-    const levelsInput = page.locator('input[type="text"]').last();
-    if (await levelsInput.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      await levelsInput.fill("category,region");
-    }
-
-    const buildBtn = page.locator("button:has-text('Build')");
-    if (await buildBtn.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      await buildBtn.click();
-      await page.waitForTimeout(2_000);
-    }
-
-    // Now try reconciliation
-    const reconBtn = page.locator("button:has-text('Reconcile')");
-    if (await reconBtn.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      await reconBtn.click();
-      // Mock returns coherence_after: 1.0
-      await page.waitForTimeout(2_000);
-    }
+    await uploadHierarchy(page);
+    await page.getByRole("button", { name: "Reconcile", exact: true }).click();
+    const result = page.getByTestId("reconciliation-result");
+    await expect(result.getByRole("cell", { name: "sku_001", exact: true })).toBeVisible();
+    await expect(result.getByRole("cell", { name: "100", exact: true })).toBeVisible();
+    await expect(page.getByTestId("reconciliation-effective-method")).toHaveText("Bottom-Up");
   });
 });

@@ -57,7 +57,7 @@ forecasting-product/
 │   │   ├── deps.py         # Shared dependencies
 │   │   └── routers/        # Domain-specific API routers
 │   │       ├── series.py       # GET /series/{lob}, POST /series/breaks, cleansing-audit, regressor-screen
-│   │       ├── hierarchy.py    # POST /hierarchy/build, aggregate, reconcile
+│   │       ├── hierarchy.py    # Build/aggregate; admitted real-level reconciliation, top-down history, scoped coherence
 │   │       ├── sku_mapping.py  # POST /sku-mapping/phase1, phase2
 │   │       ├── overrides.py    # CRUD /overrides
 │   │       ├── pipeline.py     # POST backtest/forecast; GET exact runs/config/input, manifests, costs; multi-file analysis
@@ -116,7 +116,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 2047 cases (pytest)
+├── tests/                  # 2163 cases (pytest)
 ├── configs/                # YAML configuration files
 ├── requirements/           # Hash-locked CPU/API/dev/AI/Fabric/Spark profiles per Python minor
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
@@ -133,7 +133,7 @@ forecasting-product/
 - **Polars DataFrames** throughout production code (not Pandas)
 - **Dataclasses** for configuration (`src/config/schema.py`)
 - **ABCs** for extensible interfaces (`BaseForecaster`)
-- PEP 8 conventions (no explicit linter configured)
+- PEP 8 conventions; Ruff E/F/W/I rules are configured in `forecasting-product/pyproject.toml`
 
 ## Configuration
 
@@ -217,6 +217,23 @@ for over-forecasting and ranks by absolute magnitude. See
 [the numerical contract](docs/NUMERICAL_RELIABILITY.md), including undefined
 scores, gap lead times, preprocessing restrictions and historical-run migration.
 
+### Hierarchy API contract
+
+`/hierarchy/reconcile` accepts complete leaf panels for bottom-up/OLS/WLS/MinT,
+or root forecasts plus `actuals_file`/`history_value_column` for top-down.
+Pass actual hierarchy level names to `Reconciler`, never the tree's container name.
+Preserve its formulas: WLS and no-residual MinT report `wls_structural`; OLS stays
+OLS, and no independent upper forecasts or covariance are inferred. Middle-out
+returns actionable HTTP 400.
+
+Require finite requested values, nonnull unique node/time keys, one parent per
+node and complete observed-period coverage. History must precede the forecast
+window and have positive leaf-group volume. Reject ambiguous linear node keys
+and submicrosecond CSV/Parquet timestamps; do not round, zero-pad or invent shares.
+Check full output keys, numeric/quantile order and scoped coherence before preview
+truncation. Omit unrequested quantiles, and never mutate stored runs. UI input
+changes use `useAsyncOperation.reset` to invalidate late responses.
+
 ## Authentication contract
 
 The factory, `serve.py` and container use `AUTH_ENABLED=true`, `API_DEV_MODE=false`
@@ -254,11 +271,17 @@ distribution version. Never replace locks with unconstrained installs to make CI
 - Framework: pytest
 - Test files mirror source structure with `test_` prefix
 - Helper fixtures use `_make_*` factory functions (e.g., `_make_weekly_actuals`)
-- 2047 cases across 77 test modules; run the full suite without module exclusions
+- 2163 cases across 78 test modules; run the full suite without module exclusions
 - Key test modules: `test_platform.py` (85 tests), `test_sku_mapping.py` (81), `test_ai_*.py` (73), `test_forecast_explainability.py` (59), `test_intermittent_demand.py` (55), `test_observability.py` (41), `test_file_classifier.py` (26), `test_file_merger.py` (20)
 - Focused forecast-intent coverage: `test_forecast_intent.py` (108 real ASGI cases),
   plus frontend `e2e/pipeline-execution.test.tsx` and `e2e/data-onboarding-state.test.tsx`
   (21 handoff/state cases). These require only core/API and existing frontend test dependencies.
+- Hierarchy planning contracts: `test_planning_api_contracts.py` has 116 real
+  authenticated cases, including independent numerical and timestamp oracles.
+  Its 22 frontend cases and production-built `playwright/auth/planning-api-contracts.spec.ts`
+  cover actual numbers, historical input, late responses, role denial and unchanged
+  stored runs. The required native authentication job includes the backend module;
+  browser captures remain disabled. The other F8 slices are not implemented here.
 - Run safety: `test_run_store.py`, `test_run_artifacts.py`,
   `test_run_store_process.py` and `test_run_cli.py` cover publication faults on
   both sides of the marker, exact/legacy/auth/path contracts, actual multiprocess

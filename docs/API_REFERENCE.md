@@ -382,10 +382,52 @@ Run hierarchical reconciliation and return before/after comparison. **Requires**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `file` | body, required | Forecast CSV/Parquet |
-| `levels` | query, required | Comma-separated hierarchy levels |
+| `file` | body, required | Complete leaf forecasts, or root forecasts for `top_down`; CSV/Parquet |
+| `actuals_file` | body, required for `top_down` | Earlier historical leaf data with every hierarchy column |
+| `levels` | query, required | Distinct, nonempty comma-separated levels, root to leaf |
+| `id_column` | query, default `"series_id"` | Leaf ID column in leaf/history data; an alias must map one-to-one to the last hierarchy level |
 | `method` | query, default `"bottom_up"` | `bottom_up`, `top_down`, `ols`, `wls`, `mint` |
 | `value_columns` | query, default `"forecast"` | Columns to reconcile |
+| `time_column` | query, default `"week"` | Date or timestamp column |
+| `history_value_column` | query, default `"quantity"` | Historical volume column used for top-down proportions |
+| `validate` | query, default `false` | Applicable structural/logical/business checks on the full output; no model-comparison paradox is evaluated |
+
+| Requested method | Input and effective calculation |
+|------------------|---------------------------------|
+| `bottom_up` | Leaf values are preserved; parent totals are derived from those leaves |
+| `ols` | Existing OLS projection with upper forecasts derived from the supplied leaves |
+| `wls` | Existing structural weighting; `effective_method="wls_structural"` |
+| `mint` | No residuals are accepted by this interface: structural WLS fallback, with an explicit warning |
+| `top_down` | Root forecasts split by actual historical leaf shares; `effective_method="top_down"` |
+
+`middle_out` and unknown methods return HTTP 400
+`unsupported_reconciliation_mode`; no middle-level input or independently fitted
+upper forecasts are inferred. Residual-covariance MinT remains a separate domain
+interface, not a claim made by this endpoint.
+
+Leaf forecasts must contain all hierarchy columns, the ID/time columns and every
+requested numeric value. Keys must be nonnull and unique per leaf/period, each node
+must have exactly one parent, and every expected leaf must occur in every observed
+period. Linear methods reject the same node key appearing at different levels,
+and leaf keys `node_key`/`node_level`, which conflict with summing-matrix metadata.
+There is no frequency parameter, so coverage is over observed periods, not an
+invented calendar. Missing observations are never zero-padded.
+
+For top-down, the mapping comes from the history upload, not the root forecast.
+Every historical leaf/period must be present, every leaf's total volume must be
+finite and strictly positive, and every historical timestamp must precede the
+first forecast timestamp. Every mapped root must be forecast in every forecast
+period; unknown or missing roots fail. No equal-share fallback is used.
+Top-down columns cannot use internal proportion names (`proportion`, `_src`,
+`_tgt`, `_target_total`, `_source_total`).
+
+Only the leaf key, time and requested values appear in the output. Unrequested
+quantiles/metadata are not returned as if adjusted. Requested `forecast_p0` through
+`forecast_p100` columns must be finite and ordered before and after calculation;
+values are never sorted to repair crossing. Invalid parsed business inputs return
+400, malformed typed fields retain 422, oversize uploads return 413, and unexpected
+computation/output-check failures are logged and return 500, not a successful
+empty result. Uploaded filenames cannot select server paths.
 
 The reconciliation wire contract supports dates and timestamps exactly representable
 at microsecond precision. Nanosecond Parquet timestamps are accepted only when every
@@ -393,6 +435,30 @@ stored value is divisible by 1,000; submicrosecond CSV fractions are also reject
 with HTTP 400 `unsupported_timestamp_precision`. This applies to forecast and
 historical uploads before domain execution: periods are never rounded or merged.
 Timezone-aware historical cutoffs compare instants, not local wall-clock values.
+
+The typed `HierarchyReconcileResponse` preserves `method`, `before_total`,
+`after_total`, `rows`, `reconciled_preview` and `validation`, and adds:
+
+| Field | Meaning |
+|-------|---------|
+| `requested_method`, `effective_method` | Requested method versus the calculation actually used |
+| `source_level`, `output_level` | Actual root/leaf input level and returned leaf level |
+| `input_rows`, `output_rows` | Full input/output counts, not preview lengths |
+| `warnings` | Structural fallback and derived-upper-forecast limitations |
+| `coherence` | Full-frame scope, checked rows/periods/parent-period groups, requested columns and maximum absolute error |
+
+`coherence.scope="root_forecast_conservation"` compares top-down leaf sums to
+supplied roots. `leaf_derived_parent_totals` checks derived parent aggregation; it
+does not claim independent upper-level accuracy or probabilistic calibration.
+Checks use unrounded values with `rtol=1e-6, atol=1e-8`. Legacy display totals
+remain rounded to two decimals. The entire frame and exact leaf/period key set
+are checked before the first 200 rows are returned as a preview. The operation
+does not rewrite a committed forecast, historical input or stored configuration.
+
+For example, `levels=department,item&id_column=item` with leaf values `[10,20]`
+and `[4,6]` in two periods returns those four exact values and parent totals
+30 and 10. A top-down root forecast of 120 with earlier leaf volumes 10 and 30
+returns leaf forecasts 30 and 90.
 
 ---
 
