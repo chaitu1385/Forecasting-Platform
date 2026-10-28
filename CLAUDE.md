@@ -85,7 +85,7 @@ forecasting-product/
 │   │   ├── intermittent.py # Croston, CrostonSBA, TSB
 │   │   ├── ensemble.py     # WeightedEnsembleForecaster
 │   │   ├── hierarchical.py # HierarchicalForecaster
-│   │   └── constrained.py  # ConstrainedDemandEstimator (capacity/budget constraints)
+│   │   └── constrained.py  # apply_point_constraints + ConstrainedDemandEstimator (shared bounds/point budgets)
 │   ├── hierarchy/          # Tree structure, aggregation, reconciliation (OLS/WLS/MinT)
 │   ├── metrics/            # MetricStore (Parquet), drift detection, FVA
 │   ├── observability/      # Structured logging, metrics, alerts, cost tracking
@@ -116,7 +116,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 2047 cases (pytest)
+├── tests/                  # 2225 cases (pytest)
 ├── configs/                # YAML configuration files
 ├── requirements/           # Hash-locked CPU/API/dev/AI/Fabric/Spark profiles per Python minor
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
@@ -133,7 +133,7 @@ forecasting-product/
 - **Polars DataFrames** throughout production code (not Pandas)
 - **Dataclasses** for configuration (`src/config/schema.py`)
 - **ABCs** for extensible interfaces (`BaseForecaster`)
-- PEP 8 conventions (no explicit linter configured)
+- PEP 8 conventions; existing Ruff E/F/W/I rules are configured in `pyproject.toml`
 
 ## Configuration
 
@@ -154,6 +154,25 @@ request override > valid YAML > platform defaults; the required
 allowlist, not `asdict(PlatformConfig)`. Keep server paths and credentials out of it.
 The UI forwards only the current backtest champion/horizon and invalidates dependent
 results when data, LOB, or configuration changes.
+
+### Constraint contract
+
+`forecasting.constrained.apply_point_constraints` is shared by the wrapper and
+`POST /forecast/constrain`. Validate finite values/bounds, unique non-null keys,
+complete per-series capacities, `cap >= floor`, and per-period
+`budget >= row_count * floor`. Clip row bounds first; proportional allocation
+scales only headroom above floors. Largest-first removes excess by descending
+clipped value, then ascending string series ID, preserving input order and all
+nonvalue columns. Never duplicate arithmetic in the route or round away a budget
+violation. Full-population diagnostics precede the 200-row preview.
+
+Refitting clears capacity state; a configured missing capacity column/map is an
+error, not permission to retain previous limits. Quantiles support the same
+monotone element-wise clipping without a budget, with finite/order validation
+before and after. Enabled aggregate-plus-quantile requests fail explicitly as
+`unsupported_aggregate_quantiles` before publication. Disabled wrappers remain
+no-ops. Do not sort crossed quantiles, invent a joint distribution, or force a
+general point to P50. See `docs/NUMERICAL_RELIABILITY.md`.
 
 ### Immutable run storage
 
@@ -254,7 +273,11 @@ distribution version. Never replace locks with unconstrained installs to make CI
 - Framework: pytest
 - Test files mirror source structure with `test_` prefix
 - Helper fixtures use `_make_*` factory functions (e.g., `_make_weekly_actuals`)
-- 2047 cases across 77 test modules; run the full suite without module exclusions
+- 2225 cases across 78 test modules; run the full suite without module exclusions
+- Constraint coverage: `test_constrained_demand.py` (125 cases) and
+  `test_constraint_api_contracts.py` (69 real authenticated API/domain/publication cases)
+  assert distinct hand allocations, full populations, exact keys and explicit
+  infeasible/unsupported errors without changing existing immutable runs.
 - Key test modules: `test_platform.py` (85 tests), `test_sku_mapping.py` (81), `test_ai_*.py` (73), `test_forecast_explainability.py` (59), `test_intermittent_demand.py` (55), `test_observability.py` (41), `test_file_classifier.py` (26), `test_file_merger.py` (20)
 - Focused forecast-intent coverage: `test_forecast_intent.py` (108 real ASGI cases),
   plus frontend `e2e/pipeline-execution.test.tsx` and `e2e/data-onboarding-state.test.tsx`

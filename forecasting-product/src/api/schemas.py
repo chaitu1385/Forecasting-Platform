@@ -39,6 +39,33 @@ class ForecastResponse(BaseModel):
     input_data_hash: Optional[str] = None
 
 
+class AppliedConstraints(BaseModel):
+    """Validated settings used for the complete uploaded forecast."""
+
+    min_demand: float = Field(ge=0, allow_inf_nan=False)
+    max_capacity: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    aggregate_max: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    proportional: bool
+
+
+class ConstrainResponse(BaseModel):
+    """Measured full-population constraint results; preview is limited to 200 rows."""
+
+    before_total: float = Field(allow_inf_nan=False)
+    after_total: float = Field(allow_inf_nan=False)
+    rows_modified: int = Field(ge=0)
+    constraints_applied: AppliedConstraints
+    constrained_preview: List[Dict[str, Any]]
+    allocation_strategy: Literal["element_wise", "proportional", "largest_first"]
+    checked_rows: int = Field(ge=1)
+    checked_periods: int = Field(ge=1)
+    max_budget_excess: Optional[float] = Field(
+        ge=0, allow_inf_nan=False,
+        description="Maximum measured positive per-period excess; null when no budget was supplied",
+    )
+    constraint_scope: Literal["point", "point_and_quantiles"]
+
+
 class LeaderboardEntry(BaseModel):
     """One model's aggregated performance metrics."""
     model: str

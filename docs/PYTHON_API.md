@@ -270,6 +270,47 @@ reconciled = reconciler.reconcile(
 
 ---
 
+### `apply_point_constraints` and `ConstrainedDemandEstimator`
+
+```python
+from src.config.schema import ConstraintConfig
+from src.forecasting.constrained import apply_point_constraints, ConstrainedDemandEstimator
+
+constraints = ConstraintConfig(
+    enabled=True, min_demand=0, aggregate_max=50,
+    proportional_redistribution=False,
+)
+bounded = apply_point_constraints(
+    forecasts, constraints,
+    id_col="series_id", time_col="week", value_col="forecast",
+)
+model = ConstrainedDemandEstimator(base_forecaster, constraints)
+model.fit(actuals)
+point_forecast = model.predict(horizon=4)
+```
+
+The pure helper returns a new frame, preserving exact identity/time keys,
+input order and nonvalue columns. Disabled constraints are a no-op. Bounds and
+values must be finite; bounds must be nonnegative and feasible. After row clipping,
+proportional allocation scales only headroom above `min_demand`. Largest-first
+removes excess in descending clipped-value order, with ascending string-ID ties.
+Thus `[100,100]` for IDs `a,b` and budget `50` yields `[25,25]` proportionally or
+`[0,50]` largest-first.
+
+An optional `capacity_map` must cover every output series with finite capacities
+at least as large as the floor. Scalar and per-series caps use the tighter bound.
+When `capacity_column` is configured on the wrapper, **every fit** requires that
+column and complete finite training values; its per-series maximum becomes the
+capacity. A refit clears old capacity state even when the new fit fails. To remove
+that policy, explicitly set `capacity_column=None` and refit.
+
+`predict_quantiles` and quantile-bearing point frames support element-wise
+scalar/per-series bounds only. Requested values must already be finite and ordered;
+clipping never sorts or drops quantiles or forces a general model's point to P50.
+Enabled aggregate budgets raise `ValueError("unsupported_aggregate_quantiles: ...")`
+before probabilistic publication. Invalid/infeasible inputs also raise `ValueError`;
+no existing immutable run is rewritten. See [the numerical contract](NUMERICAL_RELIABILITY.md).
+
 ### `ForecasterRegistry`
 
 **Module:** `src.forecasting.registry`
