@@ -42,6 +42,7 @@ import type {
   ShapResponse,
   DecomposeResponse,
   ForecastCompareResponse,
+  ConstrainParams,
   ConstrainResponse,
   ModelCardListResponse,
   ModelCardItem,
@@ -550,7 +551,7 @@ export const api = {
     );
   },
 
-  constrainForecast: (file: File, params?: { min_demand?: number; max_capacity?: number; aggregate_max?: number; proportional?: boolean }) => {
+  constrainForecast: (file: File, params?: ConstrainParams) => {
     const formData = new FormData();
     formData.append("file", file);
     const sp = new URLSearchParams();
@@ -558,6 +559,9 @@ export const api = {
     if (params?.max_capacity !== undefined) sp.set("max_capacity", String(params.max_capacity));
     if (params?.aggregate_max !== undefined) sp.set("aggregate_max", String(params.aggregate_max));
     if (params?.proportional !== undefined) sp.set("proportional", String(params.proportional));
+    if (params?.id_col !== undefined) sp.set("id_col", params.id_col);
+    if (params?.time_col !== undefined) sp.set("time_col", params.time_col);
+    if (params?.value_col !== undefined) sp.set("value_col", params.value_col);
     const qs = sp.toString();
     return request<ConstrainResponse>(`/forecast/constrain${qs ? `?${qs}` : ""}`, {
       method: "POST", body: formData,

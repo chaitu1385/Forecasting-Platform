@@ -48,6 +48,7 @@ def main() -> None:
     (data / "metrics").mkdir()
     app = create_app(
         data_dir=str(data), metrics_dir=str(data / "metrics"),
+        runs_dir=str(data / "runs"),
         title="Authentication integration test fixture",
         cors_origins=[args.frontend_origin],
     )

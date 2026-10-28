@@ -383,6 +383,26 @@ The frontend runs at `http://localhost:3000` by default. Set `NEXT_PUBLIC_API_UR
 | **Platform Health** | `/health` | Pipeline manifests, drift alerts, AI anomaly triage, audit log, cost tracking |
 | **S&OP Meeting** | `/sop` | AI commentary, cross-run comparison, model governance, BI export |
 
+### Applying Forecast Constraints
+
+In **Forecast Viewer**, upload a CSV or Parquet file in **Constrained Forecast**.
+Set a nonnegative floor, optional row capacity and optional **Aggregate Max (per
+period)**. The existing unchecked **Proportional** checkbox selects largest-first
+allocation; checking it scales only headroom above the floor. For two 100-unit
+rows `a,b` and a budget of 50, these choices produce `0,50` and `25,25`, respectively.
+
+The result reports the actual strategy/scope, unrounded totals, rows/periods
+checked and maximum measured budget excess across the whole upload, not just its
+200-row preview. Editing any file, limit or strategy clears prior results and
+prevents a late response from replacing the current request. Errors remain
+visible; **Retry** is an explicit new request, not an automatic POST retry.
+
+If a budget cannot cover all floors, the operation fails instead of claiming the
+constraints were applied. Quantile columns can use scalar bounds without an
+aggregate budget, but aggregate-plus-quantile files are explicitly unsupported.
+Neither a successful preview nor a rejected request changes an immutable stored
+forecast.
+
 ### Running the Selected Forecast Plan
 
 After analyzing a file in **Data Onboarding**, the **Pipeline Execution** panel uses

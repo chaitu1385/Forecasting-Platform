@@ -2,25 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { createHmac } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-
-// Evaluate rather than fill: Playwright action diagnostics must never contain a token argument.
-async function submitPrivately(page: Page, token: string) {
-  try {
-    await page.evaluate(value => {
-      const input = document.querySelector("#access-token");
-      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-      if (!(input instanceof HTMLInputElement) || input.type !== "password" || !setter) {
-        throw new Error("Private credential input is unavailable");
-      }
-      setter.call(input, value);
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    }, token);
-    await page.getByRole("button", { name: "Sign In", exact: true }).click();
-  } catch {
-    await page.evaluate(() => document.querySelector("#access-token")?.remove());
-    throw new Error("Private credential submission failed");
-  }
-}
+import { submitPrivately } from "../helpers/private-auth";
 
 async function protectedStatus(page: Page, apiUrl: string, token: string, method: "GET" | "POST", endpoint: string) {
   try {
