@@ -2,6 +2,7 @@
 
 import math
 from datetime import date, timedelta
+from decimal import Decimal
 from typing import List
 
 import polars as pl
@@ -450,8 +451,9 @@ class TestPointConstraintContract:
             _point_frame().with_columns(pl.Series("week", [None, date(2024, 1, 1)])),
             _point_frame().with_columns(pl.Series("week", [float("inf"), 1.0])),
             _point_frame().with_columns(pl.Series("series_id", [["a"], ["b"]])),
+            _point_frame().with_columns(pl.Series("series_id", [b"\xff", b"b"])),
         ],
-        ids=["empty", "duplicate", "null-id", "blank-id", "nonfinite-id", "null-time", "nonfinite-time", "nested-id"],
+        ids=["empty", "duplicate", "null-id", "blank-id", "nonfinite-id", "null-time", "nonfinite-time", "nested-id", "binary-id"],
     )
     def test_invalid_populations(self, frame):
         with pytest.raises(ValueError, match="invalid_constraint_frame"):
@@ -523,6 +525,14 @@ class TestPointConstraintContract:
         result = apply_point_constraints(frame, ConstraintConfig(enabled=True, aggregate_max=50))
         assert result["week"].equals(frame["week"])
         assert result["forecast"].to_list() == [50.0, 50.0]
+
+    def test_decimal_keys_preserve_their_exact_values(self):
+        frame = _point_frame().with_columns(
+            pl.Series("series_id", [Decimal("1.123456789012345678901"), Decimal("2.123456789012345678901")]),
+        )
+        result = apply_point_constraints(frame, ConstraintConfig(enabled=True, aggregate_max=50))
+        assert result["series_id"].equals(frame["series_id"])
+        assert result["forecast"].to_list() == [25, 25]
 
     def test_disabled_constraints_are_a_true_noop(self):
         frame = _point_frame().with_columns(pl.lit(float("nan")).alias("forecast_p90"))
@@ -703,3 +713,12 @@ class TestQuantileSupportBoundary:
         frame = _point_frame().with_columns(pl.lit(1000.0).alias(column))
         with pytest.raises(ValueError, match="quantile columns"):
             apply_point_constraints(frame, ConstraintConfig(enabled=True, max_capacity=50))
+
+    def test_unsupported_quantile_dtype_is_a_value_error(self):
+        frame = _point_frame().with_columns(pl.Series("forecast_p90", [Decimal("100.1"), Decimal("100.2")]))
+        config = ConstraintConfig(enabled=True)
+        with pytest.raises(ValueError, match="quantile"):
+            apply_point_constraints(frame, config)
+        wrapper = ConstrainedDemandEstimator(_QuantileFrameForecaster(frame), config)
+        with pytest.raises(ValueError, match="quantile"):
+            wrapper.predict_quantiles(1, [0.9])

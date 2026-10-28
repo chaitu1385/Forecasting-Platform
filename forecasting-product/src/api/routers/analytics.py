@@ -285,6 +285,20 @@ async def compare_forecasts(
     }
 
 
+def _validate_constraint_json_column(column: pl.Series) -> None:
+    """Reject metadata that JSON would silently replace or cannot represent."""
+    dtype = column.dtype
+    if dtype in (pl.Binary, pl.Object):
+        raise ValueError("invalid_constraint_frame: binary/object metadata is not supported in JSON forecasts")
+    if dtype.is_float() and not column.is_finite().fill_null(True).all():
+        raise ValueError("invalid_constraint_frame: nonfinite metadata cannot be preserved in JSON forecasts")
+    if isinstance(dtype, (pl.List, pl.Array)):
+        _validate_constraint_json_column(column.explode())
+    elif isinstance(dtype, pl.Struct):
+        for member in column.struct.unnest().iter_columns():
+            _validate_constraint_json_column(member)
+
+
 @router.post("/forecast/constrain", response_model=ConstrainResponse)
 async def constrain_forecast(
     file: UploadFile = File(..., description="Forecast CSV/Parquet"),
@@ -344,6 +358,8 @@ async def constrain_forecast(
         modified = df[value_col] != constrained[value_col]
         for column in quantile_columns:
             modified = modified | (df[column] != constrained[column])
+        for column in constrained.iter_columns():
+            _validate_constraint_json_column(column)
         preview = json.loads(constrained.head(200).write_json())
     except (ValueError, OverflowError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

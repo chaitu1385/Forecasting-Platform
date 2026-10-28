@@ -261,6 +261,9 @@ row order. Output row order and nonvalue columns are preserved. CSV period keys
 are kept as supplied rather than date-inferred, so fractional timestamps are not
 rounded together; use a consistent representation for each period. Parquet
 timestamps retain their native precision in the JSON preview.
+Nullable/nested metadata is preserved, including lossless string encoding of
+Parquet decimals. Nonfinite metadata (which JSON would replace with null) and
+unsupported binary/object metadata return 400 instead of a modified preview.
 
 Standard `forecast_p0` through `forecast_p100` columns are quantiles. Without an
 aggregate budget, the same monotone row bounds apply to every supplied quantile;
@@ -269,6 +272,8 @@ quantiles, return HTTP 400 `unsupported_aggregate_quantiles`, even if the input 
 under budget. This endpoint does not construct a joint probabilistic budget.
 Per-series capacity maps are available through the Python wrapper/helper, not a
 new upload parameter.
+Quantile columns use the existing integer/floating-point validator; unsupported
+numeric dtypes such as Parquet Decimal return an actionable 400, not a 500.
 
 The response retains `before_total`, `after_total`, `rows_modified`,
 `constraints_applied`, and `constrained_preview` (at most 200 rows). Totals are

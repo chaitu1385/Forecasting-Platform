@@ -7,6 +7,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import jwt
@@ -258,6 +259,74 @@ def test_csv_timestamp_inference_cannot_merge_distinct_periods(private_api):
     assert data["after_total"] == 100
     assert [row["week"] for row in data["constrained_preview"]] == frame["week"].to_list()
     assert [row["forecast"] for row in data["constrained_preview"]] == [50, 50]
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        pl.Series("_cap", [1.0, float("nan")]),
+        pl.Series("_cap", [1.0, float("inf")]),
+        pl.Series("_cap", [[None, 1.0], [float("-inf")]]),
+        pl.Series("_cap", [{"value": 1.0}, {"value": float("nan")}]),
+    ],
+    ids=["nan", "infinity", "nested-list", "nested-struct"],
+)
+def test_nonfinite_json_metadata_is_not_silently_changed_to_null(private_api, metadata):
+    response = private_api.constrain(_frame().with_columns(metadata))
+    assert response.status_code == 400
+    assert "invalid_constraint_frame" in response.json()["detail"]
+
+
+def test_decimal_identity_keys_remain_exact_strings_in_json(private_api):
+    ids = [Decimal("1.123456789012345678901"), Decimal("2.123456789012345678901")]
+    frame = _frame().with_columns(pl.Series("series_id", ids))
+    response = private_api.constrain(frame, {"aggregate_max": 50, "proportional": False})
+    assert response.status_code == 200
+    assert [row["series_id"] for row in response.json()["constrained_preview"]] == [str(value) for value in ids]
+    assert [row["forecast"] for row in response.json()["constrained_preview"]] == [0, 50]
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_unsupported_binary_metadata_fails_before_json_serialization(private_api, nested):
+    values = [[b"first"], [b"second"]] if nested else [b"first", b"second"]
+    response = private_api.constrain(_frame().with_columns(pl.Series("_cap", values)))
+    assert response.status_code == 400
+    assert "invalid_constraint_frame" in response.json()["detail"]
+
+
+def test_binary_identity_is_rejected_before_budget_tie_breaking(private_api):
+    frame = _frame().with_columns(pl.Series("series_id", [b"\xff", b"b"]))
+    response = private_api.constrain(frame, {"aggregate_max": 50, "proportional": False})
+    assert response.status_code == 400
+    assert "invalid_constraint_frame" in response.json()["detail"]
+
+
+def test_valid_nullable_nested_metadata_is_preserved(private_api):
+    frame = _frame().with_columns(
+        pl.Series("_cap", [[1.0, None], None]),
+        pl.Series("_q_list", [{"amount": Decimal("1.1234567890123456789")}, {"amount": None}]),
+    )
+    response = private_api.constrain(frame, {"aggregate_max": 50})
+    assert response.status_code == 200
+    assert [row["_cap"] for row in response.json()["constrained_preview"]] == [[1.0, None], None]
+    assert [row["_q_list"] for row in response.json()["constrained_preview"]] == [
+        {"amount": "1.1234567890123456789"}, {"amount": None},
+    ]
+
+
+def test_json_metadata_checks_cover_rows_beyond_preview(private_api):
+    frame = pl.DataFrame({
+        "series_id": [f"item-{i}" for i in range(201)], "week": [date(2026, 1, 5)] * 201,
+        "forecast": [1.0] * 201, "_cap": [1.0] * 200 + [float("nan")],
+    })
+    assert private_api.constrain(frame).status_code == 400
+
+
+def test_unsupported_quantile_dtype_is_an_actionable400(private_api):
+    frame = _frame().with_columns(pl.Series("forecast_p90", [Decimal("100.1"), Decimal("100.2")]))
+    response = private_api.constrain(frame)
+    assert response.status_code == 400
+    assert "quantile" in response.json()["detail"]
 
 
 def test_element_only_quantiles_are_clipped_and_scope_is_truthful(private_api):

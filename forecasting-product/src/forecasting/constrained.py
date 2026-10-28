@@ -80,9 +80,9 @@ def _finite_values(frame: pl.DataFrame, column: str) -> list[float]:
 def _validate_key_values(frame: pl.DataFrame, columns: tuple[str, ...]) -> None:
     for column in columns:
         values = frame[column]
-        if values.null_count() or values.dtype.is_nested() or values.dtype == pl.Object:
-            raise ValueError("invalid_constraint_frame: identity and time keys must be non-null scalars")
-        if values.dtype.is_numeric() and not values.is_finite().all():
+        if values.null_count() or values.dtype.is_nested() or values.dtype in (pl.Object, pl.Binary):
+            raise ValueError("invalid_constraint_frame: identity and time keys must be non-null supported scalars")
+        if values.dtype.is_numeric() and not values.cast(pl.Float64).is_finite().all():
             raise ValueError("invalid_constraint_frame: identity and time keys must be finite")
         if values.dtype == pl.String and (values.str.strip_chars() == "").any():
             raise ValueError("invalid_constraint_frame: identity and time keys must be nonempty")
@@ -107,6 +107,16 @@ def _quantile_levels(frame: pl.DataFrame, id_col: str, time_col: str) -> list[fl
             raise ValueError("invalid_constraint_frame: quantile columns must use forecast_p0 through forecast_p100")
         levels.append(percentile / 100)
     return sorted(levels)
+
+
+def _validate_input_quantiles(frame: pl.DataFrame, quantiles: list[float]) -> None:
+    try:
+        validate_quantile_forecasts(frame, quantiles, "Constraint input")
+    except (TypeError, pl.exceptions.InvalidOperationError) as exc:
+        raise ValueError(
+            "invalid_constraint_frame: quantile columns must use supported integer/floating-point "
+            "types and quantile levels must be finite numbers"
+        ) from exc
 
 
 def _period_rows(frame: pl.DataFrame, time_col: str) -> list[list[int]]:
@@ -189,7 +199,7 @@ def apply_point_constraints(
             "unsupported_aggregate_quantiles: aggregate budgets support point forecasts only; "
             "remove aggregate_max or the quantile columns"
         )
-    validate_quantile_forecasts(frame, quantiles, "Constraint input")
+    _validate_input_quantiles(frame, quantiles)
     columns = list(dict.fromkeys([value_col, *[f"forecast_p{int(round(q * 100))}" for q in quantiles]]))
     values = {column: _finite_values(frame, column) for column in columns}
 
@@ -379,7 +389,7 @@ class ConstrainedDemandEstimator(BaseForecaster):
 
         if not quantiles:
             raise ValueError("Constraint quantiles require at least one requested level")
-        validate_quantile_forecasts(qf, quantiles, "Constraint input")
+        _validate_input_quantiles(qf, quantiles)
         value_col = "forecast" if "forecast" in qf.columns else f"forecast_p{int(round(quantiles[0] * 100))}"
         return apply_point_constraints(
             qf, self.constraints, id_col, time_col, value_col,
