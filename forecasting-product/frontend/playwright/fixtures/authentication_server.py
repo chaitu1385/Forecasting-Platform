@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 
+import duckdb
 import polars as pl
 import uvicorn
 
@@ -19,6 +20,7 @@ from src.api.app import create_app
 from src.auth.issuer import write_private_token
 from src.auth.token import create_token
 from src.config.schema import PlatformConfig
+from src.overrides.store import _CREATE_TABLE_SQL
 from src.pipeline.forecast import ForecastPipeline
 
 
@@ -51,6 +53,12 @@ def main() -> None:
         title="Authentication integration test fixture",
         cors_origins=[args.frontend_origin],
     )
+    # A real SQL write fault, isolated to this synthetic fixture, exercises failed browser Saves.
+    with duckdb.connect(str(data / "overrides.duckdb")) as connection:
+        connection.execute(_CREATE_TABLE_SQL.replace(
+            "notes           VARCHAR,",
+            "notes           VARCHAR CHECK (notes <> 'OVERRIDE_FIXTURE_REJECTED_NOTES'),",
+        ))
     write_private_token(credentials / "signing-key", key)
     for role in ("admin", "viewer"):
         write_private_token(

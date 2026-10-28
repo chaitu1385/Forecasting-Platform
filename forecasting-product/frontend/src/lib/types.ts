@@ -358,15 +358,19 @@ export interface SKUMappingResponse {
 // ── Overrides ────────────────────────────────────────────────────────────────
 
 export interface OverrideItem {
-  override_id?: string;
+  override_id: string;
   old_sku: string;
   new_sku: string;
   proportion: number;
   scenario: string;
   ramp_shape: string;
-  effective_date?: string;
-  created_by?: string;
-  notes?: string;
+  effective_date?: string | null;
+  created_by?: string | null;
+  created_at?: string | null;
+  notes?: string | null;
+  status?: string;
+  approved_by?: string | null;
+  approved_at?: string | null;
 }
 
 export interface OverrideListResponse {
@@ -380,8 +384,16 @@ export interface CreateOverrideRequest {
   proportion: number;
   scenario?: string;
   ramp_shape?: string;
-  effective_date?: string;
-  notes?: string;
+  effective_date?: string | null;
+  notes?: string | null;
+}
+
+export interface UpdateOverrideRequest {
+  proportion?: number;
+  scenario?: string;
+  ramp_shape?: string;
+  effective_date?: string | null;
+  notes?: string | null;
 }
 
 // ── Pipeline ─────────────────────────────────────────────────────────────────

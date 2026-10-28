@@ -160,6 +160,44 @@ the producer's `competition_scope`. See [DATA_FORMAT.md](DATA_FORMAT.md).
 
 ---
 
+### `OverrideStore` / `ParquetOverrideStore`
+
+**Module:** `src.overrides.store`
+
+`get_override_store(path="data/overrides")` selects DuckDB when available and
+otherwise Parquet. Direct `OverrideStore(...)` retains its legacy CSV fallback.
+All three implement `add_override`, `get_overrides`/`get_all`,
+`update_override(override_id, changes: Mapping[str, object]) -> bool`,
+`delete_override(override_id) -> bool`, and `close`.
+
+```python
+from src.overrides.store import get_override_store
+
+store = get_override_store()
+try:
+    override_id = store.add_override("OLD", "NEW", 0.75, created_by="planner")
+    updated = store.update_override(override_id, {"proportion": 0, "notes": None})
+finally:
+    store.close()
+```
+
+Update/delete return `False` for a missing ID without creating a data file.
+Updates accept only proportion, scenario, ramp shape, effective date and notes.
+Omitted fields are retained; only date/notes accept `None`. Identity, SKU keys,
+creation and approval metadata do not change. `OverrideValidationError` rejects
+invalid/empty patches, `OverrideDataError` rejects malformed/ambiguous stored
+rows, and `OverrideStoreBusy` requires an explicit retry of a contended local
+file operation. Unexpected storage failures propagate.
+
+DuckDB updates use parameterized transactional SQL. File backends serialize
+read-modify-write and replace a flushed same-directory temporary file; failures
+before replacement preserve the previous bytes. Local readers share the lock
+so Windows open handles cannot block replacement. This is not distributed
+locking, power-loss ACID, automatic business reapproval or stale-edit detection.
+See [deployment limits](DEPLOYMENT.md#mutable-local-overrides).
+
+---
+
 ### `DataValidator`
 
 **Module:** `src.data.validator`

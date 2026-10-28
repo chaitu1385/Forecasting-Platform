@@ -33,6 +33,7 @@ import type {
   SKUMappingResponse,
   OverrideListResponse,
   CreateOverrideRequest,
+  UpdateOverrideRequest,
   PipelineRunResponse,
   RunListResponse,
   RunConfigResponse,
@@ -436,11 +437,16 @@ export const api = {
       method: "POST", body: JSON.stringify(body),
     }),
 
-  updateOverride: (overrideId: string, body: Partial<CreateOverrideRequest>) =>
-    request<{ override_id: string; status: string }>(
+  updateOverride: async (overrideId: string, body: UpdateOverrideRequest) => {
+    const result = await request<{ override_id: string; status: string }>(
       `/overrides/${encodeURIComponent(overrideId)}`,
       { method: "PUT", body: JSON.stringify(body) },
-    ),
+    );
+    if (result.override_id !== overrideId) {
+      throw new ApiError(502, "The API returned a different override ID. No replacement was displayed.");
+    }
+    return result;
+  },
 
   deleteOverride: (overrideId: string) =>
     request<{ override_id: string; status: string }>(

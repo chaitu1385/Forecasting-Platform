@@ -143,7 +143,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 2163 unit + integration cases
+├── tests/                  # 2506 unit + integration cases
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 ├── notebooks/              # Jupyter notebooks for exploration
@@ -530,9 +530,15 @@ Measures how much accuracy each forecast layer contributes — from naive baseli
 
 | Class | Description |
 |-------|-------------|
-| `OverrideStore` | DuckDB-backed store for planner **transition overrides** (old_sku -> new_sku proportion, scenario, ramp shape); `add_override()`, `get_overrides()`, `delete_override()` |
-| `ParquetOverrideStore` | Parquet-backed fallback for environments where DuckDB is unavailable (e.g. Microsoft Fabric) |
+| `OverrideStore` | DuckDB-backed planner **transition overrides** with identity-preserving `update_override()` plus add/read/delete; direct use retains the legacy CSV fallback |
+| `ParquetOverrideStore` | Parquet fallback with locked local-file patches and atomic replacement; not distributed OneLake/network locking |
 | `get_override_store()` | Factory function — auto-selects DuckDB or Parquet backend based on available imports |
+
+Updates change only supplied editable fields; date/notes may be cleared and zero
+proportion is valid. SKU/creation/approval metadata stays unchanged, without
+claiming business reapproval. Missing IDs, malformed stores, busy writers and
+storage failures are explicit. See [the patch contract](docs/API_REFERENCE.md#put-overridesoverride_id)
+and [local persistence limits](docs/DEPLOYMENT.md#mutable-local-overrides).
 
 ### `src/sku_mapping/` — New / Discontinued SKU Mapping
 
@@ -1007,7 +1013,7 @@ POLARS_MAX_THREADS=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1 \
   python -m pytest -v --timeout=180 --timeout-method=thread \
     -o faulthandler_timeout=60
-# 2163 cases across 78 test modules; no test module exclusions
+# 2506 cases across 80 test modules; no test module exclusions
 # Use the matching py311/py313 profile with those interpreters; no module exclusions.
 ```
 
@@ -1066,7 +1072,9 @@ only mocked chart component tests.
 | `test_hierarchical_forecaster.py` | 17 | Hierarchical forecaster with reconciliation |
 | `test_constrained_demand.py` | 16 | Non-negativity, capacity limits, aggregate budgets, quantile monotonicity |
 | `test_rbac.py` | 14 | Role permissions, User model, AuditEvent, AuditLogger log/query/filters |
-| `test_override_store.py` | 19 | Override CRUD, approval workflow, old/current DuckDB Arrow result APIs and conversion errors |
+| `test_override_store.py` | 197 | Real DuckDB/Parquet/CSV patches, preserved metadata, atomic failure controls, canonical-path locking and DuckDB Arrow compatibility |
+| `test_override_api_contracts.py` | 152 | Authenticated stable-ID patches, input/permission/error contracts, missing IDs and unchanged immutable-run hashes |
+| `test_override_store_process.py` | 13 | Native file locks, deterministic empty-sidecar races, all-mutation contention, independent-field explicit retry and complete-file readers |
 | `test_break_detection.py` | 14 | Structural break detection |
 | `test_mase.py` | 13 | MASE metric computation |
 | `test_statistical_forecasters.py` | 12 | AutoARIMA, AutoETS fit/predict/quantiles |

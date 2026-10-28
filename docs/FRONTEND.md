@@ -163,6 +163,28 @@ const answer = await api.aiExplain({ series_id: "SKU_001", question: "Why is thi
 | LOB selection | `LobProvider` context | Persisted to `localStorage`, `useLob()` hook |
 | Async operations | `useAsyncOperation` hook | Loading/error/result state; only the latest operation may update state, and reset/unmount invalidates pending completions |
 
+### Override Editing
+
+`OverrideManagementPanel` reuses its create form for Edit/Save/Cancel. The selected
+ID and SKU pair are immutable; `UpdateOverrideRequest` contains only editable
+fields, not `Partial<CreateOverrideRequest>`. Only changed fields are sent.
+Empty date/notes inputs become null, and a blank numeric input is rejected rather
+than coerced to zero. Existing custom scenario/ramp values remain intact.
+
+The update client sends PUT and rejects an ID-substituting response. A completed
+Save refreshes the authoritative list without optimistic row replacement or a
+create fallback. Failures keep input and the displayed original row; a successful
+mutation followed by a failed read is reported distinctly. The Refresh button
+performs a read only; busy/mutating requests are not silently retried.
+
+`useAsyncOperation.run/reset` owns both initial reads and mutation/refresh
+sequences. Editing another row, cancelling, unmounting or changing authenticated
+identity invalidates old mutation results. Starting a mutation also invalidates
+older list reads. Cancel does not cancel server-side work. Create/Edit and Delete
+are gated by server-verified permissions, not an approval screen or role picker.
+Focused editor, late-response, session and typed-client cases live in
+`e2e/override-management.test.tsx`.
+
 ### Pipeline Intent
 
 `PipelineExecutionPanel` sends the current backtest's `champion_model` and
@@ -294,12 +316,18 @@ production API/browser behavior. Use `AUTH_E2E_PYTHON` and
 dedicated configuration disables traces, screenshots, video, debug logging and
 retries; never include its credential directory in artifacts. Normal Playwright
 tests exclude this directory and use explicit demo login, not storage injection.
+`playwright/auth/override-management.spec.ts` uses the production-built page and
+real API for create/edit/reload, unchanged ID/metadata/count, a fixture-only real
+DuckDB constraint failure, explicit retry, and denied viewer/anonymous writes.
+It also hashes the complete synthetic run artifacts before/after. The fixture's
+SQL failure trigger is test-only; it is not a production validation rule.
+Its evidence JSON contains IDs, counts, status codes and hashes, never credentials.
 
 ## Type System
 
 All TypeScript interfaces (`src/lib/types.ts`) mirror the FastAPI Pydantic schemas (`src/api/schemas.py`):
 
-- 69 exported interfaces/types covering API request and response shapes
+- 70 exported interfaces/types covering API request and response shapes
 - Strict typing for roles (`Role` union type), severity levels, trends, confidence levels
 - `Record<string, unknown>` used for flexible/dynamic data (e.g., per-series stats)
 
@@ -313,6 +341,9 @@ All TypeScript interfaces (`src/lib/types.ts`) mirror the FastAPI Pydantic schem
 ## Testing
 
 - **Unit tests:** Vitest + React Testing Library (`npm run test:e2e` — note: script name is misleading, runs Vitest)
+- **Override editing:** 29 component/client cases within the 125-case suite cover
+  nullable patches, stable IDs, retained failure input, permission hints and
+  late-response/session isolation.
 - **E2E tests:** Playwright (`@playwright/test` in devDependencies)
 - **Test runner:** `jsdom` environment for component tests
 - **Runtime compatibility:** `npm run test:runtime-browser` starts the production

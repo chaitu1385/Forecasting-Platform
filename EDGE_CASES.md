@@ -160,7 +160,7 @@ A catalog of the failure modes that break forecasting platforms — what goes wr
 
 **How the platform handles it:** The `get_override_store()` factory auto-detects DuckDB availability and falls back to `ParquetOverrideStore` (Polars read/write Parquet). The `requirements-fabric.txt` pins only packages safe to install in Fabric notebooks — it excludes `pyspark` (provided by runtime), `delta-spark` (provided), `duckdb`, `neuralforecast`, `shap`, `fastapi`. The `FabricNotebookAdapter` wraps all boilerplate (SparkSession, FabricLakehouse, config loading) into a one-liner. Optional dependency guards (`_HAS_STATSFORECAST`, `_HAS_NEURALFORECAST`) prevent import-time crashes.
 
-**What to watch for:** The Parquet override store doesn't support concurrent writes — if multiple notebooks write overrides simultaneously, last-write-wins. In production Fabric environments, use a single orchestrator notebook for override management. Also, `%pip install` in Fabric adds packages for the session only — they don't persist across cluster restarts. Pin your library env in the Fabric workspace settings for durable installs.
+**What to watch for:** Local Parquet/CSV override operations now share a nonblocking native lock and use atomic replacement. Contention is explicit (HTTP 409), not a silent lost update; retry deliberately. Same-field edits remain serialized last-writer-wins, without stale-edit detection or business reapproval. This local lock is not certified for OneLake/FUSE/network shares or distributed notebooks; use a single orchestrator for managed storage. `%pip install` in Fabric adds packages only for that session. Pin the library environment in workspace settings for durable installs.
 
 ---
 
