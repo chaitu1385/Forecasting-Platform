@@ -337,6 +337,13 @@ async def constrain_forecast(
                 pl.col(time_col).alias("period"), pl.col(value_col).alias("values"),
             ).group_by("period").agg("values")["values"].to_list()
             max_excess = max(max(0.0, math.fsum(values) - aggregate_max) for values in period_values)
+        quantile_columns = [
+            column for column in constrained.columns
+            if column.startswith("forecast_p") and column not in (id_col, time_col)
+        ]
+        modified = df[value_col] != constrained[value_col]
+        for column in quantile_columns:
+            modified = modified | (df[column] != constrained[column])
         preview = json.loads(constrained.head(200).write_json())
     except (ValueError, OverflowError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -347,7 +354,7 @@ async def constrain_forecast(
     return ConstrainResponse(
         before_total=before_total,
         after_total=after_total,
-        rows_modified=int((df[value_col] != constrained[value_col]).sum()),
+        rows_modified=int(modified.sum()),
         constraints_applied={
             "min_demand": min_demand, "max_capacity": max_capacity,
             "aggregate_max": aggregate_max, "proportional": proportional,
@@ -360,11 +367,7 @@ async def constrain_forecast(
         checked_rows=constrained.height,
         checked_periods=constrained[time_col].n_unique(),
         max_budget_excess=max_excess,
-        constraint_scope=(
-            "point_and_quantiles"
-            if any(column.startswith("forecast_p") for column in constrained.columns if column not in (id_col, time_col))
-            else "point"
-        ),
+        constraint_scope="point_and_quantiles" if quantile_columns else "point",
     )
 
 

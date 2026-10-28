@@ -272,7 +272,9 @@ new upload parameter.
 
 The response retains `before_total`, `after_total`, `rows_modified`,
 `constraints_applied`, and `constrained_preview` (at most 200 rows). Totals are
-unrounded and measured over the **entire** frame. Additional typed fields are
+unrounded and measured over the **entire** frame; `rows_modified` counts each row
+with any constrained point or quantile value changed exactly once, including
+quantile-only changes and excluding unrelated metadata. Additional typed fields are
 `allocation_strategy` (`element_wise`, `proportional`, `largest_first`),
 `checked_rows`, `checked_periods`, `max_budget_excess` (actual positive per-period
 excess, or null without a budget), and `constraint_scope` (`point` or

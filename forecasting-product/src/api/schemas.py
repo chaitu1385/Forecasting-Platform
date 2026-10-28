@@ -53,7 +53,9 @@ class ConstrainResponse(BaseModel):
 
     before_total: float = Field(allow_inf_nan=False)
     after_total: float = Field(allow_inf_nan=False)
-    rows_modified: int = Field(ge=0)
+    rows_modified: int = Field(
+        ge=0, description="Rows with any constrained point or quantile change, counted once per row",
+    )
     constraints_applied: AppliedConstraints
     constrained_preview: List[Dict[str, Any]]
     allocation_strategy: Literal["element_wise", "proportional", "largest_first"]

@@ -274,6 +274,37 @@ def test_element_only_quantiles_are_clipped_and_scope_is_truthful(private_api):
     assert [row["forecast_p90"] for row in data["constrained_preview"]] == [25, 25]
 
 
+@pytest.mark.parametrize(
+    "points,lower,median,upper,changed,expected_points",
+    [
+        ([10.0], [-5.0], [10.0], [25.0], 1, [10.0]),
+        ([-1.0, 10.0, 15.0], [-5.0, -5.0, 5.0], [5.0, 10.0, 15.0], [25.0, 25.0, 17.0], 2, [0.0, 10.0, 15.0]),
+        ([10.0], [0.0], [10.0], [20.0], 0, [10.0]),
+        ([10.0, 30.0], None, None, None, 1, [10.0, 20.0]),
+    ],
+    ids=["quantile-only", "mixed-counted-once", "unchanged", "point-only"],
+)
+def test_rows_modified_counts_each_changed_point_or_quantile_row(
+    private_api, points, lower, median, upper, changed, expected_points,
+):
+    frame = _frame(points).with_columns(pl.lit(-99.0).alias("_cap"))
+    if lower is not None:
+        frame = frame.with_columns(
+            pl.Series("forecast_p10", lower),
+            pl.Series("forecast_p50", median),
+            pl.Series("forecast_p90", upper),
+        )
+    response = private_api.constrain(frame, {"min_demand": 0, "max_capacity": 20}, extension="csv")
+    assert response.status_code == 200
+    data = response.json()
+    assert [row["forecast"] for row in data["constrained_preview"]] == expected_points
+    assert [row["_cap"] for row in data["constrained_preview"]] == [-99] * len(points)
+    if lower is not None:
+        assert [row["forecast_p10"] for row in data["constrained_preview"]] == [max(value, 0) for value in lower]
+        assert [row["forecast_p90"] for row in data["constrained_preview"]] == [min(value, 20) for value in upper]
+    assert data["rows_modified"] == changed
+
+
 @pytest.mark.parametrize("proportional", [True, False])
 def test_aggregate_quantiles_fail_even_when_under_budget(private_api, proportional):
     frame = _frame().with_columns(pl.lit(120.0).alias("forecast_p90"))
