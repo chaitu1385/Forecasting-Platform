@@ -6,6 +6,7 @@ import { LeaderboardBar } from "@/components/charts/leaderboard-bar";
 import { FVACascade } from "@/components/charts/fva-cascade";
 import { CalibrationPlot } from "@/components/charts/calibration-plot";
 import { ConfigTunerPanel } from "@/components/ai/config-tuner-panel";
+import { ForecastDecompositionPanel } from "@/components/backtest/forecast-decomposition-panel";
 import { MetricCard } from "@/components/shared/metric-card";
 import { ErrorDisplay } from "@/components/shared/error-boundary";
 import { NoDataGuide } from "@/components/shared/no-data-guide";
@@ -15,7 +16,7 @@ import { useLeaderboard } from "@/hooks/use-leaderboard";
 import { api } from "@/lib/api-client";
 import { formatPct, formatMetric, leaderboardScore, metricLabel, storedMetricScores } from "@/lib/utils";
 import { WorkflowNav } from "@/components/shared/workflow-nav";
-import type { FVAResponse, CalibrationResponse, ShapResponse, LeaderboardEntry } from "@/lib/types";
+import type { FVAResponse, CalibrationResponse, LeaderboardEntry } from "@/lib/types";
 
 function StoredMetricValues({ entry }: { entry: LeaderboardEntry }) {
   const scores = Object.entries(storedMetricScores(entry));
@@ -43,11 +44,6 @@ export default function BacktestPage() {
   const [calLoading, setCalLoading] = useState(false);
   const [calError, setCalError] = useState<string | null>(null);
   const [calReload, setCalReload] = useState(0);
-
-  // SHAP state
-  const [shapData, setShapData] = useState<ShapResponse | null>(null);
-  const [shapLoading, setShapLoading] = useState(false);
-  const [shapError, setShapError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -79,16 +75,6 @@ export default function BacktestPage() {
     return () => { active = false; };
   }, [lob, runType, data, calReload]);
 
-  // Fetch SHAP on demand
-  const loadShap = () => {
-    setShapLoading(true);
-    setShapError(null);
-    api.getShap(lob)
-      .then(setShapData)
-      .catch((err) => setShapError(err instanceof Error ? err.message : "Failed to load SHAP data"))
-      .finally(() => setShapLoading(false));
-  };
-
   // Transform FVA summary data for FVACascade chart
   const fvaChartData = fvaData?.summary?.map((row) => ({
     layer: String(row.layer || row.model || ""),
@@ -119,7 +105,7 @@ export default function BacktestPage() {
       <div>
         <h1 className="text-2xl font-bold">Backtest Results</h1>
         <p className="text-sm text-muted-foreground">
-          Model leaderboard, FVA analysis, calibration, feature attribution, and AI config tuning.
+          Model leaderboard, FVA analysis, calibration, forecast decomposition, and AI config tuning.
         </p>
       </div>
 
@@ -269,65 +255,10 @@ export default function BacktestPage() {
         )}
       </section>
 
-      {/* SHAP Feature Attribution */}
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold">SHAP Feature Attribution</h2>
-        {!shapData && !shapLoading && (
-          <div className="rounded-lg border p-6 text-center">
-            <p className="text-sm text-muted-foreground mb-3">
-              Top features by mean |SHAP| for LightGBM/XGBoost models with per-series waterfall.
-            </p>
-            <button
-              onClick={loadShap}
-              className="rounded-md bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 transition-colors"
-            >
-              Load SHAP Analysis
-            </button>
-          </div>
-        )}
-        {shapLoading && <ChartSkeleton />}
-        {shapError && <ErrorDisplay message={shapError} onRetry={loadShap} />}
-        {shapData && (
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-              <MetricCard label="Model" value={shapData.model} />
-              <MetricCard label="Features" value={shapData.feature_importance.length} />
-              <MetricCard label="LOB" value={shapData.lob} />
-            </div>
-            <div className="rounded-lg border p-4">
-              <h3 className="text-sm font-medium mb-2">Feature Importance (Mean |SHAP|)</h3>
-              <div className="space-y-2">
-                {shapData.feature_importance.map((fi) => {
-                  const maxVal = Math.max(...shapData.feature_importance.map(f => f.mean_abs_value));
-                  const pct = maxVal > 0 ? (fi.mean_abs_value / maxVal) * 100 : 0;
-                  return (
-                    <div key={fi.feature} className="flex items-center gap-3">
-                      <span className="text-xs font-mono w-32 truncate" title={fi.feature}>{fi.feature}</span>
-                      <div className="flex-1 h-4 bg-muted rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-primary rounded-full transition-all"
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
-                      <span className="text-xs text-muted-foreground w-16 text-right">{fi.mean_abs_value.toFixed(4)}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-            {shapData.decomposition_preview.length > 0 && (
-              <div className="mt-4">
-                <h3 className="text-sm font-medium mb-2">Decomposition Preview</h3>
-                <DataTable
-                  columns={Object.keys(shapData.decomposition_preview[0]).map(k => ({ key: k, label: k, sortable: true }))}
-                  data={shapData.decomposition_preview}
-                  pageSize={10}
-                />
-              </div>
-            )}
-          </div>
-        )}
-      </section>
+      <ForecastDecompositionPanel
+        key={`${lob}:${runType}:${data?.run_id ?? "unknown"}:${data?.artifact_source ?? "unresolved"}`}
+        lob={lob} runType={runType} leaderboardRunId={data?.run_id}
+      />
 
       {/* AI Config Tuner — live endpoint */}
       <section>

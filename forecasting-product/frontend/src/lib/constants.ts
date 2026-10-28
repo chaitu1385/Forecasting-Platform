@@ -148,7 +148,7 @@ export const NAV_ITEMS: NavItem[] = [
     title: "Backtest Results",
     href: "/backtest",
     icon: "Trophy",
-    description: "Leaderboard, FVA, SHAP, AI config tuner",
+    description: "Leaderboard, FVA, decomposition, AI config tuner",
   },
   {
     title: "Forecast Viewer",

@@ -55,13 +55,14 @@ forecasting-product/
 │   │   ├── app.py          # create_app() factory, core endpoints, router registration
 │   │   ├── schemas.py      # Pydantic request/response models
 │   │   ├── deps.py         # Shared dependencies
+│   │   ├── decomposition.py # Lossless panel admission, full-result checks, component/provenance summaries
 │   │   └── routers/        # Domain-specific API routers
 │   │       ├── series.py       # GET /series/{lob}, POST /series/breaks, cleansing-audit, regressor-screen
 │   │       ├── hierarchy.py    # POST /hierarchy/build, aggregate, reconcile
 │   │       ├── sku_mapping.py  # POST /sku-mapping/phase1, phase2
 │   │       ├── overrides.py    # CRUD /overrides
 │   │       ├── pipeline.py     # POST backtest/forecast; GET exact runs/config/input, manifests, costs; multi-file analysis
-│   │       ├── analytics.py    # GET /metrics/{lob}/fva, calibration; POST shap, decompose, compare, constrain
+│   │       ├── analytics.py    # GET /metrics/{lob}/fva, calibration; POST decomposition (legacy shap), decompose, compare, constrain
 │   │       └── governance.py   # GET /governance/model-cards, lineage; POST export
 │   ├── audit/              # Append-only Parquet audit logging
 │   ├── auth/               # AuthSettings, strict JWT/RBAC, owner-only operator token output
@@ -110,13 +111,14 @@ forecasting-product/
 ├── frontend/               # Next.js 16 / Node 24 (TypeScript, Tailwind, Recharts, Plotly)
 │   ├── src/app/            # App Router pages (login + 8 workflow pages)
 │   ├── src/components/     # Reusable components (charts, AI panels, layout, shared)
+│   │   ├── backtest/       # Run-pinned, session-owned forecast decomposition
 │   │   ├── forecast/       # Decomposition, comparison, constrained forecast panels
 │   │   ├── governance/     # Model cards, lineage, BI export panels
 │   │   ├── pipeline/       # Multi-file analysis, pipeline execution panels
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 2047 cases (pytest)
+├── tests/                  # 2180 cases (pytest)
 ├── configs/                # YAML configuration files
 ├── requirements/           # Hash-locked CPU/API/dev/AI/Fabric/Spark profiles per Python minor
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
@@ -254,11 +256,18 @@ distribution version. Never replace locks with unconstrained installs to make CI
 - Framework: pytest
 - Test files mirror source structure with `test_` prefix
 - Helper fixtures use `_make_*` factory functions (e.g., `_make_weekly_actuals`)
-- 2047 cases across 77 test modules; run the full suite without module exclusions
+- 2180 cases across 78 test modules; run the full suite without module exclusions
 - Key test modules: `test_platform.py` (85 tests), `test_sku_mapping.py` (81), `test_ai_*.py` (73), `test_forecast_explainability.py` (59), `test_intermittent_demand.py` (55), `test_observability.py` (41), `test_file_classifier.py` (26), `test_file_merger.py` (20)
 - Focused forecast-intent coverage: `test_forecast_intent.py` (108 real ASGI cases),
   plus frontend `e2e/pipeline-execution.test.tsx` and `e2e/data-onboarding-state.test.tsx`
   (21 handoff/state cases). These require only core/API and existing frontend test dependencies.
+- Decomposition: `test_decomposition_api_contracts.py` has 133 authenticated
+  canonical/alias, provenance, coverage, precision and independent hand-oracle cases.
+  `e2e/decomposition-contracts.test.tsx` has 37 client/page/session ownership cases.
+  The method is `moving_average_decomposition`, never LOESS STL or fitted attribution.
+  Committed forecasts pair with their own prepared history; backtest IDs are not
+  forecast IDs. Unsupported/nonfinite domain results fail explicitly; do not repair
+  the domain math or substitute latest for a failed exact selector in this adapter.
 - Run safety: `test_run_store.py`, `test_run_artifacts.py`,
   `test_run_store_process.py` and `test_run_cli.py` cover publication faults on
   both sides of the marker, exact/legacy/auth/path contracts, actual multiprocess

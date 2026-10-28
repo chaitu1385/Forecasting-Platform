@@ -39,6 +39,8 @@ import type {
   MultiFileAnalysisResponse,
   FVAResponse,
   CalibrationResponse,
+  ForecastDecompositionParams,
+  DecompositionSummaryResponse,
   ShapResponse,
   DecomposeResponse,
   ForecastCompareResponse,
@@ -182,6 +184,43 @@ function verifiedForecast(result: ForecastResponse, lob: string, runId?: string,
   if (result.lob !== lob || (runId && result.run_id !== runId)
       || (legacy && result.artifact_source !== "legacy")) {
     throw new ApiError(502, "The API returned a different forecast identity. No substitute run was displayed.");
+  }
+  return result;
+}
+
+async function requestDecomposition<T extends DecompositionSummaryResponse>(
+  route: "decomposition" | "shap",
+  lob: string,
+  params?: ForecastDecompositionParams & { model_name?: string; top_k?: number },
+  historyFile?: File,
+): Promise<T> {
+  const search = new URLSearchParams();
+  Object.entries(params ?? {}).forEach(([key, value]) => {
+    if (value !== undefined) search.set(key, String(value));
+  });
+  let form: FormData | undefined;
+  if (historyFile) {
+    form = new FormData();
+    form.append("file", historyFile);
+  }
+  const result = await request<T>(
+    `/metrics/${encodeURIComponent(lob)}/${route}${search.size ? `?${search}` : ""}`,
+    { method: "POST", body: form },
+  );
+  const committed = result.artifact_source === "committed";
+  const validIdentity = committed
+    ? typeof result.run_id === "string" && /^[0-9a-f]{32}$/.test(result.run_id)
+    : result.artifact_source === "legacy" && result.run_id === null;
+  const validHistory = historyFile
+    ? result.history_source === "uploaded" && result.history_stage === "uploaded" && result.history_run_id === null
+    : committed
+      ? result.history_source === "committed" && result.history_stage === "prepared" && result.history_run_id === result.run_id
+      : result.history_source === "legacy" && result.history_stage === "unknown" && result.history_run_id === null;
+  if (result.lob !== lob || !validIdentity || !validHistory
+      || result.method !== "moving_average_decomposition" || result.model_specific !== false
+      || (params?.run_id !== undefined && (!committed || result.run_id !== params.run_id))
+      || (params?.legacy === true && committed)) {
+    throw new ApiError(502, "The API returned a different decomposition source or method. No substitute run was displayed.");
   }
   return result;
 }
@@ -516,17 +555,15 @@ export const api = {
       }).toString()}`,
     ),
 
-  getShap: (lob: string, params?: { model_name?: string; season_length?: number; top_k?: number }) => {
-    const sp = new URLSearchParams();
-    if (params?.model_name) sp.set("model_name", params.model_name);
-    if (params?.season_length) sp.set("season_length", String(params.season_length));
-    if (params?.top_k) sp.set("top_k", String(params.top_k));
-    const qs = sp.toString();
-    return request<ShapResponse>(
-      `/metrics/${encodeURIComponent(lob)}/shap${qs ? `?${qs}` : ""}`,
-      { method: "POST" },
-    );
-  },
+  getForecastDecomposition: (lob: string, params?: ForecastDecompositionParams, historyFile?: File) =>
+    requestDecomposition<DecompositionSummaryResponse>("decomposition", lob, params, historyFile),
+
+  /** @deprecated Use getForecastDecomposition; compatibility fields are not feature attribution. */
+  getShap: (
+    lob: string,
+    params?: ForecastDecompositionParams & { model_name?: string; top_k?: number },
+    historyFile?: File,
+  ) => requestDecomposition<ShapResponse>("shap", lob, params, historyFile),
 
   decomposeForecast: (historyFile: File, forecastFile: File, params?: Record<string, string | number>) => {
     const formData = new FormData();

@@ -652,9 +652,35 @@ graph TB
         IF1["Multi-file classification → /pipeline/analyze-multi-file"]
         IF2["Pipeline execution → /pipeline/backtest, /pipeline/forecast"]
         IF3["Hierarchy / SKU ops → /hierarchy/*, /sku-mapping/*"]
-        IF4["SHAP / BI export → /analytics/shap, /governance/export"]
+        IF4["Decomposition / BI export<br/>/metrics/{lob}/decomposition, /governance/export"]
     end
 ```
+
+### Run-bound Descriptive Decomposition
+
+```mermaid
+flowchart LR
+    PAGE["Backtest page"] --> PIN["Pin forecast ID"]
+    PIN --> API["Decomposition API"]
+    ALIAS["Deprecated alias"] --> API
+    API --> READER["RunReader"]
+    READER --> FC["Recorded forecast"]
+    READER --> HIST["Same-run prepared history"]
+    UPLOAD["Alternative upload"] --> ADMIT["Input admission"]
+    FC --> ADMIT
+    HIST --> ADMIT
+    ADMIT --> MATH["Moving-average components"]
+    MATH --> CHECK["Full-result checks"]
+    CHECK --> SUMMARY["Magnitudes and counts"]
+    SUMMARY --> UI["Session-owned result"]
+```
+
+The selected forecast ID is distinct from a backtest leaderboard ID. Both API routes
+share the same adapter; uploads and legacy history are explicitly labeled, not
+promoted to committed training lineage. Component magnitudes describe observations,
+not fitted-model features. No model loading, training, provider call or stored-run
+mutation occurs. Exact identities, finite outputs and allowed edge nulls are checked
+before preview truncation; source/session changes invalidate old UI results.
 
 ---
 

@@ -378,10 +378,33 @@ The frontend runs at `http://localhost:3000` by default. Set `NEXT_PUBLIC_API_UR
 | **Series Explorer** | `/series-explorer` | SBC classification, structural break detection, cleansing audit, AI Q&A |
 | **SKU Transitions** | `/sku-transitions` | New/discontinued SKU mapping, planner overrides, transition visualization |
 | **Hierarchy Manager** | `/hierarchy` | Build hierarchy trees, aggregate, reconcile (MinT/OLS/WLS) |
-| **Backtest Results** | `/backtest` | Model leaderboard, FVA cascade, champion map, calibration, SHAP |
+| **Backtest Results** | `/backtest` | Model leaderboard, FVA cascade, calibration, forecast decomposition |
 | **Forecast Viewer** | `/forecast` | Fan charts, decomposition, AI natural language query, comparison, constraints |
 | **Platform Health** | `/health` | Pipeline manifests, drift alerts, AI anomaly triage, audit log, cost tracking |
 | **S&OP Meeting** | `/sop` | AI commentary, cross-run comparison, model governance, BI export |
+
+### Reading Forecast Components
+
+In **Backtest Results**, use **Forecast decomposition** to inspect a separate
+forecast run. Choose **Decomposition forecast source**, set the seasonal period
+in observations, and select **Load decomposition**. The default chooses the latest
+listed forecast and pins its actual ID; it does not analyze the backtest leaderboard
+run. Select an older forecast to inspect its recorded prepared history, or use
+**Refresh forecast sources** to deliberately resolve a new source.
+
+**Component magnitude** is a descriptive mean absolute trend, seasonal or residual
+value over defined historical observations. It is **not model-specific feature
+attribution**, LOESS STL or evidence of causality. Undefined centered-window edge
+values are counted and excluded, not replaced with zeros. Read the source, recorded
+model (or unknown), method, history stage and full-population counts alongside the
+preview. Legacy files have unknown preparation lineage and no verified immutable ID.
+
+Changing the selection, period, LOB, leaderboard/run type or signed-in session
+clears the old result, including late responses. A failed/missing/corrupt selected
+run does not fall back to another forecast. Short history, unsupported temporal
+precision or nonfinite computation produces an explicit error rather than a
+fabricated summary; the API guide documents the supported moving-average window
+and minimum historical coverage.
 
 ### Running the Selected Forecast Plan
 

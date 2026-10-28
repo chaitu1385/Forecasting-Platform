@@ -51,15 +51,14 @@ test.describe("Backtest Flow", () => {
     await page.waitForTimeout(2000); // Allow all fetches to complete
   });
 
-  // ── SHAP ─────────────────────────────────────────────────────────────────
+  // ── Decomposition ────────────────────────────────────────────────────────
 
-  test("SHAP data loads on demand", async ({ page }) => {
-    // Look for a button to load SHAP (may say "Load SHAP" or "Feature Importance")
-    const shapBtn = page.locator("button:has-text('SHAP'), button:has-text('Feature'), button:has-text('Load')");
-    if (await shapBtn.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      await shapBtn.first().click();
-      // After clicking, SHAP features should appear
-      await expect(page.locator("text=lag_1")).toBeVisible({ timeout: 10_000 });
-    }
+  test("forecast decomposition loads on demand with truthful labels", async ({ page }) => {
+    const section = page.getByRole("region", { name: "Forecast decomposition" });
+    await section.getByRole("button", { name: "Load decomposition" }).click();
+    await expect(section.getByRole("heading", { name: "Component magnitude" })).toBeVisible();
+    await expect(section).toContainText("moving_average_decomposition");
+    await expect(section).toContainText("Not model-specific feature attribution");
+    await expect(section).not.toContainText(/SHAP|waterfall|feature importance|LOESS/);
   });
 });
