@@ -2,7 +2,8 @@
 
 import unittest
 from dataclasses import asdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 import numpy as np
 import polars as pl
@@ -142,6 +143,55 @@ def _make_nonfixed_hierarchy():
 # --------------------------------------------------------------------------- #
 #  Tests: Schema Detection
 # --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("nonnumeric_target", [False, True])
+def test_schema_detection_requires_a_numeric_target(nonnumeric_target):
+    actuals = _make_flat_data(n_series=2, n_weeks=52).drop("quantity")
+    if nonnumeric_target:
+        actuals = actuals.with_columns(pl.lit("missing").alias("quantity"))
+    with pytest.raises(ValueError, match="numeric target column"):
+        DataAnalyzer().detect_schema(actuals)
+
+
+@pytest.mark.parametrize("values", [
+    [10, 20], [10.5, 20.25], [Decimal("10.50"), Decimal("20.25")],
+])
+def test_schema_detection_preserves_numeric_target_types(values):
+    actuals = pl.DataFrame({
+        "series_id": ["A", "B"],
+        "week": [date(2024, 1, 1), date(2024, 1, 1)],
+        "quantity": values,
+    })
+    assert DataAnalyzer().detect_schema(actuals).target_column == "quantity"
+
+
+def test_schema_detection_requires_a_time_column():
+    actuals = _make_flat_data(n_series=2, n_weeks=52).drop("week")
+    with pytest.raises(ValueError, match="time/date column"):
+        DataAnalyzer().detect_schema(actuals)
+
+
+@pytest.mark.parametrize(("column", "values"), [
+    ("week", ["2024-01-01", "2024-01-08"]),
+    ("observed_at", ["2024-01-01", "2024-01-08"]),
+    ("observed_at", [date(2024, 1, 1), date(2024, 1, 8)]),
+    ("observed_at", [datetime(2024, 1, 1), datetime(2024, 1, 8)]),
+])
+def test_schema_detection_preserves_date_type_name_and_parse_heuristics(column, values):
+    actuals = pl.DataFrame({"series_id": ["A", "A"], column: values, "quantity": [10.0, 20.0]})
+    assert DataAnalyzer().detect_schema(actuals).time_column == column
+
+
+def test_unexpected_time_candidate_parser_fault_is_not_input_admission(monkeypatch):
+    actuals = pl.DataFrame({"series_id": ["A", "B"], "quantity": [10.0, 20.0]})
+
+    def broken_parser(*args, **kwargs):
+        raise RuntimeError("unexpected time parser failure")
+
+    monkeypatch.setattr(type(actuals["series_id"].str), "to_date", broken_parser)
+    with pytest.raises(RuntimeError, match="unexpected time parser"):
+        DataAnalyzer().detect_schema(actuals)
+
 
 class TestSchemaDetection(unittest.TestCase):
     def setUp(self):

@@ -352,6 +352,11 @@ return an actionable HTTP 400 before processing or publication. Expected Polars
 parse failures do not escape as misleading browser connection errors, and their
 response does not echo uploaded cell contents. Unexpected reader/engine faults
 remain server failures; no empty-data or completed-run fallback is substituted.
+Valid-format inputs without a numeric demand or recognized time/date column are rejected by analysis
+with a specific HTTP 400 admission error before profiling or configuration
+generation. The detector does not substitute the last date/text column as demand
+or the first identifier column as time. Unrelated analyzer exceptions are not
+relabelled as input errors.
 
 **What to watch for:** An absent config means defaults; an empty/null uploaded
 document is invalid (use `{}` for defaults explicitly). Standalone forecasting

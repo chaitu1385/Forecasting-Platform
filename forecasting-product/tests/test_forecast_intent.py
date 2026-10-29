@@ -152,7 +152,8 @@ def test_unexpected_core_reader_errors_are_not_relabelled_invalid_uploads(client
 
 
 @pytest.mark.parametrize("endpoint", ["/analyze", "/pipeline/backtest", "/pipeline/forecast"])
-def test_unexpected_processing_errors_after_read_are_not_relabelled_uploads(client, monkeypatch, endpoint):
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError, pl.exceptions.ComputeError])
+def test_unexpected_processing_errors_after_read_are_not_relabelled_uploads(client, monkeypatch, endpoint, error_type):
     baseline = _run(client, config=_config())
     assert baseline.status_code == 200
     before = _snapshot(client.app.state.runs_dir)
@@ -163,7 +164,7 @@ def test_unexpected_processing_errors_after_read_are_not_relabelled_uploads(clie
     }[endpoint]
 
     def broken_processing(*args, **kwargs):
-        raise RuntimeError("unexpected processing failure")
+        raise error_type("unexpected processing failure")
 
     monkeypatch.setattr(target, broken_processing)
     response = client.post(
@@ -173,6 +174,48 @@ def test_unexpected_processing_errors_after_read_are_not_relabelled_uploads(clie
 
     assert response.status_code == 500
     assert "Failed to read" not in response.text
+    assert _snapshot(client.app.state.runs_dir) == before
+
+
+@pytest.mark.parametrize("format", ["csv", "parquet"])
+def test_analyze_rejects_missing_numeric_target_before_profile(client, format):
+    baseline = _run(client, config=_config())
+    assert baseline.status_code == 200
+    before = _snapshot(client.app.state.runs_dir)
+    actuals = _actuals(104).drop("quantity")
+    content = actuals.write_csv().encode() if format == "csv" else _parquet_bytes(actuals)
+
+    response = client.post(
+        "/analyze", params={"lob_name": "retail"},
+        headers={"Origin": "http://localhost:3000"},
+        files={"file": (f"missing-target.{format}", content, "application/octet-stream")},
+    )
+
+    assert response.status_code == 400, response.text
+    assert "numeric target column" in response.json()["detail"]
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert "recommended_config_yaml" not in response.json()
+    assert _snapshot(client.app.state.runs_dir) == before
+
+
+@pytest.mark.parametrize("format", ["csv", "parquet"])
+def test_analyze_rejects_missing_time_before_profile(client, format):
+    baseline = _run(client, config=_config())
+    assert baseline.status_code == 200
+    before = _snapshot(client.app.state.runs_dir)
+    actuals = _actuals(104).drop("week")
+    content = actuals.write_csv().encode() if format == "csv" else _parquet_bytes(actuals)
+
+    response = client.post(
+        "/analyze", params={"lob_name": "retail"},
+        headers={"Origin": "http://localhost:3000"},
+        files={"file": (f"missing-time.{format}", content, "application/octet-stream")},
+    )
+
+    assert response.status_code == 400
+    assert "time/date column" in response.json()["detail"]
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert "recommended_config_yaml" not in response.json()
     assert _snapshot(client.app.state.runs_dir) == before
 
 

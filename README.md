@@ -425,6 +425,8 @@ timestamps fail explicitly. No stored run is changed. See the
 | Class | Description |
 |-------|-------------|
 | `DataAnalyzer` | Orchestrates automated data profiling: schema detection, hierarchy detection, forecastability assessment, data quality profiling, and `PlatformConfig` recommendation |
+| `MissingNumericTargetError` | Rejects analysis without a numeric demand column distinct from time; the analysis API returns HTTP 400 instead of profiling dates or text as demand |
+| `MissingTimeColumnError` | Rejects analysis without a recognized time/date column instead of substituting an arbitrary identifier as time |
 | `ForecastabilityAnalyzer` | Per-series statistical signals: CV, approximate entropy (ApEn), spectral entropy, SNR, trend/seasonal strength; produces a forecastability score per series |
 | `CausalAnalyzer` | Econometric analysis: price elasticity estimation (detrended/deseasonalized), cannibalization detection (cross-correlation), promotional lift (before/after comparison) |
 | `LLMAnalyzer` | Sends analysis reports to Claude for plain-language interpretation: key findings, hypotheses, model selection rationale, risk identification; gracefully degrades when `ANTHROPIC_API_KEY` is unset |

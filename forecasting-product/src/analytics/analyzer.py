@@ -38,6 +38,15 @@ from .forecastability import ForecastabilityAnalyzer, ForecastabilityReport
 
 logger = logging.getLogger(__name__)
 
+
+class MissingNumericTargetError(ValueError):
+    """The analyzed input has no numeric demand column distinct from time."""
+
+
+class MissingTimeColumnError(ValueError):
+    """The analyzed input has no recognized time/date column."""
+
+
 # --------------------------------------------------------------------------- #
 #  Result dataclasses
 # --------------------------------------------------------------------------- #
@@ -263,20 +272,20 @@ class DataAnalyzer:
                     parsed = df[c].str.to_date(strict=False)
                     if parsed.null_count() < len(df) * 0.5:
                         return c
-                except Exception:
+                except pl.exceptions.ComputeError:
                     continue
-        # Fallback: first column
-        return cols[0]
+        raise MissingTimeColumnError(
+            "Could not detect a time/date column. Include dates in a supported format."
+        )
 
     def _find_target_column(self, df: pl.DataFrame, cols: list, dtypes: dict, time_col: str) -> str:
         """Find the numeric target column."""
-        numeric_types = {pl.Float32, pl.Float64, pl.Int8, pl.Int16, pl.Int32,
-                         pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64}
-        numeric_cols = [c for c in cols if c != time_col and dtypes[c] in numeric_types]
+        numeric_cols = [c for c in cols if c != time_col and dtypes[c].is_numeric()]
 
         if not numeric_cols:
-            # Fallback: last column
-            return cols[-1]
+            raise MissingNumericTargetError(
+                "Could not detect a numeric target column. Include a numeric demand column."
+            )
 
         # Prefer name matches
         for c in numeric_cols:
