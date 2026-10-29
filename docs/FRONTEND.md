@@ -216,6 +216,12 @@ Focused editor, late-response, session and typed-client cases live in
 
 ### Pipeline Intent
 
+Analysis requires a recognized time/date column and a distinct numeric demand
+candidate. Missing roles return specific HTTP 400 admission errors before a
+profile or ready YAML is produced, rather than substituting the first/last column.
+Malformed or empty CSV/Parquet input is also a readable 400; unexpected
+reader/analyzer faults are not disguised as invalid uploads.
+
 The onboarding recommendation leaves demand cleansing and structural-break
 fitting disabled because those learned transforms are not yet fold-local.
 Its reasoning explains this choice even when noisy data is detected. Downloading
@@ -361,6 +367,26 @@ DuckDB constraint failure, explicit retry, and denied viewer/anonymous writes.
 It also hashes the complete synthetic run artifacts before/after. The fixture's
 SQL failure trigger is test-only; it is not a production validation rule.
 Its evidence JSON contains IDs, counts, status codes and hashes, never credentials.
+
+`playwright/auth/core-product.spec.ts` adds four complete core-user journeys to
+that same private production configuration. Each uses a dedicated LOB so it
+cannot replace the authentication fixture's older/latest examples. Actual UI
+uploads and pipeline buttons run the real engines; read-only stored-file checks
+verify full populations, not just the preview. Weekly Naive values and its
+`156/437` volume WMAPE, plus daily date-column output and zero-demand observations,
+are checked with independent arithmetic. The daily recommendation remains the
+existing 51-period/two-fold plan for the 208-observation fixture, not a manually
+changed 28-period plan. Daily cohort scores are not misrepresented as a global
+winner. These are execution/correctness oracles, not business-accuracy promises.
+
+The cases also exercise AutoETS and generated statistical-model handoff, actual
+line/fan charts and table dates, YAML downloads, server-side BI exports, and
+reload/re-login before exact older-run/config reads. Forecast-vs-actual export
+can legitimately be empty without overlapping later actuals; no browser forecast
+download is implied. Real requests are temporarily delayed then continued for
+Analyze/backtest/forecast ownership checks, including late older analysis errors;
+no success or failure response is fabricated. Only allowlisted outcome JSON is
+uploaded by CI, with stage outcomes separate from HTTP status codes.
 
 ### Constraint Results and Request Ownership
 
