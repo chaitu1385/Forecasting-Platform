@@ -356,7 +356,13 @@ production ignores; demo refuses bearer credentials.
 separate `npm run test:auth-browser` check requires `AUTH_E2E_ROOT` to be a fresh
 absolute temporary directory outside the repository. It starts only isolated
 loopback servers, creates private synthetic credentials, and verifies real
-production API/browser behavior. Use `AUTH_E2E_PYTHON` and
+production API/browser behavior. `AUTH_E2E_SUITE=contracts` (the default) selects
+the eight existing contracts; `AUTH_E2E_SUITE=core` selects the four core journeys.
+Run both with separate fresh roots. They must not share a single rapid-run API
+rate bucket: the unchanged production guard counts 100 requests per client IP
+per 60 seconds, including preflights. Isolation is between independent suites,
+never a bucket reset during a journey or a raised rate/token/timeout limit.
+Use `AUTH_E2E_PYTHON` and
 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for explicit local executables if needed. Its
 dedicated configuration disables traces, screenshots, video, debug logging and
 retries; never include its credential directory in artifacts. Normal Playwright
@@ -369,7 +375,8 @@ SQL failure trigger is test-only; it is not a production validation rule.
 Its evidence JSON contains IDs, counts, status codes and hashes, never credentials.
 
 `playwright/auth/core-product.spec.ts` adds four complete core-user journeys to
-that same private production configuration. Each uses a dedicated LOB so it
+that same private production configuration, in its separate `core` invocation.
+Each uses a dedicated LOB so it
 cannot replace the authentication fixture's older/latest examples. Actual UI
 uploads and pipeline buttons run the real engines; read-only stored-file checks
 verify full populations, not just the preview. Weekly Naive values and its
@@ -417,16 +424,27 @@ with synthetic success data.
 
 For the private production suite, set `AUTH_E2E_FRONTEND_MODE=production`, build
 with `NEXT_PUBLIC_API_URL` matching the chosen loopback `AUTH_E2E_API_PORT`, then
-run `npm run test:auth-browser`. `AUTH_E2E_FRONTEND_PORT` selects a separate owned
+run `npm run test:auth-browser` for each suite. `AUTH_E2E_FRONTEND_PORT` selects a separate owned
 port, and `AUTH_E2E_ROOT` must be fresh for each invocation. The fixture pins its
 run authority beneath that private root, regardless of inherited API settings.
 CI includes all four F8 API/store contracts in all six existing native
 authentication matrix runs and retains the full backend/M5 gates. The production
 job records credential-free browser JUnit with `--reporter=line,junit` and uses a
 separate private output directory so the later demo test run cannot clear its
-evidence. Only JUnit and explicitly named decomposition, override and F8 evidence
-JSON files are uploaded. Captures stay off; credential directories are never
-uploaded, and the owned synthetic credential files are removed after the run.
+evidence. Only JUnit and explicitly named decomposition, override, F8 and core
+evidence JSON files are uploaded. A fixture-only pass-through observer
+also records allowlisted authentication method/path/status, request ordinal,
+elapsed time and CORS-presence booleans. It never records headers, bodies, query
+strings or credentials and never changes request handling. Both required browser
+invocations retain their own JUnit/outcomes and these safe HTTP observations.
+Captures stay off; credential directories are never uploaded, and both sets of
+owned synthetic credential files are removed after the run.
+
+The production rate limiter's cross-origin error visibility remains a known
+limitation: a real 429 currently lacks CORS allow-origin headers, so a browser
+can report a failed fetch instead of exposing that status; saturated preflights
+are also rejected. Fixture isolation does not fix that error UX or alter
+middleware ordering, preflight accounting or automatic write-retry policy.
 
 ## Type System
 

@@ -5,9 +5,12 @@ import json
 import os
 import secrets
 import sys
+import time
 from datetime import date, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
+
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
@@ -22,6 +25,48 @@ from src.auth.token import create_token
 from src.config.schema import PlatformConfig
 from src.overrides.store import _CREATE_TABLE_SQL
 from src.pipeline.forecast import ForecastPipeline
+
+
+class _AuthRequestEvidence:
+    """Observe only safe authentication outcomes without changing request handling."""
+
+    def __init__(self, app: ASGIApp, output: Path) -> None:
+        self.app = app
+        self.output = output
+        self.started = time.monotonic()
+        self.requests = 0
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        self.requests += 1
+        if scope["path"] not in {"/auth/status", "/auth/me"}:
+            await self.app(scope, receive, send)
+            return
+        event = {
+            "request_ordinal": self.requests,
+            "elapsed_seconds": round(time.monotonic() - self.started, 6),
+            "method": scope["method"],
+            "path": scope["path"],
+            "http_status": None,
+            "cors_allow_origin_present": False,
+        }
+
+        async def observed_send(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                event["http_status"] = message["status"]
+                event["cors_allow_origin_present"] = any(
+                    name.lower() == b"access-control-allow-origin"
+                    for name, _ in message.get("headers", [])
+                )
+            await send(message)
+
+        try:
+            await self.app(scope, receive, observed_send)
+        finally:
+            with self.output.open("a", encoding="utf-8") as output:
+                output.write(json.dumps(event) + "\n")
 
 
 def main() -> None:
@@ -91,7 +136,10 @@ def main() -> None:
         "mode": "production",
         "forecast_runs": forecast_runs,
     }), encoding="utf-8")
-    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
+    uvicorn.run(
+        _AuthRequestEvidence(app, data / "authentication-http-evidence.jsonl"),
+        host="127.0.0.1", port=args.port, log_level="warning",
+    )
 
 
 if __name__ == "__main__":

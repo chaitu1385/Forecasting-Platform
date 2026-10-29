@@ -396,7 +396,10 @@ distribution version. Never replace locks with unconstrained installs to make CI
   11 seeder cases run in a required Linux/Windows job. Frontend coverage includes
   20 memory/session cases, eight explicit-demo browser cases and twelve isolated
   production browser/API flows with private synthetic credentials and capture
-  disabled. Never upload that fixture's credentials or enable tracing.
+  disabled. The eight contracts and four core journeys use separate fresh
+  `AUTH_E2E_SUITE=contracts|core` fixture invocations in the same required job,
+  respecting the unchanged per-IP rate budget. Never upload either fixture's
+  credentials or enable tracing.
 
 ## Key Dependencies
 
