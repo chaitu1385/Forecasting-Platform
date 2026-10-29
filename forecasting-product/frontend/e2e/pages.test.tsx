@@ -8,6 +8,7 @@ import { describe, test, expect, beforeEach, vi } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import React from "react";
+import { useAuth } from "@/providers/auth-provider";
 
 // Must be called before importing components that use @/lib/api-client
 import { setupApiMocks } from "./helpers/mock-api";
@@ -407,10 +408,33 @@ describe("E2E Page Rendering Tests", () => {
     expect(screen.getByText("Executive Commentary")).toBeInTheDocument();
     expect(screen.getByText("Model Governance")).toBeInTheDocument();
 
-    // Metric cards (hardcoded on this page)
+    expect(screen.getByText("Illustrative demo metrics")).toBeInTheDocument();
     expect(screen.getByText("Overall WMAPE")).toBeInTheDocument();
     expect(screen.getByText("Bias")).toBeInTheDocument();
 
     expect(screen.queryByText("Something went wrong")).not.toBeInTheDocument();
+  });
+
+  test.each([
+    { label: "production", mode: "production", loading: false, modeError: null },
+    { label: "loading", mode: null, loading: true, modeError: null },
+    { label: "unavailable mode", mode: null, loading: false, modeError: "Unavailable" },
+  ] as const)("S&OP $label does not present sample KPIs as measured facts", async ({ mode, loading, modeError }) => {
+    const original = useAuth();
+    vi.mocked(useAuth).mockReturnValue({ ...original, mode, loading, modeError });
+    try {
+      const { default: SOPPage } = await import("@/app/sop/page");
+      renderPage(SOPPage);
+      expect(screen.queryByText("Illustrative demo metrics")).not.toBeInTheDocument();
+      expect(screen.queryByText("16.2%")).not.toBeInTheDocument();
+      expect(screen.queryByText("-2.1%")).not.toBeInTheDocument();
+      expect(screen.queryByText("Series at Risk")).not.toBeInTheDocument();
+      expect(screen.queryByText("Champion Models")).not.toBeInTheDocument();
+      expect(screen.getByText(/Summary metrics are not connected/)).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Backtest Results", exact: true })).toHaveAttribute("href", "/backtest");
+      expect(screen.getByText("BI Export", { exact: true })).toBeInTheDocument();
+    } finally {
+      vi.mocked(useAuth).mockReturnValue(original);
+    }
   });
 });

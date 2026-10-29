@@ -49,6 +49,13 @@ QueryProvider          -- TanStack React Query (staleTime: 5min, retry: 1)
 | `/sop` | S&OP Meeting | AI commentary, model cards, lineage, BI export |
 | `/health` | Platform Health | Drift monitoring, alert triage, audit log, cost tracking |
 
+The S&OP summary cards are labelled **Illustrative demo metrics** and appear only
+in the server-verified explicit demo mode. Their sample values and trends are not
+run measurements. Production and unresolved authentication modes instead explain
+that these summary metrics are not connected and link to **Backtest Results** for
+stored scores and their competition scope. Governance and BI export actions
+remain available under their existing permissions.
+
 ### Hierarchy reconciliation
 
 `/hierarchy` accepts CSV/Parquet and uses the last declared hierarchy level as
