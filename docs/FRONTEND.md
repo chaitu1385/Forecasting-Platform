@@ -216,6 +216,16 @@ Focused editor, late-response, session and typed-client cases live in
 
 ### Pipeline Intent
 
+The onboarding recommendation leaves demand cleansing and structural-break
+fitting disabled because those learned transforms are not yet fold-local.
+Its reasoning explains this choice even when noisy data is detected. Downloading
+and re-uploading that YAML preserves the same executable plan; an explicit
+user-supplied unsupported preprocessing setting is still rejected, not silently
+disabled by the UI or API. Recommended reconciliation is `bottom_up`, including
+for detected multi-level hierarchies: the standard forecast pipeline publishes
+leaf forecasts, not independent upper-level forecasts. Detection metadata is
+retained, and explicit unsupported reconciliation settings still fail.
+
 `PipelineExecutionPanel` sends the current backtest's `champion_model` and
 `execution.horizon_periods` with the same YAML to `api.runForecast`. Without a
 backtest it omits these overrides, allowing the API to resolve the first configured

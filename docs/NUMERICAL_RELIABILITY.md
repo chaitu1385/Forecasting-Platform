@@ -240,6 +240,15 @@ Cleansing, structural-break fitting/truncation and enabled regressor screening
 are not yet fold-local. Backtesting rejects these enabled combinations before
 the whole-history series builder runs. Production forecasting retains these
 options. Defaults remain disabled and are not characterized as leaky.
+Onboarding recommendations also leave demand cleansing and structural-break
+fitting disabled, including for noisy data, so the generated YAML can enter the
+same backtest-to-forecast workflow. The UI explains that these optional settings
+need separate review for production-only forecasting. Explicit uploads enabling
+unsupported learned preprocessing still fail the existing backtest guard.
+Recommended reconciliation also stays `bottom_up`, matching the standard
+pipeline's leaf-only output while retaining detected hierarchy metadata.
+Generating a recommendation does not enable middle-out inference or relax the
+guard on explicitly requested unsupported reconciliation.
 Validation scores refer to the input target after the explicitly configured
 non-learned series preparation, not retrospectively cleansed demand.
 

@@ -720,25 +720,32 @@ class DataAnalyzer:
         )
 
         # ----- Data quality config ----- #
-        cleansing_enabled = False
-        # Enable if forecastability is medium-low (might have noise issues)
+        reasoning.append(
+            "Demand cleansing and structural-break fitting remain disabled: "
+            "backtesting requires fold-local preprocessing. "
+            "Review these options separately for production-only forecasts."
+        )
         if overall_score < 0.5:
-            cleansing_enabled = True
-            reasoning.append("Demand cleansing enabled (forecastability < 0.5 suggests noisy data)")
+            reasoning.append(
+                "Forecastability < 0.5 suggests noisy data; review data quality "
+                "without fitting whole-history cleansing before backtesting."
+            )
 
         dq_config = DataQualityConfig(
             min_series_length_weeks=max(26, horizon * 2),
-            cleansing=CleansingConfig(enabled=cleansing_enabled),
-            structural_breaks=StructuralBreakConfig(enabled=True),
+            cleansing=CleansingConfig(enabled=False),
+            structural_breaks=StructuralBreakConfig(enabled=False),
             report=DataQualityReportConfig(enabled=True, sparse_classification=True),
         )
 
         # ----- Reconciliation config ----- #
         multi_level = any(len(h.levels) > 1 for h in hierarchy.hierarchies)
-        recon_method = "middle_out" if multi_level else "bottom_up"
-        reasoning.append(f"Reconciliation: '{recon_method}' ({'multi-level hierarchy' if multi_level else 'flat hierarchy'})")
+        reasoning.append(
+            "Reconciliation: 'bottom_up' (supported leaf-level pipeline output; "
+            f"{'detected multi-level hierarchy retained' if multi_level else 'flat hierarchy'})"
+        )
 
-        recon_config = ReconciliationConfig(method=recon_method)
+        recon_config = ReconciliationConfig(method="bottom_up")
 
         # ----- Output config ----- #
         output_grain = {}
