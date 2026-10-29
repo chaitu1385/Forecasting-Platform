@@ -122,6 +122,29 @@ A catalog of the failure modes that break forecasting platforms — what goes wr
 
 **What to watch for:** This catches exact key duplicates but not "soft" duplicates — rows with the same (id, date) but different values, which can occur when preliminary actuals are revised. The validator blocks on the duplicate key but can't determine which value is correct. Pre-process your data to resolve conflicts (keep latest revision, sum if appropriate, etc.) before feeding it to the platform. Also, be aware that some data sources produce duplicates by design (e.g., one row per transaction rather than aggregated demand per period) — these need pre-aggregation.
 
+### Decomposition Coverage, Undefined Edges and Precision
+
+**What happens:** The underlying decomposition can omit forecast series without history,
+lose submicrosecond timestamps during Python conversion, or produce undefined
+components/statistics from short history or its recent-trend extrapolation window.
+Centered-window history edges are legitimately undefined and should not become zeros.
+
+**How the platform handles it:** The canonical decomposition API and compatibility alias
+validate every input key/value, forecast-series history coverage and minimum seasonal
+population before calling the unchanged domain routine. They reject lossy timestamp
+precision (including raw CSV fractions) and validate the entire result before previewing.
+Only expected historical trend/residual edge nulls are allowed; nonfinite results or
+empty statistics are explicit failures. Counts disclose defined and excluded populations.
+
+**What to watch for:** If the recent trend window selects a slope fit but its last-three
+anchor has no defined trend, the requested window combination is explicitly unsupported
+and returns 400 before computation. This condition is derived from the actual defined
+trend ranges, not a seasonal-period whitelist. Do not select a semantically wrong period
+to bypass it; unexpected damaged/nonfinite outputs still log and return 500.
+An upload is alternative history, not a committed training snapshot; legacy
+history has unknown preparation. A failed exact forecast ID never resolves to another
+run, and the backtest leaderboard ID must not be used as a forecast selector.
+
 ---
 
 ## 13. Discontinued Products
@@ -138,9 +161,9 @@ A catalog of the failure modes that break forecasting platforms — what goes wr
 
 **What happens:** The unconstrained statistical forecast says demand will be 2 million units, but the factory can only produce 1.5 million. Or the category forecast exceeds the allocated budget for the quarter. The S&OP plan becomes infeasible.
 
-**How the platform handles it:** The `ConstrainedDemandEstimator` (`src/forecasting/constrained.py`) wraps any base forecaster and applies post-prediction constraints. Element-wise bounds enforce per-SKU floors (`min_demand`) and ceilings (`max_capacity`, either from a data column or a global scalar). Aggregate constraints enforce per-period budget caps, redistributing excess proportionally across series. Quantile intervals are also constrained, with a monotonicity pass ensuring p10 ≤ p50 ≤ p90 after clipping.
+**How the platform handles it:** The wrapper and constraint API use `apply_point_constraints` for the same full-population checks and allocation. Scalar/per-series caps use the tighter bound; proportional allocation preserves floors and scales only headroom, while largest-first removes excess by descending clipped value and ascending string-ID ties. A cap below the floor or a per-period budget below `row_count * floor` fails explicitly (API 400), rather than reapplying a floor that violates the budget. Refits clear capacity state and reject missing configured training values/output mappings.
 
-**What to watch for:** Proportional redistribution assumes all series are equally elastic — it scales every SKU by the same factor to meet the aggregate constraint. In practice, some SKUs have higher priority (higher margin, contractual obligations) and should absorb less of the cut. Priority-based allocation is not yet supported; for now, model high-priority SKUs with tighter `min_demand` floors to protect their forecasts. Also, heavily constrained forecasts lose their statistical interpretation — a forecast capped at capacity tells you "we'll be capacity-limited," not "demand will equal capacity."
+**What to watch for:** The floor is a single shared scalar, not a per-SKU priority policy. Marginal quantiles support the same element-wise clipping without a budget, but crossed/nonfinite input is rejected before clipping; enabled aggregate-plus-quantile requests fail with `unsupported_aggregate_quantiles` before publication. CSV period keys remain literal strings to avoid timestamp rounding, so represent each period consistently. No constrained preview changes immutable history, and a capacity-limited plan is not evidence that actual demand equals capacity or that a probabilistic budget is calibrated.
 
 ---
 

@@ -1,9 +1,11 @@
-"""Analytics endpoints — FVA, calibration, SHAP, decomposition, comparison, constraints."""
+"""Analytics endpoints — FVA, calibration, decomposition, comparison, constraints."""
 
 from __future__ import annotations
 
 import io
+import json
 import logging
+import math
 from typing import Optional
 
 import polars as pl
@@ -17,6 +19,11 @@ from ..deps import (
     run_reader,
     validate_path_param,
     validate_upload_size,
+)
+from ..schemas import (
+    ConstrainResponse,
+    DecompositionCompatibilityResponse,
+    DecompositionSummaryResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -107,90 +114,87 @@ def get_calibration(
     }
 
 
-@router.post("/metrics/{lob}/shap")
-async def compute_shap(
+@router.post("/metrics/{lob}/decomposition", response_model=DecompositionSummaryResponse)
+@router.post("/metrics/{lob}/shap", response_model=DecompositionCompatibilityResponse, deprecated=True)
+async def compute_decomposition(
     lob: str,
     request: Request,
-    file: Optional[UploadFile] = File(None, description="Actuals CSV/Parquet for SHAP computation"),
-    model_name: str = Query("lgbm_direct", description="Model to explain"),
+    file: Optional[UploadFile] = File(None, description="Optional history override; not the committed prepared snapshot"),
+    model_name: Optional[str] = Query(None, description="Ignored compatibility parameter; never model provenance", deprecated=True),
     season_length: int = Query(52),
-    top_k: int = Query(10, description="Number of top features to return"),
+    top_k: int = Query(10, description="Maximum component magnitudes in the deprecated feature_importance field"),
     run_id: Optional[str] = Query(None),
+    legacy: bool = Query(False, description="Explicitly read unverified legacy forecasts; incompatible with run_id"),
+    id_col: str = Query("series_id", description="Uploaded history identifier column"),
+    time_col: str = Query("week", description="Uploaded history time column"),
+    target_col: str = Query("quantity", description="Uploaded history target column"),
     user: User = Depends(require_permission(Permission.VIEW_METRICS)),
 ):
-    """Compute SHAP feature attribution for tree-based models."""
-    from ...analytics.explainer import ForecastExplainer
+    """Describe moving-average components, not fitted-model feature attribution.
+
+    Exact forecast IDs never fall back to another run. Without an upload, a
+    committed forecast uses its own prepared history. The deprecated alias uses
+    the identical computation; its old field names do not represent SHAP.
+    """
+    from ...pipeline.readers import ArtifactRead
     from ...pipeline.run_store import RunIntegrityError, RunNotFoundError
+    from ..decomposition import (
+        DecompositionInputError,
+        UnsupportedDecompositionWindow,
+        decompose_artifacts,
+        read_decomposition_upload,
+    )
 
     validate_path_param(lob, "lob")
+    if top_k < 1 or season_length < 1:
+        raise HTTPException(400, detail="season_length and top_k must be positive integers")
     try:
         reader = run_reader(request)
-        selected = reader.forecast(lob, run_id)
-        forecast_df = selected.frame.rename({
-            selected.id_column: "series_id", selected.time_column: "week",
-        })
-    except (RunIntegrityError, RunNotFoundError, ValueError, OSError) as exc:
-        raise_run_error(exc)
-    # Load data
-    if file:
-        content = await validate_upload_size(file)
-        filename = file.filename or ""
         try:
-            if filename.endswith(".parquet"):
-                df = pl.read_parquet(io.BytesIO(content))
-            else:
-                df = pl.read_csv(io.BytesIO(content), try_parse_dates=True)
-        except (ValueError, UnicodeDecodeError, OSError) as exc:
-            raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}")
-    else:
-        try:
-            history = reader.history(lob, selected.run_id, legacy=selected.source == "legacy")
-            df = history.frame.rename({
-                history.id_column: "series_id", history.time_column: "week",
-                history.target_column: "quantity",
-            })
+            selected = reader.forecast(lob, run_id, legacy=legacy)
         except (RunIntegrityError, RunNotFoundError, ValueError, OSError) as exc:
+            if not isinstance(exc, (RunNotFoundError, ValueError)):
+                logger.exception("Forecast artifact read failed")
             raise_run_error(exc)
-
-    explainer = ForecastExplainer(season_length=season_length)
-
-    try:
-        # explain_ml needs a trained model — for API use, we'll use the decompose + narrative approach
-        # since we don't have a persisted model object. Return decomposition-based feature importance.
-        if forecast_df.is_empty():
-            raise HTTPException(status_code=404, detail="No forecast data available for SHAP analysis.")
-
-        decomp = explainer.decompose(
-            history=df, forecast=forecast_df,
-            id_col="series_id", time_col="week",
-            target_col="quantity", value_col="forecast",
-        )
-
-        # Summarize component importance as proxy for SHAP
-        importance = []
-        for component in ("trend", "seasonal", "residual"):
-            if component in decomp.columns:
-                vals = decomp.filter(pl.col("is_forecast").not_())[component]
-                importance.append({
-                    "feature": component,
-                    "mean_abs_value": round(float(vals.abs().mean()) if vals.len() > 0 else 0.0, 4),
-                    "std": round(float(vals.std()) if vals.len() > 0 else 0.0, 4),
-                })
-
-        importance.sort(key=lambda x: x["mean_abs_value"], reverse=True)
-
+        if file:
+            content = await validate_upload_size(file)
+            frame = read_decomposition_upload(
+                content, file.filename or "", target_col, identifier_column=id_col,
+                identifier_dtype=selected.frame.schema[selected.id_column],
+            )
+            history = ArtifactRead(
+                frame, None, "uploaded", id_col, time_col, target_col, input_stage="uploaded",
+            )
+        else:
+            try:
+                history = reader.history(
+                    lob, selected.run_id, stage="prepared", legacy=selected.source == "legacy",
+                )
+            except (RunIntegrityError, RunNotFoundError, ValueError, OSError) as exc:
+                if not isinstance(exc, (RunNotFoundError, ValueError)):
+                    logger.exception("Forecast history read failed")
+                raise_run_error(exc)
+        summary = decompose_artifacts(lob, selected, history, season_length)
+        ranked = sorted(summary.components, key=lambda component: component.mean_abs_value, reverse=True)
         return {
-            "lob": lob,
-            "run_id": selected.run_id,
-            "artifact_source": selected.source,
-            "model": model_name,
-            "feature_importance": importance[:top_k],
-            "decomposition_preview": decomp.head(50).to_dicts(),
+            **summary.model_dump(),
+            "model": summary.forecast_model,
+            "feature_importance": [
+                {"feature": component.component, **component.model_dump(exclude={"component"})}
+                for component in ranked[:top_k]
+            ],
         }
     except HTTPException:
         raise
-    except (ValueError, KeyError, TypeError) as exc:
-        raise HTTPException(status_code=500, detail=f"SHAP computation failed: {exc}")
+    except UnsupportedDecompositionWindow as exc:
+        raise HTTPException(400, detail={
+            "code": "unsupported_decomposition_window", "message": str(exc),
+        }) from exc
+    except DecompositionInputError as exc:
+        raise HTTPException(400, detail=str(exc)) from exc
+    except Exception:
+        logger.exception("Forecast decomposition failed")
+        raise HTTPException(500, detail="Forecast decomposition did not produce a complete finite result") from None
 
 
 # ── Forecast analytics ──────────────────────────────────────────────────────
@@ -207,7 +211,7 @@ async def decompose_forecast(
     season_length: int = Query(52),
     user: User = Depends(get_current_user),
 ):
-    """Run STL decomposition on historical + forecast data."""
+    """Run centered-moving-average decomposition on historical + forecast data."""
     from ...analytics.explainer import ForecastExplainer
 
     history_content = await validate_upload_size(history_file)
@@ -282,7 +286,21 @@ async def compare_forecasts(
     }
 
 
-@router.post("/forecast/constrain")
+def _validate_constraint_json_column(column: pl.Series) -> None:
+    """Reject metadata that JSON would silently replace or cannot represent."""
+    dtype = column.dtype
+    if dtype in (pl.Binary, pl.Object):
+        raise ValueError("invalid_constraint_frame: binary/object metadata is not supported in JSON forecasts")
+    if dtype.is_float() and not column.is_finite().fill_null(True).all():
+        raise ValueError("invalid_constraint_frame: nonfinite metadata cannot be preserved in JSON forecasts")
+    if isinstance(dtype, (pl.List, pl.Array)):
+        _validate_constraint_json_column(column.explode())
+    elif isinstance(dtype, pl.Struct):
+        for member in column.struct.unnest().iter_columns():
+            _validate_constraint_json_column(member)
+
+
+@router.post("/forecast/constrain", response_model=ConstrainResponse)
 async def constrain_forecast(
     file: UploadFile = File(..., description="Forecast CSV/Parquet"),
     min_demand: float = Query(0.0, description="Floor (non-negativity)"),
@@ -293,74 +311,81 @@ async def constrain_forecast(
     time_col: str = Query("week"),
     value_col: str = Query("forecast"),
     user: User = Depends(require_permission(Permission.RUN_PIPELINE)),
-):
-    """Apply capacity and budget constraints to forecast."""
+) -> ConstrainResponse:
+    """Apply full-population bounds and point budgets without modifying stored runs."""
+    from ...config.schema import ConstraintConfig
+    from ...forecasting.constrained import apply_point_constraints
+
     content = await validate_upload_size(file)
     filename = file.filename or ""
     try:
         if filename.endswith(".parquet"):
             df = pl.read_parquet(io.BytesIO(content))
         else:
-            df = pl.read_csv(io.BytesIO(content), try_parse_dates=True)
-    except (ValueError, UnicodeDecodeError, OSError) as exc:
-        raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}")
+            # Constraints group exact period keys; date inference can truncate
+            # fractional timestamps and silently combine distinct CSV periods.
+            df = pl.read_csv(io.BytesIO(content), try_parse_dates=False)
+    except (ValueError, UnicodeDecodeError, pl.exceptions.PolarsError) as exc:
+        raise HTTPException(
+            status_code=400, detail="invalid_constraint_file: upload a readable CSV or Parquet forecast"
+        ) from exc
+    except OSError as exc:
+        logger.exception("Constraint upload could not be read")
+        raise HTTPException(status_code=500, detail="Constraint upload could not be read") from exc
 
-    constrained = df.clone()
-
-    # Apply min demand floor
-    if value_col in constrained.columns:
-        constrained = constrained.with_columns(
-            pl.when(pl.col(value_col) < min_demand)
-            .then(min_demand)
-            .otherwise(pl.col(value_col))
-            .alias(value_col)
+    try:
+        constrained = apply_point_constraints(
+            df,
+            ConstraintConfig(
+                enabled=True, min_demand=min_demand, max_capacity=max_capacity,
+                aggregate_max=aggregate_max, proportional_redistribution=proportional,
+            ),
+            id_col, time_col, value_col,
         )
+        before_total = math.fsum(df[value_col])
+        after_total = math.fsum(constrained[value_col])
+        if not math.isfinite(before_total) or not math.isfinite(after_total):
+            raise ValueError("invalid_constraint_frame: aggregate totals must be finite")
+        max_excess = None
+        if aggregate_max is not None:
+            period_values = constrained.select(
+                pl.col(time_col).alias("period"), pl.col(value_col).alias("values"),
+            ).group_by("period").agg("values")["values"].to_list()
+            max_excess = max(max(0.0, math.fsum(values) - aggregate_max) for values in period_values)
+        quantile_columns = [
+            column for column in constrained.columns
+            if column.startswith("forecast_p") and column not in (id_col, time_col)
+        ]
+        modified = df[value_col] != constrained[value_col]
+        for column in quantile_columns:
+            modified = modified | (df[column] != constrained[column])
+        for column in constrained.iter_columns():
+            _validate_constraint_json_column(column)
+        preview = json.loads(constrained.head(200).write_json())
+    except (ValueError, OverflowError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (ArithmeticError, KeyError, OSError, RuntimeError, TypeError, pl.exceptions.PolarsError) as exc:
+        logger.exception("Constraint computation failed")
+        raise HTTPException(status_code=500, detail="Constraint computation failed") from exc
 
-    # Apply per-series capacity cap
-    if max_capacity is not None and value_col in constrained.columns:
-        constrained = constrained.with_columns(
-            pl.when(pl.col(value_col) > max_capacity)
-            .then(max_capacity)
-            .otherwise(pl.col(value_col))
-            .alias(value_col)
-        )
-
-    # Apply aggregate cap
-    if aggregate_max is not None and time_col in constrained.columns and value_col in constrained.columns:
-        period_totals = constrained.group_by(time_col).agg(pl.col(value_col).sum().alias("_total"))
-        over_cap = period_totals.filter(pl.col("_total") > aggregate_max)
-
-        if not over_cap.is_empty():
-            for row in over_cap.iter_rows(named=True):
-                period = row[time_col]
-                total = row["_total"]
-                scale = aggregate_max / total if total > 0 else 1.0
-                if proportional:
-                    constrained = constrained.with_columns(
-                        pl.when(pl.col(time_col) == period)
-                        .then(pl.col(value_col) * scale)
-                        .otherwise(pl.col(value_col))
-                        .alias(value_col)
-                    )
-
-    before_total = float(df[value_col].sum()) if value_col in df.columns else 0.0
-    after_total = float(constrained[value_col].sum()) if value_col in constrained.columns else 0.0
-    rows_modified = 0
-    if value_col in df.columns and value_col in constrained.columns:
-        rows_modified = int((df[value_col] != constrained[value_col]).sum())
-
-    return {
-        "before_total": round(before_total, 2),
-        "after_total": round(after_total, 2),
-        "rows_modified": rows_modified,
-        "constraints_applied": {
-            "min_demand": min_demand,
-            "max_capacity": max_capacity,
-            "aggregate_max": aggregate_max,
-            "proportional": proportional,
+    return ConstrainResponse(
+        before_total=before_total,
+        after_total=after_total,
+        rows_modified=int(modified.sum()),
+        constraints_applied={
+            "min_demand": min_demand, "max_capacity": max_capacity,
+            "aggregate_max": aggregate_max, "proportional": proportional,
         },
-        "constrained_preview": constrained.head(200).to_dicts(),
-    }
+        constrained_preview=preview,
+        allocation_strategy=(
+            "element_wise" if aggregate_max is None else
+            "proportional" if proportional else "largest_first"
+        ),
+        checked_rows=constrained.height,
+        checked_periods=constrained[time_col].n_unique(),
+        max_budget_excess=max_excess,
+        constraint_scope="point_and_quantiles" if quantile_columns else "point",
+    )
 
 
 # ── Post-pipeline validation ────────────────────────────────────────────────

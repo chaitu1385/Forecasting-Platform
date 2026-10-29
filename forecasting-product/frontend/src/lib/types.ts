@@ -575,11 +575,70 @@ export interface CalibrationResponse {
   per_series_preview: Record<string, unknown>[];
 }
 
-export interface ShapResponse {
+export interface ForecastDecompositionParams {
+  run_id?: string;
+  legacy?: boolean;
+  season_length?: number;
+  id_col?: string;
+  time_col?: string;
+  target_col?: string;
+}
+
+export interface DecompositionComponent {
+  component: "trend" | "seasonal" | "residual";
+  mean_abs_value: number | null;
+  std: number | null;
+  defined_count: number;
+  undefined_count: number;
+}
+
+export type DecompositionPoint = {
+  series_id: string | number;
+  week: string;
+  value: number;
+  trend: number | null;
+  seasonal: number;
+  residual: number | null;
+  is_forecast: boolean;
+};
+
+export interface DecompositionSummaryResponse {
   lob: string;
-  model: string;
-  feature_importance: { feature: string; mean_abs_value: number; std: number }[];
-  decomposition_preview: Record<string, unknown>[];
+  run_id: string | null;
+  artifact_source: "committed" | "legacy";
+  forecast_model: string | null;
+  forecast_model_source: "manifest" | "forecast_frame" | "unknown";
+  history_source: "committed" | "uploaded" | "legacy";
+  history_stage: "prepared" | "uploaded" | "unknown";
+  history_run_id: string | null;
+  method: "moving_average_decomposition";
+  model_specific: false;
+  season_length: number;
+  trend_window: number;
+  seasonal_basis: "observation_position";
+  statistics_population: "history_rows_for_forecast_series";
+  std_ddof: 1;
+  series_count: number;
+  history_rows: number;
+  excluded_history_rows: number;
+  forecast_rows: number;
+  checked_rows: number;
+  preview_rows: number;
+  preview_truncated: boolean;
+  components: DecompositionComponent[];
+  decomposition_preview: DecompositionPoint[];
+}
+
+/** @deprecated Compatibility names are component magnitudes, not SHAP values. */
+export interface ShapResponse extends DecompositionSummaryResponse {
+  model: string | null;
+  feature_importance: {
+    feature: DecompositionComponent["component"];
+    mean_abs_value: number | null;
+    std: number | null;
+    defined_count: number;
+    undefined_count: number;
+  }[];
 }
 
 export interface DecomposeResponse {
@@ -593,17 +652,32 @@ export interface ForecastCompareResponse {
   summary: Record<string, unknown>[];
 }
 
+export interface ConstrainParams {
+  min_demand?: number;
+  max_capacity?: number;
+  aggregate_max?: number;
+  proportional?: boolean;
+  id_col?: string;
+  time_col?: string;
+  value_col?: string;
+}
+
 export interface ConstrainResponse {
   before_total: number;
   after_total: number;
   rows_modified: number;
   constraints_applied: {
     min_demand: number;
-    max_capacity?: number;
-    aggregate_max?: number;
+    max_capacity: number | null;
+    aggregate_max: number | null;
     proportional: boolean;
   };
   constrained_preview: Record<string, unknown>[];
+  allocation_strategy: "element_wise" | "proportional" | "largest_first";
+  checked_rows: number;
+  checked_periods: number;
+  max_budget_excess: number | null;
+  constraint_scope: "point" | "point_and_quantiles";
 }
 
 // ── Governance ───────────────────────────────────────────────────────────────

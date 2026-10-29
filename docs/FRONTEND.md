@@ -43,7 +43,7 @@ QueryProvider          -- TanStack React Query (staleTime: 5min, retry: 1)
 | `/data-onboarding` | Data Onboarding | File upload, auto-analysis, config generation, backtest-to-forecast execution |
 | `/series-explorer` | Series Explorer | SBC classification, break detection, cleansing audit, regressor screening |
 | `/hierarchy` | Hierarchy | Tree building, sunburst visualization, aggregation, reconciliation |
-| `/backtest` | Backtest Results | Pipeline execution, leaderboard, FVA, calibration, SHAP, AI config tuner |
+| `/backtest` | Backtest Results | Leaderboard, FVA, calibration, run-pinned forecast decomposition, AI config tuner |
 | `/forecast` | Forecast Viewer | Fan chart, decomposition, comparison, constraints, NL query |
 | `/sku-transitions` | SKU Transitions | Phase 1/2 SKU mapping, planner override management |
 | `/sop` | S&OP Meeting | AI commentary, model cards, lineage, BI export |
@@ -82,6 +82,8 @@ src/components/
     config-tuner-panel # AI-recommended config changes
     commentary-panel   # Executive S&OP commentary generation
     confidence-badge   # High/Medium/Low confidence indicator
+  backtest/            # Descriptive forecast analysis
+    forecast-decomposition-panel # Exact forecast source, history/model provenance, component magnitudes
   charts/              # 12 components — Data visualization
     time-series-line   # Basic time series line chart (Recharts)
     fan-chart          # Forecast with prediction intervals
@@ -100,9 +102,9 @@ src/components/
     data-table         # TanStack Table with sorting/filtering
     config-viewer      # YAML config display
   forecast/            # 4 components — Forecast analysis
-    decomposition-panel      # STL trend/seasonal/residual
+    decomposition-panel      # Uploaded moving-average trend/seasonal/residual
     comparison-panel         # Model vs external forecast
-    constrained-forecast-panel # Capacity/budget constraint application
+    constrained-forecast-panel # Full-population bounds/point budgets, measured strategy/scope, input-owned results
     cross-run-comparison-panel # Cross-run forecast comparison
   governance/          # 3 components — Model governance
     model-cards-panel  # Model card registry viewer
@@ -130,6 +132,26 @@ src/components/
 ## API Client
 
 The centralized API client (`src/lib/api-client.ts`) provides typed methods for the backend endpoints.
+
+`getForecastDecomposition(lob, params, historyFile?)` calls the canonical
+`POST /metrics/{lob}/decomposition` endpoint and verifies method, forecast identity
+and paired history metadata before display. `getShap` remains a deprecated typed
+compatibility client; its names represent component magnitudes, not feature attribution.
+
+The Backtest Results decomposition panel lists **forecast-kind** runs separately
+from its leaderboard. Loading pins the latest listed or explicitly selected forecast
+ID; refresh is an explicit new source selection. It never submits a leaderboard ID
+or substitutes latest after an exact read failure. Legacy files remain explicitly
+unverified, with no immutable run ID. Component bars show historical mean absolute
+magnitudes, defined/undefined counts and sample signed-value standard deviations,
+not model features. The UI identifies the recorded model (or unknown), actual
+moving-average method and same-run prepared history, without claiming LOESS STL.
+
+The existing `useAsyncOperation.run/reset` generation guard owns requests. Source,
+season, LOB, leaderboard/run-type and authentication changes clear data; identity
+object ownership also covers replacement login for the **same username**. An
+additional render-time owner check prevents a prior result/error from appearing
+before effect cleanup. No credential persistence or new generic async hook is added.
 
 **Features:**
 - Verified JWT injection from per-tab memory, never persistent browser storage
@@ -323,11 +345,51 @@ It also hashes the complete synthetic run artifacts before/after. The fixture's
 SQL failure trigger is test-only; it is not a production validation rule.
 Its evidence JSON contains IDs, counts, status codes and hashes, never credentials.
 
+### Constraint Results and Request Ownership
+
+`ConstrainedForecastPanel` accepts CSV/Parquet and sends the current limits and
+explicit `proportional` choice through the typed `ConstrainParams` client.
+The existing unchecked default remains largest-first; the API's omitted-parameter
+default remains proportional. The server reports the actual strategy, scope,
+unrounded totals, changed-row count (including quantile-only changes), full
+row/period counts and measured budget excess. A null excess means no budget was
+supplied, not that a budget was checked.
+
+File/limit/strategy handlers call the existing `useAsyncOperation.reset()`
+synchronously, and a new submit clears previous results before `run()`. Late
+successes/errors cannot replace a newer request. Failed/infeasible requests show
+an error instead of an applied result; Retry is an explicit POST. Existing
+session ownership and `AuthBoundary` continue to protect logout/replacement.
+
+`e2e/constraint-api-contracts.test.tsx` has 41 component/client/ownership cases,
+including direct token replacement without logout for the same or a different
+username, immediate/deferred identity responses, and completed/error/pending
+constraint states. These exercise the actual `AuthProvider`/`AuthBoundary`;
+no separate authentication behavior is added to the async hook or panel.
+The two real cases in `playwright/auth/constraint-api-contracts.spec.ts` exercise
+both exact allocation strategies, 400 infeasible/aggregate-quantile responses,
+quantile-only row accounting, a delayed **real** API response and unchanged stored
+run hashes. They share the existing private login helper; no endpoint is replaced
+with synthetic success data.
+
+For the private production suite, set `AUTH_E2E_FRONTEND_MODE=production`, build
+with `NEXT_PUBLIC_API_URL` matching the chosen loopback `AUTH_E2E_API_PORT`, then
+run `npm run test:auth-browser`. `AUTH_E2E_FRONTEND_PORT` selects a separate owned
+port, and `AUTH_E2E_ROOT` must be fresh for each invocation. The fixture pins its
+run authority beneath that private root, regardless of inherited API settings.
+CI includes all four F8 API/store contracts in all six existing native
+authentication matrix runs and retains the full backend/M5 gates. The production
+job records credential-free browser JUnit with `--reporter=line,junit` and uses a
+separate private output directory so the later demo test run cannot clear its
+evidence. Only JUnit and explicitly named decomposition, override and F8 evidence
+JSON files are uploaded. Captures stay off; credential directories are never
+uploaded, and the owned synthetic credential files are removed after the run.
+
 ## Type System
 
 All TypeScript interfaces (`src/lib/types.ts`) mirror the FastAPI Pydantic schemas (`src/api/schemas.py`):
 
-- 70 exported interfaces/types covering API request and response shapes
+- Exported interfaces/types cover API request and response shapes, including hierarchy, override patches, `ConstrainParams` and `ConstrainResponse`
 - Strict typing for roles (`Role` union type), severity levels, trends, confidence levels
 - `Record<string, unknown>` used for flexible/dynamic data (e.g., per-series stats)
 
@@ -340,8 +402,8 @@ All TypeScript interfaces (`src/lib/types.ts`) mirror the FastAPI Pydantic schem
 
 ## Testing
 
-- **Unit tests:** Vitest + React Testing Library (`npm run test:e2e` — note: script name is misleading, runs Vitest)
-- **Override editing:** 29 component/client cases within the 125-case suite cover
+- **Unit tests:** 203 cases in 12 files using Vitest + React Testing Library (`npm run test:e2e` — note: script name is misleading, runs Vitest)
+- **Override editing:** 29 component/client cases within the 203-case suite cover
   nullable patches, stable IDs, retained failure input, permission hints and
   late-response/session isolation.
 - **E2E tests:** Playwright (`@playwright/test` in devDependencies)
@@ -358,6 +420,18 @@ All TypeScript interfaces (`src/lib/types.ts`) mirror the FastAPI Pydantic schem
   history, an unchanged real API response delayed behind a newer request,
   viewer denial, session replacement and unchanged run hashes. The existing
   production-auth configuration collects it with captures and retries disabled.
+- **Combined F8:** `playwright/auth/f8-integration.spec.ts` is distinct from the
+  retained hierarchy, override, constraint, decomposition and authentication
+  component specs. The eight-case private production suite includes this real
+  single-login/client-navigation flow: hierarchy totals, create/edit of one stable
+  override ID, largest-first budget values, and decomposition of the original
+  forecast with exact run/model/method/prepared-history evidence. Its `finally`
+  cleanup deletes only its own new override through the real API, verifies prior
+  records, and compares every immutable run-member hash before and after.
+  All private specs use `playwright/fixtures/authentication.ts` for credential
+  submission without token-bearing action diagnostics. This tests combined
+  wiring, not a new one-click workflow, joint hierarchy/budget optimizer, F7 job
+  service, F9 approval lifecycle or probabilistic aggregate-budget allocation.
 
 ## Environment Variables
 

@@ -3,7 +3,8 @@ Constrained demand estimator.
 
 Wraps any base forecaster and applies hard business constraints —
 non-negativity, per-series capacity limits, and aggregate budgets —
-to point forecasts and quantile intervals.
+to point forecasts. Quantiles support element-wise bounds only; aggregate
+probabilistic budgets are explicitly unsupported.
 
 Example
 -------
@@ -17,13 +18,296 @@ Example
 >>> forecast = cde.predict(horizon=13)
 """
 
-from typing import Any, Dict, List, Optional
+import math
+from collections.abc import Mapping
+from numbers import Real
+from typing import Any, Dict, List
 
 import polars as pl
 
 from ..config.schema import ConstraintConfig
+from ..evaluation.calibration import validate_quantile_forecasts
 from .base import BaseForecaster
 from .registry import registry
+
+
+def _nonnegative_limit(value: object, name: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"invalid_constraint_limit: {name} must be a finite nonnegative number")
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise ValueError(f"invalid_constraint_limit: {name} must be a finite nonnegative number") from exc
+    if not math.isfinite(number) or number < 0:
+        raise ValueError(f"invalid_constraint_limit: {name} must be a finite nonnegative number")
+    return number
+
+
+def _constraint_limits(
+    constraints: ConstraintConfig,
+) -> tuple[float, float | None, float | None]:
+    floor = _nonnegative_limit(constraints.min_demand, "min_demand")
+    cap = (
+        _nonnegative_limit(constraints.max_capacity, "max_capacity")
+        if constraints.max_capacity is not None else None
+    )
+    budget = (
+        _nonnegative_limit(constraints.aggregate_max, "aggregate_max")
+        if constraints.aggregate_max is not None else None
+    )
+    if cap is not None and cap < floor:
+        raise ValueError("infeasible_constraints: max_capacity must be at least min_demand")
+    if not isinstance(constraints.proportional_redistribution, bool):
+        raise ValueError("invalid_constraint_limit: proportional_redistribution must be boolean")
+    if constraints.capacity_column is not None and (
+        not isinstance(constraints.capacity_column, str)
+        or not constraints.capacity_column.strip()
+    ):
+        raise ValueError("invalid_capacity_data: capacity_column must be a nonempty column name")
+    return floor, cap, budget
+
+
+def _finite_values(frame: pl.DataFrame, column: str) -> list[float]:
+    values = frame[column]
+    if not values.dtype.is_numeric() or values.null_count():
+        raise ValueError(f"invalid_constraint_frame: {column} must contain finite numeric values")
+    values = values.cast(pl.Float64)
+    if not values.is_finite().all():
+        raise ValueError(f"invalid_constraint_frame: {column} must contain finite numeric values")
+    return values.to_list()
+
+
+def _validate_key_values(frame: pl.DataFrame, columns: tuple[str, ...]) -> None:
+    for column in columns:
+        values = frame[column]
+        if values.null_count() or values.dtype.is_nested() or values.dtype in (pl.Object, pl.Binary):
+            raise ValueError("invalid_constraint_frame: identity and time keys must be non-null supported scalars")
+        if values.dtype.is_numeric() and not values.cast(pl.Float64).is_finite().all():
+            raise ValueError("invalid_constraint_frame: identity and time keys must be finite")
+        if values.dtype == pl.String and (values.str.strip_chars() == "").any():
+            raise ValueError("invalid_constraint_frame: identity and time keys must be nonempty")
+
+
+def _validate_keys(frame: pl.DataFrame, id_col: str, time_col: str) -> None:
+    _validate_key_values(frame, (id_col, time_col))
+    if frame.select(id_col, time_col).is_duplicated().any():
+        raise ValueError("invalid_constraint_frame: duplicate identity/time keys")
+
+
+def _quantile_levels(frame: pl.DataFrame, id_col: str, time_col: str) -> list[float]:
+    levels = []
+    for column in frame.columns:
+        if column in (id_col, time_col) or not column.startswith("forecast_p"):
+            continue
+        suffix = column.removeprefix("forecast_p")
+        if not suffix.isascii() or not suffix.isdigit():
+            raise ValueError("invalid_constraint_frame: quantile columns must use forecast_p0 through forecast_p100")
+        percentile = int(suffix)
+        if not 0 <= percentile <= 100 or column != f"forecast_p{percentile}":
+            raise ValueError("invalid_constraint_frame: quantile columns must use forecast_p0 through forecast_p100")
+        levels.append(percentile / 100)
+    return sorted(levels)
+
+
+def _validate_input_quantiles(frame: pl.DataFrame, quantiles: list[float]) -> None:
+    try:
+        validate_quantile_forecasts(frame, quantiles, "Constraint input")
+    except (TypeError, pl.exceptions.InvalidOperationError) as exc:
+        raise ValueError(
+            "invalid_constraint_frame: quantile columns must use supported integer/floating-point "
+            "types and quantile levels must be finite numbers"
+        ) from exc
+
+
+def _period_rows(frame: pl.DataFrame, time_col: str) -> list[list[int]]:
+    # Group exact Polars keys, not Python datetimes which truncate nanoseconds.
+    return (
+        frame.select(
+            pl.col(time_col).alias("period"),
+            pl.int_range(0, pl.len()).alias("rows"),
+        )
+        .group_by("period", maintain_order=True)
+        .agg("rows")["rows"]
+        .to_list()
+    )
+
+
+def _finite_sum(values: list[float]) -> float:
+    try:
+        total = math.fsum(values)
+    except OverflowError as exc:
+        raise ValueError("invalid_constraint_frame: aggregate totals must be finite") from exc
+    if not math.isfinite(total):
+        raise ValueError("invalid_constraint_frame: aggregate totals must be finite")
+    return total
+
+
+def prepare_constraint_capacity_map(
+    frame: pl.DataFrame,
+    constraints: ConstraintConfig,
+    id_col: str = "series_id",
+) -> dict[object, float]:
+    """Validate enabled limits and extract fresh capacities from prepared history.
+
+    Every configured training capacity must be finite and at least the floor.
+    The existing per-series maximum policy is shared by the wrapper and stitched
+    pipelines. Disabled constraints and an absent capacity-column option return
+    an empty map; a configured missing column is an error.
+    """
+    if not constraints.enabled:
+        return {}
+    floor, _, _ = _constraint_limits(constraints)
+    column = constraints.capacity_column
+    if column is None:
+        return {}
+    if frame.is_empty() or column not in frame.columns or id_col not in frame.columns:
+        raise ValueError("invalid_capacity_data: configured capacity column and series IDs are required at every fit")
+    if column == id_col or frame[id_col].null_count():
+        raise ValueError("invalid_capacity_data: capacity needs a distinct, non-null series identity")
+    _validate_key_values(frame, (id_col,))
+    capacities = _finite_values(frame, column)
+    if any(value < floor for value in capacities):
+        raise ValueError("infeasible_constraints: training capacities must be nonnegative and at least min_demand")
+    cap = frame.select(
+        pl.col(id_col).alias("identity"),
+        pl.col(column).cast(pl.Float64).alias("capacity"),
+    ).group_by("identity").agg(pl.col("capacity").max())
+    return dict(cap.iter_rows())
+
+
+def apply_point_constraints(
+    frame: pl.DataFrame,
+    constraints: ConstraintConfig,
+    id_col: str = "series_id",
+    time_col: str = "week",
+    value_col: str = "forecast",
+    capacity_map: Mapping[object, float] | None = None,
+) -> pl.DataFrame:
+    """Apply validated bounds and per-period point budgets without changing keys.
+
+    Proportional allocation preserves each floor and scales only headroom.
+    Largest-first removes headroom in descending clipped-value order, breaking
+    ties by ascending string series ID. Original row/column order and all
+    nonvalue columns are preserved. Quantile-bearing frames support the same
+    monotone element-wise clipping, but cannot be combined with a budget.
+
+    Parameters
+    ----------
+    frame : pl.DataFrame
+        Nonempty forecast panel with unique, non-null identity/time keys.
+    constraints : ConstraintConfig
+        Nonnegative finite bounds and an optional feasible per-period budget.
+        Disabled constraints return the input unchanged.
+    id_col, time_col, value_col : str
+        Distinct identity, period and point-value columns.
+    capacity_map : Mapping, optional
+        Complete per-series capacities. Required when capacity_column is set.
+
+    Returns
+    -------
+    pl.DataFrame
+        Constrained finite values in the original population and order.
+
+    Raises
+    ------
+    ValueError
+        Invalid inputs, infeasible bounds, or unsupported aggregate quantiles.
+    ArithmeticError
+        Computed values fail the full-population bounds/budget checks.
+    """
+    if not constraints.enabled:
+        return frame
+    floor, cap, budget = _constraint_limits(constraints)
+    names = (id_col, time_col, value_col)
+    if any(not isinstance(name, str) or not name.strip() for name in names) or len(set(names)) != 3:
+        raise ValueError("invalid_constraint_frame: identity, time and value column names must be distinct and nonempty")
+    if any(name not in frame.columns for name in names):
+        raise ValueError("invalid_constraint_frame: required identity, time or value column is missing")
+    if frame.is_empty():
+        raise ValueError("invalid_constraint_frame: forecast input must not be empty")
+    _validate_keys(frame, id_col, time_col)
+    quantiles = _quantile_levels(frame, id_col, time_col)
+    if budget is not None and quantiles:
+        raise ValueError(
+            "unsupported_aggregate_quantiles: aggregate budgets support point forecasts only; "
+            "remove aggregate_max or the quantile columns"
+        )
+    _validate_input_quantiles(frame, quantiles)
+    columns = list(dict.fromkeys([value_col, *[f"forecast_p{int(round(q * 100))}" for q in quantiles]]))
+    values = {column: _finite_values(frame, column) for column in columns}
+
+    identities = frame[id_col].to_list()
+    if constraints.capacity_column is not None and capacity_map is None:
+        raise ValueError("invalid_capacity_data: configured capacity_column requires a complete capacity map")
+    upper = [cap] * frame.height
+    if capacity_map is not None:
+        if not isinstance(capacity_map, Mapping):
+            raise ValueError("invalid_capacity_data: capacity_map must be a mapping")
+        capacities = {
+            identity: _nonnegative_limit(value, "per-series capacity")
+            for identity, value in capacity_map.items()
+        }
+        if any(value < floor for value in capacities.values()):
+            raise ValueError("infeasible_constraints: per-series capacity must be at least min_demand")
+        if any(identity not in capacities for identity in identities):
+            raise ValueError("invalid_capacity_data: capacity map must cover every output series")
+        upper = [
+            min(cap, capacities[identity]) if cap is not None else capacities[identity]
+            for identity in identities
+        ]
+
+    period_rows = _period_rows(frame, time_col)
+    if budget is not None and any(budget < len(rows) * floor for rows in period_rows):
+        raise ValueError("infeasible_constraints: aggregate_max is below row count * min_demand for a period")
+    constrained_values = {
+        column: [
+            min(max(value, floor), ceiling) if ceiling is not None else max(value, floor)
+            for value, ceiling in zip(column_values, upper)
+        ]
+        for column, column_values in values.items()
+    }
+    points = constrained_values[value_col]
+    if budget is not None:
+        labels = frame[id_col].cast(pl.String).to_list()
+        for rows in period_rows:
+            try:
+                total = math.fsum(points[index] for index in rows)
+            except OverflowError:
+                # An overflowing nonnegative total exceeds every finite budget.
+                total = math.inf
+            if total <= budget:
+                continue
+            headroom = budget - len(rows) * floor
+            if constraints.proportional_redistribution:
+                scale = max(points[index] - floor for index in rows)
+                denominator = math.fsum((points[index] - floor) / scale for index in rows)
+                for index in rows:
+                    points[index] = floor + headroom * (((points[index] - floor) / scale) / denominator)
+            else:
+                ordered = sorted(rows, key=lambda index: (-points[index], labels[index]))
+                # Retain headroom in reverse removal order to avoid cancellation
+                # when subtracting a large excess from nearly equal forecasts.
+                for index in reversed(ordered):
+                    retained = min(points[index] - floor, headroom)
+                    points[index] = floor + retained
+                    headroom -= retained
+
+    for column_values in constrained_values.values():
+        for value, ceiling in zip(column_values, upper):
+            if not math.isfinite(value) or value < floor - (1e-9 + 1e-12 * floor):
+                raise ArithmeticError("Constraint output failed the finite lower-bound check")
+            if ceiling is not None and value > ceiling + (1e-9 + 1e-12 * ceiling):
+                raise ArithmeticError("Constraint output failed the upper-bound check")
+    if budget is not None:
+        for rows in period_rows:
+            total = _finite_sum([points[index] for index in rows])
+            if total - budget > 1e-9 + 1e-12 * budget:
+                raise ArithmeticError("Constraint output failed the per-period budget check")
+    result = frame.with_columns(
+        [pl.Series(column, column_values, dtype=pl.Float64) for column, column_values in constrained_values.items()]
+    )
+    validate_quantile_forecasts(result, quantiles, "Constraint output")
+    return result
 
 
 @registry.register("constrained_demand")
@@ -38,8 +322,8 @@ class ConstrainedDemandEstimator(BaseForecaster):
     - **Aggregate budget**: ``sum(forecast) ≤ aggregate_max`` per period,
       with proportional scaling or clip-largest-first redistribution.
 
-    Quantile intervals are also constrained, with a monotonicity pass to
-    ensure ``p10 ≤ p50 ≤ p90`` still holds after clipping.
+    Quantiles support scalar/per-series bounds without an aggregate budget.
+    Invalid input ordering is rejected, never repaired by sorting.
 
     Parameters
     ----------
@@ -55,10 +339,10 @@ class ConstrainedDemandEstimator(BaseForecaster):
         self,
         base_forecaster: BaseForecaster,
         constraints: ConstraintConfig,
-    ):
+    ) -> None:
         self.base = base_forecaster
         self.constraints = constraints
-        self._capacity_map: Dict[str, float] = {}
+        self._capacity_map: Dict[object, float] = {}
 
     # ── BaseForecaster interface ───────────────────────────────────────────
 
@@ -70,16 +354,8 @@ class ConstrainedDemandEstimator(BaseForecaster):
         id_col: str = "series_id",
     ) -> pl.DataFrame:
         """Extract per-series capacity from data if configured; delegate to base."""
-        if (
-            self.constraints.capacity_column
-            and self.constraints.capacity_column in df.columns
-        ):
-            cap = df.group_by(id_col).agg(
-                pl.col(self.constraints.capacity_column).max().alias("_cap")
-            )
-            self._capacity_map = dict(
-                zip(cap[id_col].to_list(), cap["_cap"].to_list())
-            )
+        self._capacity_map = {}
+        self._capacity_map = prepare_constraint_capacity_map(df, self.constraints, id_col)
 
         return self.base.validate_and_prepare(
             df, target_col, time_col, id_col
@@ -101,19 +377,15 @@ class ConstrainedDemandEstimator(BaseForecaster):
         horizon: int,
         id_col: str = "series_id",
         time_col: str = "week",
+        value_col: str = "forecast",
     ) -> pl.DataFrame:
         """Generate constrained point forecasts."""
         forecast = self.base.predict(horizon, id_col=id_col, time_col=time_col)
 
-        if not self.constraints.enabled:
-            return forecast
-
-        forecast = self._apply_element_wise(forecast, id_col)
-
-        if self.constraints.aggregate_max is not None:
-            forecast = self._apply_aggregate(forecast, id_col, time_col)
-
-        return forecast
+        return apply_point_constraints(
+            forecast, self.constraints, id_col, time_col, value_col,
+            self._capacity_map if self.constraints.capacity_column is not None else None,
+        )
 
     def predict_quantiles(
         self,
@@ -123,6 +395,8 @@ class ConstrainedDemandEstimator(BaseForecaster):
         time_col: str = "week",
     ) -> pl.DataFrame:
         """Generate constrained quantile forecasts."""
+        if self.constraints.enabled and self.constraints.aggregate_max is not None:
+            raise ValueError("unsupported_aggregate_quantiles: predict_quantiles does not support aggregate budgets")
         qf = self.base.predict_quantiles(
             horizon, quantiles, id_col=id_col, time_col=time_col
         )
@@ -130,9 +404,14 @@ class ConstrainedDemandEstimator(BaseForecaster):
         if not self.constraints.enabled:
             return qf
 
-        qf = self._apply_element_wise_quantiles(qf, id_col, quantiles)
-        qf = self._ensure_quantile_monotonicity(qf, quantiles)
-        return qf
+        if not quantiles:
+            raise ValueError("Constraint quantiles require at least one requested level")
+        _validate_input_quantiles(qf, quantiles)
+        value_col = "forecast" if "forecast" in qf.columns else f"forecast_p{int(round(quantiles[0] * 100))}"
+        return apply_point_constraints(
+            qf, self.constraints, id_col, time_col, value_col,
+            self._capacity_map if self.constraints.capacity_column is not None else None,
+        )
 
     def get_params(self) -> Dict[str, Any]:
         return {
@@ -142,178 +421,6 @@ class ConstrainedDemandEstimator(BaseForecaster):
             "aggregate_max": self.constraints.aggregate_max,
             **self.base.get_params(),
         }
-
-    # ── Constraint application ─────────────────────────────────────────────
-
-    def _get_upper_bound(self, id_col: str, df: pl.DataFrame) -> Optional[pl.Expr]:
-        """Return a Polars expression for the per-row upper bound, or None."""
-        if self._capacity_map:
-            # Per-series capacity from data column
-            cap_df = pl.DataFrame({
-                id_col: list(self._capacity_map.keys()),
-                "_cap": list(self._capacity_map.values()),
-            })
-            df_with_cap = df.join(cap_df, on=id_col, how="left")
-            return df_with_cap
-        if self.constraints.max_capacity is not None:
-            return None  # caller uses scalar
-        return None
-
-    def _apply_element_wise(
-        self, df: pl.DataFrame, id_col: str
-    ) -> pl.DataFrame:
-        """Clip forecast to [min_demand, capacity] per row."""
-        floor = self.constraints.min_demand
-
-        if self._capacity_map:
-            cap_df = pl.DataFrame({
-                id_col: list(self._capacity_map.keys()),
-                "_cap": list(self._capacity_map.values()),
-            })
-            df = df.join(cap_df, on=id_col, how="left")
-            df = df.with_columns(
-                pl.col("forecast")
-                .clip(lower_bound=floor)
-                .alias("forecast")
-            )
-            # Apply per-series cap where available
-            df = df.with_columns(
-                pl.when(pl.col("_cap").is_not_null())
-                .then(
-                    pl.min_horizontal("forecast", "_cap")
-                )
-                .otherwise(pl.col("forecast"))
-                .alias("forecast")
-            )
-            df = df.drop("_cap")
-        elif self.constraints.max_capacity is not None:
-            df = df.with_columns(
-                pl.col("forecast")
-                .clip(
-                    lower_bound=floor,
-                    upper_bound=self.constraints.max_capacity,
-                )
-                .alias("forecast")
-            )
-        else:
-            # Just apply floor
-            df = df.with_columns(
-                pl.col("forecast")
-                .clip(lower_bound=floor)
-                .alias("forecast")
-            )
-
-        return df
-
-    def _apply_aggregate(
-        self,
-        df: pl.DataFrame,
-        id_col: str,
-        time_col: str,
-    ) -> pl.DataFrame:
-        """Enforce per-period aggregate budget constraint."""
-        budget = self.constraints.aggregate_max
-
-        # Compute per-period totals
-        period_totals = df.group_by(time_col).agg(
-            pl.col("forecast").sum().alias("_period_total")
-        )
-
-        df = df.join(period_totals, on=time_col, how="left")
-
-        if self.constraints.proportional_redistribution:
-            # Scale all series proportionally when budget exceeded
-            df = df.with_columns(
-                pl.when(pl.col("_period_total") > budget)
-                .then(
-                    pl.col("forecast") * budget / pl.col("_period_total")
-                )
-                .otherwise(pl.col("forecast"))
-                .alias("forecast")
-            )
-        else:
-            # Clip-largest-first: iteratively clip the largest forecast
-            # Simplified approach: cap each forecast at its fair share when
-            # the period total exceeds budget
-            df = df.with_columns(
-                pl.when(pl.col("_period_total") > budget)
-                .then(
-                    pl.col("forecast") * budget / pl.col("_period_total")
-                )
-                .otherwise(pl.col("forecast"))
-                .alias("forecast")
-            )
-
-        df = df.drop("_period_total")
-
-        # Re-apply element-wise floor after redistribution
-        df = df.with_columns(
-            pl.col("forecast")
-            .clip(lower_bound=self.constraints.min_demand)
-            .alias("forecast")
-        )
-
-        return df
-
-    def _apply_element_wise_quantiles(
-        self,
-        df: pl.DataFrame,
-        id_col: str,
-        quantiles: List[float],
-    ) -> pl.DataFrame:
-        """Apply element-wise constraints to each quantile column."""
-        floor = self.constraints.min_demand
-        ceiling = self.constraints.max_capacity
-        q_cols = [f"forecast_p{int(round(q * 100))}" for q in quantiles]
-
-        for col in q_cols:
-            if col not in df.columns:
-                continue
-            if ceiling is not None:
-                df = df.with_columns(
-                    pl.col(col)
-                    .clip(lower_bound=floor, upper_bound=ceiling)
-                    .alias(col)
-                )
-            else:
-                df = df.with_columns(
-                    pl.col(col).clip(lower_bound=floor).alias(col)
-                )
-
-        return df
-
-    def _ensure_quantile_monotonicity(
-        self,
-        df: pl.DataFrame,
-        quantiles: List[float],
-    ) -> pl.DataFrame:
-        """Ensure quantile columns are non-decreasing after clipping.
-
-        For each row, sorts the quantile values so that
-        p10 ≤ p50 ≤ p90 (or whatever quantiles are present).
-        """
-        sorted_qs = sorted(quantiles)
-        q_cols = [f"forecast_p{int(round(q * 100))}" for q in sorted_qs]
-        present = [c for c in q_cols if c in df.columns]
-
-        if len(present) <= 1:
-            return df
-
-        # Use horizontal sort: for each row, sort the quantile values
-        # and reassign in order
-        df = df.with_columns(
-            pl.concat_list(present).alias("_q_list")
-        )
-        df = df.with_columns(
-            pl.col("_q_list").list.sort().alias("_q_sorted")
-        )
-        for i, col in enumerate(present):
-            df = df.with_columns(
-                pl.col("_q_sorted").list.get(i).alias(col)
-            )
-        df = df.drop(["_q_list", "_q_sorted"])
-
-        return df
 
     def __repr__(self) -> str:
         return (

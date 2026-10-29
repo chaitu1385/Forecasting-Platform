@@ -416,10 +416,58 @@ The frontend runs at `http://localhost:3000` by default. Set `NEXT_PUBLIC_API_UR
 | **Series Explorer** | `/series-explorer` | SBC classification, structural break detection, cleansing audit, AI Q&A |
 | **SKU Transitions** | `/sku-transitions` | New/discontinued SKU mapping, planner overrides, transition visualization |
 | **Hierarchy Manager** | `/hierarchy` | Build hierarchy trees, aggregate, reconcile (MinT/OLS/WLS) |
-| **Backtest Results** | `/backtest` | Model leaderboard, FVA cascade, champion map, calibration, SHAP |
+| **Backtest Results** | `/backtest` | Model leaderboard, FVA cascade, calibration, forecast decomposition |
 | **Forecast Viewer** | `/forecast` | Fan charts, decomposition, AI natural language query, comparison, constraints |
 | **Platform Health** | `/health` | Pipeline manifests, drift alerts, AI anomaly triage, audit log, cost tracking |
 | **S&OP Meeting** | `/sop` | AI commentary, cross-run comparison, model governance, BI export |
+
+### Applying Forecast Constraints
+
+In **Forecast Viewer**, upload a CSV or Parquet file in **Constrained Forecast**.
+Set a nonnegative floor, optional row capacity and optional **Aggregate Max (per
+period)**. The existing unchecked **Proportional** checkbox selects largest-first
+allocation; checking it scales only headroom above the floor. For two 100-unit
+rows `a,b` and a budget of 50, these choices produce `0,50` and `25,25`, respectively.
+
+The result reports the actual strategy/scope, unrounded totals, rows/periods
+checked and maximum measured budget excess across the whole upload, not just its
+200-row preview. Editing any file, limit or strategy clears prior results and
+prevents a late response from replacing the current request. Errors remain
+visible; **Retry** is an explicit new request, not an automatic POST retry.
+
+If a budget cannot cover all floors, the operation fails instead of claiming the
+constraints were applied. Quantile columns can use scalar bounds without an
+aggregate budget, but aggregate-plus-quantile files are explicitly unsupported.
+Neither a successful preview nor a rejected request changes an immutable stored
+forecast.
+
+### Reading Forecast Components
+
+In **Backtest Results**, use **Forecast decomposition** to inspect a separate
+forecast run. Choose **Decomposition forecast source**, set the seasonal period
+in observations, and select **Load decomposition**. The default chooses the latest
+listed forecast and pins its actual ID; it does not analyze the backtest leaderboard
+run. Select an older forecast to inspect its recorded prepared history, or use
+**Refresh forecast sources** to deliberately resolve a new source.
+
+**Component magnitude** is a descriptive mean absolute trend, seasonal or residual
+value over defined historical observations. It is **not model-specific feature
+attribution**, LOESS STL or evidence of causality. Undefined centered-window edge
+values are counted and excluded, not replaced with zeros. Read the source, recorded
+model (or unknown), method, history stage and full-population counts alongside the
+preview. Legacy files have unknown preparation lineage and no verified immutable ID.
+
+Changing the selection, period, LOB, leaderboard/run type or signed-in session
+clears the old result, including late responses. A failed/missing/corrupt selected
+run does not fall back to another forecast. Short history, unsupported temporal
+precision or nonfinite computation produces an explicit error rather than a
+fabricated summary; the API guide documents the supported moving-average window
+and minimum historical coverage.
+
+Some combinations of centered and recent-trend windows cannot define the
+last-three trend anchor. They return `unsupported_decomposition_window` (400)
+before calculation. Keep the correct business seasonal period rather than changing
+it just to obtain a result; this method does not support that combination.
 
 ### Running the Selected Forecast Plan
 

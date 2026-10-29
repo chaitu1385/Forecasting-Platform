@@ -93,9 +93,9 @@ A model that claims "80% prediction interval" but actually covers only 65% of ou
 
 ### Constrained Demand Estimation
 
-Raw statistical forecasts ignore physical reality: a factory can't produce 2 million units if capacity is 1.5 million, and a category can't exceed its budget allocation. The `ConstrainedDemandEstimator` wraps any base forecaster and applies post-prediction constraints: element-wise bounds (per-SKU min/max capacity) and aggregate budget caps (total across all SKUs per period). When aggregate demand exceeds the budget, it redistributes proportionally. Quantile intervals are also constrained, with a monotonicity pass ensuring p10 ≤ p50 ≤ p90 after clipping.
+Raw statistical forecasts can exceed production capacity or a category's per-period budget. The shared constraint allocator clips row bounds, then either scales headroom above the floor proportionally or removes excess from the largest forecasts first, rejecting a budget that cannot cover the floors. Use this for a feasible point plan, not as evidence that unconstrained demand has changed. Quantiles support monotone element-wise bounds only: crossed input and aggregate-plus-quantile requests fail explicitly rather than being sorted into a misleading probabilistic result.
 
-*Implementation: `src/forecasting/constrained.py` — `ConstrainedDemandEstimator`*
+*Implementation: `src/forecasting/constrained.py` — `apply_point_constraints`, `ConstrainedDemandEstimator`*
 
 ---
 
@@ -241,6 +241,19 @@ Forecasting platforms generate data (metrics, drift alerts, leaderboards) that p
 *Implementation: `src/ai/` — `NaturalLanguageQueryEngine`, `AnomalyTriageEngine`, `ConfigTunerEngine`, `CommentaryEngine`*
 
 ## Product & UX
+
+### Descriptive Decomposition Is Not Model Attribution
+
+Moving-average decomposition describes historical observations as trend, seasonal-position
+averages and residuals, then extends those components into a supplied forecast.
+It does not explain how a fitted model used its features or establish causality,
+so component magnitudes must not be presented as SHAP or feature importance.
+Use it to inspect a selected forecast's shape alongside its recorded prepared history,
+checking the defined/null counts and actual model/source metadata; a backtest
+leaderboard run is a different artifact from that forecast.
+
+*Implementation: `src/api/decomposition.py`, `POST /metrics/{lob}/decomposition`,
+`frontend/src/components/backtest/forecast-decomposition-panel.tsx`*
 
 ### Next.js Frontend
 

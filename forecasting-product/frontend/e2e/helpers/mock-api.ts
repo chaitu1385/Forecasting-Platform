@@ -17,6 +17,7 @@ import {
   mockCosts,
   mockFVA,
   mockCalibration,
+  mockDecomposition,
   mockShap,
   mockModelCards,
   mockLineage,
@@ -182,6 +183,7 @@ export function setupApiMocks() {
       getFVA: vi.fn().mockResolvedValue(mockFVA),
       getCalibration: vi.fn().mockResolvedValue(mockCalibration),
       getShap: vi.fn().mockResolvedValue(mockShap),
+      getForecastDecomposition: vi.fn().mockResolvedValue(mockDecomposition),
       decomposeForecast: vi.fn().mockResolvedValue({
         decomposition: [],
         narratives: {},
@@ -195,8 +197,13 @@ export function setupApiMocks() {
         before_total: 10000,
         after_total: 9500,
         rows_modified: 25,
-        constraints_applied: { min_demand: 0, proportional: false },
+        constraints_applied: { min_demand: 0, max_capacity: null, aggregate_max: null, proportional: false },
         constrained_preview: [],
+        allocation_strategy: "element_wise",
+        checked_rows: 25,
+        checked_periods: 1,
+        max_budget_excess: null,
+        constraint_scope: "point",
       }),
 
       // Governance

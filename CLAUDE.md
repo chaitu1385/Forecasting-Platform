@@ -55,13 +55,14 @@ forecasting-product/
 │   │   ├── app.py          # create_app() factory, core endpoints, router registration
 │   │   ├── schemas.py      # Pydantic request/response models
 │   │   ├── deps.py         # Shared dependencies
+│   │   ├── decomposition.py # Lossless panel admission, full-result checks, component/provenance summaries
 │   │   └── routers/        # Domain-specific API routers
 │   │       ├── series.py       # GET /series/{lob}, POST /series/breaks, cleansing-audit, regressor-screen
 │   │       ├── hierarchy.py    # Build/aggregate; admitted real-level reconciliation, top-down history, scoped coherence
 │   │       ├── sku_mapping.py  # POST /sku-mapping/phase1, phase2
 │   │       ├── overrides.py    # CRUD /overrides
 │   │       ├── pipeline.py     # POST backtest/forecast; GET exact runs/config/input, manifests, costs; multi-file analysis
-│   │       ├── analytics.py    # GET /metrics/{lob}/fva, calibration; POST shap, decompose, compare, constrain
+│   │       ├── analytics.py    # GET /metrics/{lob}/fva, calibration; POST decomposition (legacy shap), decompose, compare, constrain
 │   │       └── governance.py   # GET /governance/model-cards, lineage; POST export
 │   ├── audit/              # Append-only Parquet audit logging
 │   ├── auth/               # AuthSettings, strict JWT/RBAC, owner-only operator token output
@@ -85,7 +86,7 @@ forecasting-product/
 │   │   ├── intermittent.py # Croston, CrostonSBA, TSB
 │   │   ├── ensemble.py     # WeightedEnsembleForecaster
 │   │   ├── hierarchical.py # HierarchicalForecaster
-│   │   └── constrained.py  # ConstrainedDemandEstimator (capacity/budget constraints)
+│   │   └── constrained.py  # apply_point_constraints + ConstrainedDemandEstimator (shared bounds/point budgets)
 │   ├── hierarchy/          # Tree structure, aggregation, reconciliation (OLS/WLS/MinT)
 │   ├── metrics/            # MetricStore (Parquet), drift detection, FVA
 │   ├── observability/      # Structured logging, metrics, alerts, cost tracking
@@ -110,13 +111,14 @@ forecasting-product/
 ├── frontend/               # Next.js 16 / Node 24 (TypeScript, Tailwind, Recharts, Plotly)
 │   ├── src/app/            # App Router pages (login + 8 workflow pages)
 │   ├── src/components/     # Reusable components (charts, AI panels, layout, shared)
+│   │   ├── backtest/       # Run-pinned, session-owned forecast decomposition
 │   │   ├── forecast/       # Decomposition, comparison, constrained forecast panels
 │   │   ├── governance/     # Model cards, lineage, BI export panels
 │   │   ├── pipeline/       # Multi-file analysis, pipeline execution panels
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 2506 cases (pytest)
+├── tests/                  # 2939 cases (pytest)
 ├── configs/                # YAML configuration files
 ├── requirements/           # Hash-locked CPU/API/dev/AI/Fabric/Spark profiles per Python minor
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
@@ -154,6 +156,32 @@ request override > valid YAML > platform defaults; the required
 allowlist, not `asdict(PlatformConfig)`. Keep server paths and credentials out of it.
 The UI forwards only the current backtest champion/horizon and invalidates dependent
 results when data, LOB, or configuration changes.
+
+### Constraint contract
+
+`forecasting.constrained.apply_point_constraints` is shared by the wrapper and
+`POST /forecast/constrain`. Validate finite values/bounds, unique non-null keys,
+complete per-series capacities, `cap >= floor`, and per-period
+`budget >= row_count * floor`. Clip row bounds first; proportional allocation
+scales only headroom above floors. Largest-first removes excess by descending
+clipped value, then ascending string series ID, preserving input order and all
+nonvalue columns. Never duplicate arithmetic in the route or round away a budget
+violation. Full-population diagnostics precede the 200-row preview.
+
+Single-model and stitched inference reuse `prepare_constraint_capacity_map`.
+`ForecastPipeline._run_multi_horizon` applies the shared helper to the complete
+stitched output before publication, retaining row/model provenance. With enabled
+constraints, requested quantiles on the point-only stitched path fail explicitly:
+`unsupported_aggregate_quantiles` with a budget, `unsupported_stitched_quantiles`
+without one. Do not invent intervals or constrain only individual buckets.
+
+Refitting clears capacity state; a configured missing capacity column/map is an
+error, not permission to retain previous limits. Quantiles support the same
+monotone element-wise clipping without a budget, with finite/order validation
+before and after. Enabled aggregate-plus-quantile requests fail explicitly as
+`unsupported_aggregate_quantiles` before publication. Disabled wrappers remain
+no-ops. Do not sort crossed quantiles, invent a joint distribution, or force a
+general point to P50. See `docs/NUMERICAL_RELIABILITY.md`.
 
 ### Immutable run storage
 
@@ -291,7 +319,11 @@ distribution version. Never replace locks with unconstrained installs to make CI
 - Framework: pytest
 - Test files mirror source structure with `test_` prefix
 - Helper fixtures use `_make_*` factory functions (e.g., `_make_weekly_actuals`)
-- 2506 cases across 80 test modules; run the full suite without module exclusions
+- 2939 cases across 82 test modules; run the full suite without module exclusions.
+- Constraint coverage: `test_constrained_demand.py` (128 cases) and
+  `test_constraint_api_contracts.py` (104 real authenticated API/domain/publication cases)
+  assert distinct hand allocations, full populations, exact keys and explicit
+  infeasible/unsupported errors without changing existing immutable runs.
 - Key test modules: `test_platform.py` (85 tests), `test_sku_mapping.py` (81), `test_ai_*.py` (73), `test_forecast_explainability.py` (59), `test_intermittent_demand.py` (55), `test_observability.py` (41), `test_file_classifier.py` (26), `test_file_merger.py` (20)
 - Focused forecast-intent coverage: `test_forecast_intent.py` (108 real ASGI cases),
   plus frontend `e2e/pipeline-execution.test.tsx` and `e2e/data-onboarding-state.test.tsx`
@@ -301,7 +333,14 @@ distribution version. Never replace locks with unconstrained installs to make CI
   Its 22 frontend cases and production-built `playwright/auth/planning-api-contracts.spec.ts`
   cover actual numbers, historical input, late responses, role denial and unchanged
   stored runs. The required native authentication job includes the backend module;
-  browser captures remain disabled. The other F8 slices are not implemented here.
+  browser captures remain disabled.
+- Decomposition: `test_decomposition_api_contracts.py` has 217 authenticated
+  canonical/alias, provenance, coverage, precision and independent hand-oracle cases.
+  `e2e/decomposition-contracts.test.tsx` has 37 client/page/session ownership cases.
+  The method is `moving_average_decomposition`, never LOESS STL or fitted attribution.
+  Committed forecasts pair with their own prepared history; backtest IDs are not
+  forecast IDs. Unsupported/nonfinite domain results fail explicitly; do not repair
+  the domain math or substitute latest for a failed exact selector in this adapter.
 - Run safety: `test_run_store.py`, `test_run_artifacts.py`,
   `test_run_store_process.py` and `test_run_cli.py` cover publication faults on
   both sides of the marker, exact/legacy/auth/path contracts, actual multiprocess
@@ -317,6 +356,13 @@ distribution version. Never replace locks with unconstrained installs to make CI
   `e2e/override-management.test.tsx` adds 29 editor/client state cases. The private
   production browser flow proves edit/reload, a real SQL failure with retained
   input/unchanged record, denied mutations and byte-identical run artifacts.
+- Combined F8 coverage: `playwright/auth/f8-integration.spec.ts` navigates all four
+  workflows in one production-built authenticated session, checks real hierarchy
+  and budget allocations, patches the same override ID, and decomposes the exact
+  original forecast with recorded model/method/history evidence. It removes only
+  its own created override through the real API in `finally`, preserving prior
+  records and every immutable run-member hash. This is combined wiring coverage,
+  not a joint optimizer, approval lifecycle or new probabilistic capability.
 - Process safety: `test_process_execution.py` has five real subprocess cases,
   including the ASGI backtest path, configured model/frequency parity, and
   serialization errors. Both production pools use a local `spawn` context, never
@@ -337,7 +383,7 @@ distribution version. Never replace locks with unconstrained installs to make CI
   no failed/cancelled/skipped constituent may pass it.
 - Authentication: 61 JWT/RBAC/private-output cases, 18 real startup cases and
   11 seeder cases run in a required Linux/Windows job. Frontend coverage includes
-  20 memory/session cases, eight explicit-demo browser cases and three isolated
+  20 memory/session cases, eight explicit-demo browser cases and eight isolated
   production browser/API flows with private synthetic credentials and capture
   disabled. Never upload that fixture's credentials or enable tracing.
 

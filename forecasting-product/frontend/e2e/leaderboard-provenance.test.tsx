@@ -10,6 +10,7 @@ import type { FVAResponse, LeaderboardResponse } from "@/lib/types";
 vi.mock("@/components/charts/fva-cascade", () => ({ FVACascade: () => <div /> }));
 vi.mock("@/components/charts/calibration-plot", () => ({ CalibrationPlot: () => <div /> }));
 vi.mock("@/components/ai/config-tuner-panel", () => ({ ConfigTunerPanel: () => <div /> }));
+vi.mock("@/components/backtest/forecast-decomposition-panel", () => ({ ForecastDecompositionPanel: () => <div /> }));
 vi.mock("recharts", () => ({
   ResponsiveContainer: ({ children }: { children: ReactNode }) => <>{children}</>,
   BarChart: ({ data }: { data: unknown[] }) => <div data-testid="leaderboard-chart">{JSON.stringify(data)}</div>,

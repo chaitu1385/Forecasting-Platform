@@ -197,21 +197,106 @@ Compute Forecast Value Add (FVA) cascade — shows which model layer adds or des
 
 Compute prediction interval calibration report — compares nominal vs. empirical coverage at 50% and 80% intervals. **Requires** `VIEW_METRICS` permission.
 
-### `POST /metrics/{lob}/shap`
+### `POST /metrics/{lob}/decomposition`
 
-Compute SHAP feature attribution for tree-based models. Accepts an optional file upload; otherwise loads from data directory. **Requires** `VIEW_METRICS` permission.
+Describe forecast/history components using a centered moving average, seasonal-position
+averages and residuals. **Requires** `VIEW_METRICS` permission. This is **not**
+LOESS STL, SHAP, fitted-model feature attribution or a causal explanation.
+No fitted model is loaded or trained and no AI provider is called.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `lob` | path, required | LOB name |
-| `file` | body, optional | Actuals CSV/Parquet |
-| `model_name` | query, default `"lgbm_direct"` | Model to explain |
-| `season_length` | query, default `52` | Season length |
-| `top_k` | query, default `10` | Number of top features |
+| `run_id` | query, optional | Exact **forecast-kind** run ID; never a backtest leaderboard ID |
+| `legacy` | query, default `false` | Explicit unverified legacy source; incompatible with `run_id` |
+| `file` | body, optional | Alternative history CSV/Parquet, explicitly labeled `uploaded` |
+| `id_col`, `time_col`, `target_col` | query, optional | Uploaded history columns; legacy-compatible defaults `series_id`, `week`, `quantity` |
+| `season_length` | query, default `52` | Positive seasonal period in observation positions, not inferred calendar intervals |
+
+**Response:** `DecompositionSummaryResponse` includes `method="moving_average_decomposition"`,
+`model_specific=false`, `lob`, actual `run_id`/`artifact_source`, and
+`forecast_model` (recorded manifest model, otherwise a uniform recorded frame model,
+otherwise null). `forecast_model_source` identifies that evidence, not the current
+configuration or caller text. A multi-model/partially unknown frame without manifest
+model identity does not become an invented single model.
+
+Without an upload, a committed forecast is paired with **its own prepared history**:
+`history_source="committed"`, `history_stage="prepared"`, `history_run_id=run_id`.
+Uploaded history is labeled `uploaded` with no history run ID; legacy history is
+`legacy`/`unknown` with no verified ID. Omitting selectors resolves the latest forecast
+(or legacy when no committed forecast exists); clients should retain the returned
+identity. An explicit missing/wrong-kind run returns 404, malformed selectors 400,
+and corruption the existing 500 `run_integrity_error`, without selecting another run.
+
+Upload column defaults remain `series_id`, `week`, `quantity`, including when the
+selected forecast has custom recorded column names. Set the three column query
+parameters for custom uploads. Without an upload, the reader always uses the
+same-run prepared snapshot's recorded columns, independent of upload defaults.
+
+`components` always names trend, seasonal and residual. `mean_abs_value` is the
+mean absolute value across **defined historical observations of forecast series**;
+`std` is sample standard deviation of their **signed** values (`std_ddof=1`).
+There is no per-series averaging or forecast-row weighting. `defined_count` and
+`undefined_count` disclose the population; expected centered-window trend/residual
+edges remain null, not zero. Standard deviation is nullable when fewer than two
+values exist; empty statistics are rejected, never fabricated.
+`history_rows`, `excluded_history_rows`, `forecast_rows`, `series_count` and
+`checked_rows` describe full-frame scope. History-only series are excluded from
+statistics after input validation. `decomposition_preview` is at most 50 rows;
+`preview_rows` and `preview_truncated` disclose truncation.
+
+Inputs must be nonempty, finite, have unique non-null series/time keys and history
+for every forecast series, with forecast times strictly after that series' history.
+Each forecast series needs at least
+`2 * floor(season_length / 2) + max(season_length, 2)` historical observations so
+no seasonal position is filled by the domain's missing-position zero fallback.
+The actual centered `trend_window` is `2 * floor(season_length / 2) + 1`.
+Invalid/unsupported inputs return 400 (malformed typed query fields return 422).
+Known unsupported windows return 400 with `detail.code="unsupported_decomposition_window"`
+**before** computation. Admission derives the defined centered-trend interval
+`[floor(season_length / 2), history_count - floor(season_length / 2))` and intersects
+it with the actual recent-trend window and the last-three anchor. If the recent
+window has at least two defined trends (selecting the slope-fit branch) but the
+last-three anchor has none, that requested combination is unsupported. This is
+not a seasonal-period whitelist. Retain the correct business seasonal period;
+changing it merely to obtain a result would change the analysis's meaning.
+All output keys, values, edge nulls, finite components, reconstruction and statistics
+are still checked **before** preview truncation. Genuinely unexpected damaged or
+nonfinite domain results remain logged 500 errors, never fabricated successful
+summaries; the decomposition arithmetic is unchanged.
+
+String IDs (including CSV leading zeros) and JSON-exact integer IDs are supported.
+Dates and microsecond-exact datetimes are supported; timezone-aware datetimes
+normalize to UTC without changing instants. Date/datetime or aware/naive mixtures
+are rejected. Submicrosecond values, including raw CSV fractions, are rejected
+before inference/rounding; nanosecond-typed data is allowed only when microsecond-exact.
+CSV identifier admission uses the selected forecast's declared identifier type:
+string IDs remain exact strings (including numeric-looking and leading-zero IDs);
+integer forecasts accept only canonical decimal integer text within the recorded
+integer type and exact JSON bounds. Leading zeros, plus signs, negative zero,
+padding, decimal/exponent notation and overflow are rejected rather than guessed.
+No other metadata column is inferred. Parquet retains explicit types; a String
+identifier column is not coerced to match an integer forecast.
+Quantities must be numeric,
+with integral values within the exact JSON integer range. The existing upload
+limit and server-owned path containment remain in force. Stored artifacts are
+never modified by either route.
+
+### `POST /metrics/{lob}/shap` (deprecated compatibility alias)
+
+The same handler, permissions, selectors, history and computation as the canonical
+route. `DecompositionCompatibilityResponse` adds `model` as an alias of the
+**recorded** `forecast_model`, and `feature_importance` as descending historical
+**component magnitudes**, not SHAP values. `model_name` remains accepted but is
+ignored. Positive `top_k` (default 10) limits only this legacy list, not the three
+canonical `components`, full validation or statistics. Migrate to the canonical
+route and labels; no fitted-model attribution contract is provided.
 
 ### `POST /forecast/decompose`
 
-Run STL decomposition on historical + forecast data. Returns trend, seasonal, and residual components plus per-series narratives.
+Run centered-moving-average decomposition on historical + forecast data. Returns
+trend, seasonal, and residual components plus per-series narratives; not LOESS STL.
+This separate upload-only endpoint does not claim immutable-run provenance.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
@@ -229,15 +314,61 @@ Compare model forecast against an external/uploaded forecast. Returns per-series
 
 ### `POST /forecast/constrain`
 
-Apply capacity and budget constraints to forecast. Supports per-series caps, aggregate caps, and proportional redistribution. **Requires** `RUN_PIPELINE` permission.
+Apply bounds and per-period point budgets to an uploaded forecast without modifying
+stored runs. **Requires** `RUN_PIPELINE` permission; the existing 100 MB upload
+limit applies. The API and `ConstrainedDemandEstimator.predict` use the same
+`apply_point_constraints` implementation.
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `file` | body, required | Forecast CSV/Parquet |
 | `min_demand` | query, default `0.0` | Floor (non-negativity) |
 | `max_capacity` | query, optional | Per-series-per-period cap |
-| `aggregate_max` | query, optional | Total cap across all series |
-| `proportional` | query, default `true` | Use proportional redistribution |
+| `aggregate_max` | query, optional | Total cap across all supplied series **per period** |
+| `proportional` | query, default `true` | Scale headroom above the floor; `false` removes excess largest-first |
+| `id_col` | query, default `series_id` | Series identity column |
+| `time_col` | query, default `week` | Period key column |
+| `value_col` | query, default `forecast` | Point forecast column |
+
+Inputs must be nonempty, with distinct required columns, unique non-null
+series/period keys, finite numeric forecast values and finite nonnegative limits.
+A cap below the floor or a budget below `row_count * min_demand` for any period
+returns HTTP 400 (`infeasible_constraints`). Malformed typed parameters retain
+HTTP 422. Invalid files/semantic inputs return 400; unexpected computation errors
+are logged and return a nonsensitive 500, never an empty or "applied" result.
+
+After clipping to row bounds, under-budget rows remain unchanged. Proportional
+allocation preserves floors and scales only the remaining headroom. Largest-first
+orders by descending clipped value, then ascending **string** series ID, removing
+excess down to each floor. For IDs `a,b`, values `100,100` and budget `50`, the
+results are `25,25` proportionally and `0,50` largest-first, independent of input
+row order. Output row order and nonvalue columns are preserved. CSV period keys
+are kept as supplied rather than date-inferred, so fractional timestamps are not
+rounded together; use a consistent representation for each period. Parquet
+timestamps retain their native precision in the JSON preview.
+Nullable/nested metadata is preserved, including lossless string encoding of
+Parquet decimals. Nonfinite metadata (which JSON would replace with null) and
+unsupported binary/object metadata return 400 instead of a modified preview.
+
+Standard `forecast_p0` through `forecast_p100` columns are quantiles. Without an
+aggregate budget, the same monotone row bounds apply to every supplied quantile;
+crossed/nonfinite input is rejected before clipping. With `aggregate_max` and any
+quantiles, return HTTP 400 `unsupported_aggregate_quantiles`, even if the input is
+under budget. This endpoint does not construct a joint probabilistic budget.
+Per-series capacity maps are available through the Python wrapper/helper, not a
+new upload parameter.
+Quantile columns use the existing integer/floating-point validator; unsupported
+numeric dtypes such as Parquet Decimal return an actionable 400, not a 500.
+
+The response retains `before_total`, `after_total`, `rows_modified`,
+`constraints_applied`, and `constrained_preview` (at most 200 rows). Totals are
+unrounded and measured over the **entire** frame; `rows_modified` counts each row
+with any constrained point or quantile value changed exactly once, including
+quantile-only changes and excluding unrelated metadata. Additional typed fields are
+`allocation_strategy` (`element_wise`, `proportional`, `largest_first`),
+`checked_rows`, `checked_periods`, `max_budget_excess` (actual positive per-period
+excess, or null without a budget), and `constraint_scope` (`point` or
+`point_and_quantiles`). All rows/periods are checked before truncating the preview.
 
 ---
 

@@ -14,6 +14,7 @@ import type {
   CostListResponse,
   FVAResponse,
   CalibrationResponse,
+  DecompositionSummaryResponse,
   ShapResponse,
   ModelCardListResponse,
   LineageResponse,
@@ -366,21 +367,34 @@ export const mockCalibration: CalibrationResponse = {
   per_series_preview: [],
 };
 
-// ── SHAP ─────────────────────────────────────────────────────────────────────
+// ── Decomposition ────────────────────────────────────────────────────────────
+
+export const mockDecomposition: DecompositionSummaryResponse = {
+  lob: "retail", run_id: null, artifact_source: "legacy",
+  forecast_model: "lgbm_direct", forecast_model_source: "forecast_frame",
+  history_source: "legacy", history_stage: "unknown", history_run_id: null,
+  method: "moving_average_decomposition", model_specific: false,
+  season_length: 3, trend_window: 3, seasonal_basis: "observation_position",
+  statistics_population: "history_rows_for_forecast_series", std_ddof: 1,
+  series_count: 1, history_rows: 12, excluded_history_rows: 0, forecast_rows: 3,
+  checked_rows: 15, preview_rows: 1, preview_truncated: true,
+  components: [
+    { component: "trend", mean_abs_value: 155, std: 30, defined_count: 10, undefined_count: 2 },
+    { component: "seasonal", mean_abs_value: 2, std: 2.5, defined_count: 12, undefined_count: 0 },
+    { component: "residual", mean_abs_value: 0, std: 0, defined_count: 10, undefined_count: 2 },
+  ],
+  decomposition_preview: [{
+    series_id: "sku_001", week: "2025-01-06", value: 97,
+    trend: null, seasonal: -3, residual: null, is_forecast: false,
+  }],
+};
 
 export const mockShap: ShapResponse = {
-  lob: "retail",
-  model: "lgbm_direct",
-  feature_importance: [
-    { feature: "lag_1", mean_abs_value: 0.45, std: 0.12 },
-    { feature: "rolling_mean_4", mean_abs_value: 0.32, std: 0.08 },
-    { feature: "month_sin", mean_abs_value: 0.18, std: 0.05 },
-    { feature: "promo_flag", mean_abs_value: 0.15, std: 0.04 },
-    { feature: "temperature", mean_abs_value: 0.08, std: 0.03 },
-  ],
-  decomposition_preview: [
-    { series_id: "sku_001", week: "2025-01-06", base: 100, lag_1: 12, rolling_mean_4: 8, prediction: 120 },
-  ],
+  ...mockDecomposition,
+  model: mockDecomposition.forecast_model,
+  feature_importance: mockDecomposition.components.map(({ component, ...stats }) => ({
+    feature: component, ...stats,
+  })),
 };
 
 // ── Model Cards ──────────────────────────────────────────────────────────────
