@@ -191,6 +191,11 @@ async def run_backtest(
             df = pl.read_parquet(io.BytesIO(content))
         else:
             df = pl.read_csv(io.BytesIO(content), try_parse_dates=True)
+    except (pl.exceptions.ComputeError, pl.exceptions.NoDataError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to read file: invalid CSV or Parquet data. Check the file format and encoding.",
+        ) from exc
     except (ValueError, UnicodeDecodeError, OSError) as exc:
         raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}")
 
@@ -315,6 +320,11 @@ async def run_forecast(
             df = pl.read_parquet(io.BytesIO(content))
         else:
             df = pl.read_csv(io.BytesIO(content), try_parse_dates=True)
+    except (pl.exceptions.ComputeError, pl.exceptions.NoDataError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to read file: invalid CSV or Parquet data. Check the file format and encoding.",
+        ) from exc
     except (ValueError, UnicodeDecodeError, OSError) as exc:
         raise HTTPException(status_code=400, detail=f"Failed to read file: {exc}")
 

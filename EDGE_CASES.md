@@ -347,6 +347,12 @@ platform defaults. The execution panel clears dependent results on input changes
 ignores stale completions, and forwards only the current winner and horizon.
 Responses identify the resolved model, horizon, settings, and their sources.
 
+Malformed or empty CSV/Parquet uploads to analysis and core pipeline execution
+return an actionable HTTP 400 before processing or publication. Expected Polars
+parse failures do not escape as misleading browser connection errors, and their
+response does not echo uploaded cell contents. Unexpected reader/engine faults
+remain server failures; no empty-data or completed-run fallback is substituted.
+
 **What to watch for:** An absent config means defaults; an empty/null uploaded
 document is invalid (use `{}` for defaults explicitly). Standalone forecasting
 chooses the first configured model, not a remembered or guessed winner.

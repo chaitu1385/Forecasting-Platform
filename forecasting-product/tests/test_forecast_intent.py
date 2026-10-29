@@ -71,6 +71,52 @@ def _snapshot(root: Path) -> dict:
     return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
+@pytest.mark.parametrize("endpoint", ["/analyze", "/pipeline/backtest", "/pipeline/forecast"])
+@pytest.mark.parametrize(("filename", "content"), [
+    ("broken.csv", b'series_id,week,quantity\n"CORE_PRIVATE_PARSE_SENTINEL,2024-01-01,10\n'),
+    ("empty.csv", b""),
+    ("broken.parquet", b"CORE_PRIVATE_PARSE_SENTINEL"),
+])
+def test_core_upload_parse_errors_are_safe_readable_client_errors(client, endpoint, filename, content):
+    baseline = _run(client, config=_config())
+    assert baseline.status_code == 200
+    before = _snapshot(client.app.state.runs_dir)
+    origin = "http://localhost:3000"
+
+    response = client.post(
+        endpoint,
+        params={"lob": "retail", "lob_name": "retail"},
+        headers={"Origin": origin},
+        files={"file": (filename, content, "application/octet-stream")},
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.headers["access-control-allow-origin"] == origin
+    assert "Failed to read" in response.json()["detail"]
+    assert "CORE_PRIVATE_PARSE_SENTINEL" not in response.text
+    assert _snapshot(client.app.state.runs_dir) == before
+    assert client.get("/health").status_code == 200
+
+
+@pytest.mark.parametrize("endpoint", ["/analyze", "/pipeline/backtest", "/pipeline/forecast"])
+def test_unexpected_core_reader_errors_are_not_relabelled_invalid_uploads(client, monkeypatch, endpoint):
+    baseline = _run(client, config=_config())
+    assert baseline.status_code == 200
+    before = _snapshot(client.app.state.runs_dir)
+
+    def broken_reader(*args, **kwargs):
+        raise RuntimeError("unexpected reader failure")
+
+    monkeypatch.setattr(pl, "read_csv", broken_reader)
+    response = client.post(
+        endpoint, params={"lob": "retail", "lob_name": "retail"},
+        files={"file": ("actuals.csv", b"series_id,week,quantity\nA,2024-01-01,10\n", "text/csv")},
+    )
+
+    assert response.status_code == 500
+    assert _snapshot(client.app.state.runs_dir) == before
+
+
 def test_backtest_winner_and_five_period_plan_are_preserved(client):
     config = _config()
     backtest = _run(client, "backtest", config=config)
