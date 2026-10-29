@@ -1,5 +1,6 @@
 """Real ASGI regressions for planner intent and fail-closed config uploads."""
 
+import io
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -71,12 +72,19 @@ def _snapshot(root: Path) -> dict:
     return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
 
 
+def _parquet_bytes(actuals: pl.DataFrame) -> bytes:
+    buffer = io.BytesIO()
+    actuals.write_parquet(buffer)
+    return buffer.getvalue()
+
+
 @pytest.mark.parametrize("endpoint", ["/analyze", "/pipeline/backtest", "/pipeline/forecast"])
 @pytest.mark.parametrize(("filename", "content"), [
     ("broken.csv", b'series_id,week,quantity\n"CORE_PRIVATE_PARSE_SENTINEL,2024-01-01,10\n'),
     ("empty.csv", b""),
     ("broken.parquet", b"CORE_PRIVATE_PARSE_SENTINEL"),
-])
+    ("truncated.parquet", _parquet_bytes(_actuals())[:-8]),
+], ids=["malformed-csv", "empty-csv", "invalid-parquet", "truncated-parquet"])
 def test_core_upload_parse_errors_are_safe_readable_client_errors(client, endpoint, filename, content):
     baseline = _run(client, config=_config())
     assert baseline.status_code == 200
@@ -99,6 +107,32 @@ def test_core_upload_parse_errors_are_safe_readable_client_errors(client, endpoi
 
 
 @pytest.mark.parametrize("endpoint", ["/analyze", "/pipeline/backtest", "/pipeline/forecast"])
+@pytest.mark.parametrize("format", ["csv", "parquet"])
+def test_core_upload_readers_preserve_valid_csv_and_parquet(client, endpoint, format):
+    actuals = _actuals(104)
+    content = actuals.write_csv().encode() if format == "csv" else _parquet_bytes(actuals)
+    response = client.post(
+        endpoint, params={"lob": "retail", "lob_name": "retail"},
+        headers={"Origin": "http://localhost:3000"},
+        files={"file": (f"actuals.{format}", content, "application/octet-stream")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    body = response.json()
+    if endpoint == "/analyze":
+        assert body["n_rows"] == 104
+        assert body["n_series"] == 1
+        assert body["frequency"] == "W"
+    else:
+        assert body["status"] == "completed"
+        store = RunStore(client.app.state.runs_dir)
+        assert store.frame("retail", body["run_id"], "input").equals(actuals)
+        kind = "metrics" if endpoint.endswith("backtest") else "forecast"
+        assert store.frame("retail", body["run_id"], kind).height == 39
+
+
+@pytest.mark.parametrize("endpoint", ["/analyze", "/pipeline/backtest", "/pipeline/forecast"])
 def test_unexpected_core_reader_errors_are_not_relabelled_invalid_uploads(client, monkeypatch, endpoint):
     baseline = _run(client, config=_config())
     assert baseline.status_code == 200
@@ -114,6 +148,31 @@ def test_unexpected_core_reader_errors_are_not_relabelled_invalid_uploads(client
     )
 
     assert response.status_code == 500
+    assert _snapshot(client.app.state.runs_dir) == before
+
+
+@pytest.mark.parametrize("endpoint", ["/analyze", "/pipeline/backtest", "/pipeline/forecast"])
+def test_unexpected_processing_errors_after_read_are_not_relabelled_uploads(client, monkeypatch, endpoint):
+    baseline = _run(client, config=_config())
+    assert baseline.status_code == 200
+    before = _snapshot(client.app.state.runs_dir)
+    target = {
+        "/analyze": "src.analytics.analyzer.DataAnalyzer.analyze",
+        "/pipeline/backtest": "src.pipeline.backtest.BacktestPipeline.run",
+        "/pipeline/forecast": "src.pipeline.forecast.ForecastPipeline.run",
+    }[endpoint]
+
+    def broken_processing(*args, **kwargs):
+        raise RuntimeError("unexpected processing failure")
+
+    monkeypatch.setattr(target, broken_processing)
+    response = client.post(
+        endpoint, params={"lob": "retail", "lob_name": "retail"},
+        files={"file": ("actuals.csv", _actuals().write_csv().encode(), "text/csv")},
+    )
+
+    assert response.status_code == 500
+    assert "Failed to read" not in response.text
     assert _snapshot(client.app.state.runs_dir) == before
 
 
