@@ -322,6 +322,15 @@ against fresh training on the same fold, including non-null interval checks.
 
 **What to watch for:** `halt_on_blocker` defaults to false, and `min_grade` is warning-only. Set `halt_on_blocker: true` for blocking quality checks; `post_validation.enabled: false` is an explicit opt-out. Forecast keys use both the configured series ID and period, not just the series ID. Local filesystem failures have the separate pre/post-commit contract below; managed Spark/Fabric pipelines do not inherit local bundle atomicity.
 
+For backtests, intentionally null unrequested score columns and mathematically
+undefined derived values are not incomplete raw observations. The backtest
+adapter checks score values and their definedness against the canonical metric
+expressions without filling or dropping rows. Nullable training-only MASE scales
+remain explicit; they do not become zero/perfect scores. Missing defined scores,
+fabricated values, nonfinite observations, damaged keys and unrelated null
+columns still fail strict validation. Generic and forecast validation are not
+made permissive by this backtest-specific context.
+
 ---
 
 ## 28. Invalid or Stale Forecast Plans

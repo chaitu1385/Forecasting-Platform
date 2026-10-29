@@ -243,6 +243,26 @@ options. Defaults remain disabled and are not characterized as leaky.
 Validation scores refer to the input target after the explicitly configured
 non-learned series preparation, not retrospectively cleansed demand.
 
+### Backtest completeness and derived scores
+
+Backtest post-validation checks canonical observation keys and raw values
+separately from cached derived scores. Unrequested all-null score placeholders
+remain in the stored metric schema; they are not missing observations. Requested
+scores, and any populated supplementary score columns, must match the canonical
+per-observation expression, including its defined/undefined mask. Zero-actual
+ratios may therefore remain null while their complete population score is
+defined. A training-only MASE scale may be null; a non-null scale must be finite
+and positive.
+
+This adapter does not fill scores, remove observations, or change scoring
+formulas. Missing defined scores, fabricated values at undefined positions,
+nonfinite/corrupt values, missing or duplicate keys, and unrelated incomplete
+columns remain blockers. An undefined supplementary MASE is not a perfect score;
+an undefined primary criterion still prevents champion selection. Forecast and
+standalone validation without backtest metric context retain their previous
+all-column completeness behavior. `halt_on_blocker` and all thresholds are
+unchanged.
+
 ### Post-validation comparison applicability
 
 Backtest Simpson diagnostics use the declared competition scope, not arbitrary

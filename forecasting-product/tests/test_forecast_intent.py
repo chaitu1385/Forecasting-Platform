@@ -29,11 +29,11 @@ def _config() -> dict:
     }
 
 
-def _actuals() -> pl.DataFrame:
+def _actuals(n_weeks: int = 60) -> pl.DataFrame:
     return pl.DataFrame({
-        "series_id": ["sku"] * 60,
-        "week": [date(2024, 1, 1) + timedelta(weeks=i) for i in range(60)],
-        "quantity": [float(10 + i * 3) for i in range(60)],
+        "series_id": ["sku"] * n_weeks,
+        "week": [date(2024, 1, 1) + timedelta(weeks=i) for i in range(n_weeks)],
+        "quantity": [float(10 + i * 3) for i in range(n_weeks)],
     })
 
 
@@ -111,6 +111,72 @@ def test_backtest_winner_and_five_period_plan_are_preserved(client):
     assert body["run_id"] != backtest.json()["run_id"]
     assert manifest.champion_model_id == winner
     assert manifest.forecast_horizon == 5
+
+
+@pytest.mark.parametrize("metrics", [
+    ["wmape", "normalized_bias"],
+    ["wmape", "normalized_bias", "mae", "rmse"],
+])
+def test_strict_backtest_preserves_unrequested_metric_placeholders(client, metrics):
+    config = _config()
+    config["forecast"]["forecasters"] = ["naive_seasonal"]
+    config["backtest"] = {"n_folds": 2, "val_periods": 8, "gap_periods": 0}
+    config["metrics"] = metrics
+    config["post_validation"] = {"enabled": True, "halt_on_blocker": True}
+
+    response = _run(client, "backtest", config=config, actuals=_actuals(104))
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["champion_model"] == "naive_seasonal"
+    assert body["execution"]["config"]["post_validation_enabled"] is True
+    assert body["execution"]["config"]["halt_on_blocker"] is True
+    store = RunStore(client.app.state.runs_dir)
+    records = store.frame("retail", body["run_id"], "metrics")
+    assert records.height == 16
+    assert records["mape"].null_count() == records.height
+    assert records["mase"].null_count() == records.height
+    for metric in metrics:
+        assert records[metric].is_finite().all()
+
+
+@pytest.mark.parametrize("undefined", ["zero_actuals", "supplementary_mase"])
+def test_strict_backtest_preserves_legitimately_undefined_scores(client, undefined):
+    config = _config()
+    config["forecast"]["forecasters"] = ["naive_seasonal"]
+    config["backtest"] = {"n_folds": 2, "val_periods": 8, "gap_periods": 0}
+    config["metrics"] = ["wmape", "normalized_bias", "mae", "rmse", "mase"]
+    config["post_validation"] = {"enabled": True, "halt_on_blocker": True}
+    actuals = _actuals(104)
+    if undefined == "zero_actuals":
+        actuals = actuals.with_row_index().with_columns(
+            pl.when(pl.col("index") % 4 == 0).then(0.0).otherwise(pl.col("quantity")).alias("quantity"),
+        ).drop("index")
+    else:
+        actuals = actuals.with_columns(pl.lit(100.0).alias("quantity"))
+
+    response = _run(client, "backtest", config=config, actuals=actuals)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    store = RunStore(client.app.state.runs_dir)
+    records = store.frame("retail", body["run_id"], "metrics")
+    assert records.height == 16
+    if undefined == "zero_actuals":
+        assert records["wmape"].null_count() == records["normalized_bias"].null_count() == 4
+        volume = records["actual"].abs().sum()
+        absolute_error = (records["forecast"] - records["actual"]).abs().sum()
+        assert body["best_wmape"] == pytest.approx(absolute_error / volume)
+    else:
+        assert records["mase_scale"].null_count() == records["mase"].null_count() == 16
+        assert body["execution"]["config"]["primary_metric"] == "wmape"
+        assert body["best_wmape"] == 0
+        config["backtest"]["primary_metric"] = "mase"
+        rejected = _run(client, "backtest", config=config, actuals=actuals)
+        assert rejected.status_code == 500
+        assert rejected.json()["detail"]["outcome"] == "not_committed"
+        assert [run.run_id for run in store.list("retail", "backtest")] == [body["run_id"]]
 
 
 @pytest.mark.parametrize("horizon_key", ["horizon_periods", "horizon_weeks"])

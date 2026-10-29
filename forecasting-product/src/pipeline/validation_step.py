@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional
 import polars as pl
 
 from ..config.schema import PostValidationConfig
+from ..metrics.aggregation import OBSERVATION_KEYS
+from ..metrics.definitions import METRIC_DIRECTIONS, metric_expression, validate_metric_inputs
 from ..validation import (
     check_simpsons_multi_segment,
     format_confidence_badge,
@@ -39,6 +41,7 @@ def run_post_validation(
     *,
     id_col: str = "series_id",
     time_col: Optional[str] = None,
+    requested_metrics: Optional[List[str]] = None,
 ) -> dict:
     """Run 4-layer validation on pipeline output.
 
@@ -60,6 +63,11 @@ def run_post_validation(
     time_col
         Output time column. If None, detect ``target_week``, ``week``, or
         ``date``. ForecastPipeline supplies its configured time column.
+    requested_metrics
+        Backtest metrics selected for this run. Raw observations retain normal
+        completeness checks; derived scores are checked against their canonical
+        expressions, including mathematically undefined values. Standalone and
+        forecast validation retain the all-column default.
 
     Returns
     -------
@@ -90,8 +98,16 @@ def run_post_validation(
     # --- Layer 1: Structural checks ---
     structural_result = None
     if config.structural_checks:
-        structural_config = _build_structural_config(df, id_col, time_col)
+        structural_config = _build_structural_config(
+            df, id_col, time_col, requested_metrics=requested_metrics,
+        )
         structural_result = run_structural_checks(df, config=structural_config)
+        if requested_metrics is not None:
+            metric_result = _validate_backtest_metrics(df, requested_metrics)
+            structural_result["details"]["metric_values"] = metric_result
+            structural_result["checks_run"] += 1
+            structural_result["checks_passed" if metric_result["ok"] else "checks_failed"] += 1
+            structural_result["ok"] = structural_result["ok"] and metric_result["ok"]
         logger.info(
             "[%s] Structural: %d/%d checks passed",
             lob,
@@ -201,6 +217,8 @@ def _build_structural_config(
     df: pl.DataFrame,
     id_col: str = "series_id",
     time_col: Optional[str] = None,
+    *,
+    requested_metrics: Optional[List[str]] = None,
 ) -> dict:
     """Build structural check config from available columns."""
     config: Dict[str, Any] = {"min_rows": 1}
@@ -213,7 +231,88 @@ def _build_structural_config(
     if pk_candidates:
         config["primary_key"] = pk_candidates
 
+    if requested_metrics is not None:
+        keys = OBSERVATION_KEYS + ["model_id"]
+        keys += [col for col in ("grain_level", "channel") if col in df.columns]
+        config["expected_columns"] = keys + ["actual", "forecast"]
+        available_keys = [col for col in keys if col in df.columns]
+        if available_keys:
+            config["primary_key"] = available_keys
+        else:
+            config.pop("primary_key", None)
+        derived_columns = (METRIC_DIRECTIONS.keys() - {"macro_wmape"}) | {"mase_scale"}
+        config["required_columns"] = [
+            col for col in df.columns if col not in derived_columns
+        ]
+
     return config
+
+
+def _validate_backtest_metrics(df: pl.DataFrame, requested_metrics: List[str]) -> dict:
+    """Validate cached score values without replacing or dropping observations."""
+    issues: List[str] = []
+    checked: Dict[str, dict] = {}
+    missing_observations = {"actual", "forecast"} - set(df.columns)
+    if missing_observations:
+        issues.append(f"Missing observation columns: {sorted(missing_observations)}")
+    else:
+        try:
+            validate_metric_inputs(df["actual"], df["forecast"])
+        except ValueError as exc:
+            issues.append(str(exc))
+
+    scale_nulls = None
+    if "mase_scale" in df.columns:
+        scale = df["mase_scale"]
+        scale_nulls = scale.null_count()
+        defined_scale = scale.drop_nulls()
+        if len(defined_scale) and (
+            not scale.dtype.is_numeric()
+            or not (defined_scale.is_finite() & (defined_scale > 0)).all()
+        ):
+            issues.append("MASE scale must be null or finite and positive")
+
+    unknown_metrics = set(requested_metrics) - METRIC_DIRECTIONS.keys()
+    if unknown_metrics:
+        issues.append(f"Unknown requested metrics: {sorted(unknown_metrics)}")
+    if not missing_observations and not issues:
+        # Macro WMAPE has no per-observation cache; its population scorer owns it.
+        for name in sorted(METRIC_DIRECTIONS.keys() - {"macro_wmape"}):
+            requested = name in requested_metrics
+            if name not in df.columns:
+                if requested:
+                    issues.append(f"Missing requested metric column: {name}")
+                continue
+            observed = df[name]
+            if not requested and observed.null_count() == df.height:
+                continue
+            if name == "mase" and "mase_scale" not in df.columns:
+                issues.append("MASE requires its recorded training scale")
+                continue
+            expected = df.select(metric_expression(name, aggregate=False)).to_series()
+            defined = observed.drop_nulls()
+            numeric = observed.dtype.is_numeric() or observed.dtype == pl.Null
+            finite = numeric and (not len(defined) or defined.is_finite().all())
+            valid = (
+                finite
+                and expected.drop_nulls().is_finite().all()
+                and observed.eq_missing(expected).all()
+            )
+            checked[name] = {
+                "defined_rows": df.height - expected.null_count(),
+                "undefined_rows": expected.null_count(),
+                "ok": bool(valid),
+            }
+            if not valid:
+                issues.append(f"Metric {name} disagrees with its raw-observation definition")
+
+    return {
+        "ok": not issues,
+        "severity": "BLOCKER" if issues else "PASS",
+        "issues": issues,
+        "metrics": checked,
+        "nullable_mase_scale_rows": scale_nulls,
+    }
 
 
 def _build_logical_config(df: pl.DataFrame, time_col: Optional[str] = None) -> dict:
