@@ -252,6 +252,16 @@ guard on explicitly requested unsupported reconciliation.
 Validation scores refer to the input target after the explicitly configured
 non-learned series preparation, not retrospectively cleansed demand.
 
+Pre-training quality completeness uses the configured anchored `PeriodCalendar`
+and an inclusive global panel span. Observed cells are unique series/period keys,
+so duplicate rows do not inflate period coverage and zero demand is not a gap.
+Counts are signed before subtraction and aggregation; daily data cannot wrap an
+unsigned subtraction into billions of missing cells. The legacy `total_weeks`,
+`missing_week_pct` and per-series `n_weeks` names remain compatible but describe
+the configured periods, including month/quarter anchors. Warnings use period
+units. This diagnostic does not change rows, gap filling, drop policies,
+forecasts, or backtest scores.
+
 ### Backtest completeness and derived scores
 
 Backtest post-validation checks canonical observation keys and raw values
