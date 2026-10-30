@@ -1,5 +1,6 @@
 """Real ASGI regressions for planner intent and fail-closed config uploads."""
 
+import io
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -29,11 +30,11 @@ def _config() -> dict:
     }
 
 
-def _actuals() -> pl.DataFrame:
+def _actuals(n_weeks: int = 60) -> pl.DataFrame:
     return pl.DataFrame({
-        "series_id": ["sku"] * 60,
-        "week": [date(2024, 1, 1) + timedelta(weeks=i) for i in range(60)],
-        "quantity": [float(10 + i * 3) for i in range(60)],
+        "series_id": ["sku"] * n_weeks,
+        "week": [date(2024, 1, 1) + timedelta(weeks=i) for i in range(n_weeks)],
+        "quantity": [float(10 + i * 3) for i in range(n_weeks)],
     })
 
 
@@ -69,6 +70,153 @@ def _run(client, endpoint="forecast", *, config=None, raw_config=None, params=No
 
 def _snapshot(root: Path) -> dict:
     return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+
+
+def _parquet_bytes(actuals: pl.DataFrame) -> bytes:
+    buffer = io.BytesIO()
+    actuals.write_parquet(buffer)
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize("endpoint", ["/analyze", "/pipeline/backtest", "/pipeline/forecast"])
+@pytest.mark.parametrize(("filename", "content"), [
+    ("broken.csv", b'series_id,week,quantity\n"CORE_PRIVATE_PARSE_SENTINEL,2024-01-01,10\n'),
+    ("empty.csv", b""),
+    ("broken.parquet", b"CORE_PRIVATE_PARSE_SENTINEL"),
+    ("truncated.parquet", _parquet_bytes(_actuals())[:-8]),
+], ids=["malformed-csv", "empty-csv", "invalid-parquet", "truncated-parquet"])
+def test_core_upload_parse_errors_are_safe_readable_client_errors(client, endpoint, filename, content):
+    baseline = _run(client, config=_config())
+    assert baseline.status_code == 200
+    before = _snapshot(client.app.state.runs_dir)
+    origin = "http://localhost:3000"
+
+    response = client.post(
+        endpoint,
+        params={"lob": "retail", "lob_name": "retail"},
+        headers={"Origin": origin},
+        files={"file": (filename, content, "application/octet-stream")},
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.headers["access-control-allow-origin"] == origin
+    assert "Failed to read" in response.json()["detail"]
+    assert "CORE_PRIVATE_PARSE_SENTINEL" not in response.text
+    assert _snapshot(client.app.state.runs_dir) == before
+    assert client.get("/health").status_code == 200
+
+
+@pytest.mark.parametrize("endpoint", ["/analyze", "/pipeline/backtest", "/pipeline/forecast"])
+@pytest.mark.parametrize("format", ["csv", "parquet"])
+def test_core_upload_readers_preserve_valid_csv_and_parquet(client, endpoint, format):
+    actuals = _actuals(104)
+    content = actuals.write_csv().encode() if format == "csv" else _parquet_bytes(actuals)
+    response = client.post(
+        endpoint, params={"lob": "retail", "lob_name": "retail"},
+        headers={"Origin": "http://localhost:3000"},
+        files={"file": (f"actuals.{format}", content, "application/octet-stream")},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    body = response.json()
+    if endpoint == "/analyze":
+        assert body["n_rows"] == 104
+        assert body["n_series"] == 1
+        assert body["frequency"] == "W"
+    else:
+        assert body["status"] == "completed"
+        store = RunStore(client.app.state.runs_dir)
+        assert store.frame("retail", body["run_id"], "input").equals(actuals)
+        kind = "metrics" if endpoint.endswith("backtest") else "forecast"
+        assert store.frame("retail", body["run_id"], kind).height == 39
+
+
+@pytest.mark.parametrize("endpoint", ["/analyze", "/pipeline/backtest", "/pipeline/forecast"])
+def test_unexpected_core_reader_errors_are_not_relabelled_invalid_uploads(client, monkeypatch, endpoint):
+    baseline = _run(client, config=_config())
+    assert baseline.status_code == 200
+    before = _snapshot(client.app.state.runs_dir)
+
+    def broken_reader(*args, **kwargs):
+        raise RuntimeError("unexpected reader failure")
+
+    monkeypatch.setattr(pl, "read_csv", broken_reader)
+    response = client.post(
+        endpoint, params={"lob": "retail", "lob_name": "retail"},
+        files={"file": ("actuals.csv", b"series_id,week,quantity\nA,2024-01-01,10\n", "text/csv")},
+    )
+
+    assert response.status_code == 500
+    assert _snapshot(client.app.state.runs_dir) == before
+
+
+@pytest.mark.parametrize("endpoint", ["/analyze", "/pipeline/backtest", "/pipeline/forecast"])
+@pytest.mark.parametrize("error_type", [RuntimeError, ValueError, pl.exceptions.ComputeError])
+def test_unexpected_processing_errors_after_read_are_not_relabelled_uploads(client, monkeypatch, endpoint, error_type):
+    baseline = _run(client, config=_config())
+    assert baseline.status_code == 200
+    before = _snapshot(client.app.state.runs_dir)
+    target = {
+        "/analyze": "src.analytics.analyzer.DataAnalyzer.analyze",
+        "/pipeline/backtest": "src.pipeline.backtest.BacktestPipeline.run",
+        "/pipeline/forecast": "src.pipeline.forecast.ForecastPipeline.run",
+    }[endpoint]
+
+    def broken_processing(*args, **kwargs):
+        raise error_type("unexpected processing failure")
+
+    monkeypatch.setattr(target, broken_processing)
+    response = client.post(
+        endpoint, params={"lob": "retail", "lob_name": "retail"},
+        files={"file": ("actuals.csv", _actuals().write_csv().encode(), "text/csv")},
+    )
+
+    assert response.status_code == 500
+    assert "Failed to read" not in response.text
+    assert _snapshot(client.app.state.runs_dir) == before
+
+
+@pytest.mark.parametrize("format", ["csv", "parquet"])
+def test_analyze_rejects_missing_numeric_target_before_profile(client, format):
+    baseline = _run(client, config=_config())
+    assert baseline.status_code == 200
+    before = _snapshot(client.app.state.runs_dir)
+    actuals = _actuals(104).drop("quantity")
+    content = actuals.write_csv().encode() if format == "csv" else _parquet_bytes(actuals)
+
+    response = client.post(
+        "/analyze", params={"lob_name": "retail"},
+        headers={"Origin": "http://localhost:3000"},
+        files={"file": (f"missing-target.{format}", content, "application/octet-stream")},
+    )
+
+    assert response.status_code == 400, response.text
+    assert "numeric target column" in response.json()["detail"]
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert "recommended_config_yaml" not in response.json()
+    assert _snapshot(client.app.state.runs_dir) == before
+
+
+@pytest.mark.parametrize("format", ["csv", "parquet"])
+def test_analyze_rejects_missing_time_before_profile(client, format):
+    baseline = _run(client, config=_config())
+    assert baseline.status_code == 200
+    before = _snapshot(client.app.state.runs_dir)
+    actuals = _actuals(104).drop("week")
+    content = actuals.write_csv().encode() if format == "csv" else _parquet_bytes(actuals)
+
+    response = client.post(
+        "/analyze", params={"lob_name": "retail"},
+        headers={"Origin": "http://localhost:3000"},
+        files={"file": (f"missing-time.{format}", content, "application/octet-stream")},
+    )
+
+    assert response.status_code == 400
+    assert "time/date column" in response.json()["detail"]
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert "recommended_config_yaml" not in response.json()
+    assert _snapshot(client.app.state.runs_dir) == before
 
 
 def test_backtest_winner_and_five_period_plan_are_preserved(client):
@@ -111,6 +259,72 @@ def test_backtest_winner_and_five_period_plan_are_preserved(client):
     assert body["run_id"] != backtest.json()["run_id"]
     assert manifest.champion_model_id == winner
     assert manifest.forecast_horizon == 5
+
+
+@pytest.mark.parametrize("metrics", [
+    ["wmape", "normalized_bias"],
+    ["wmape", "normalized_bias", "mae", "rmse"],
+])
+def test_strict_backtest_preserves_unrequested_metric_placeholders(client, metrics):
+    config = _config()
+    config["forecast"]["forecasters"] = ["naive_seasonal"]
+    config["backtest"] = {"n_folds": 2, "val_periods": 8, "gap_periods": 0}
+    config["metrics"] = metrics
+    config["post_validation"] = {"enabled": True, "halt_on_blocker": True}
+
+    response = _run(client, "backtest", config=config, actuals=_actuals(104))
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "completed"
+    assert body["champion_model"] == "naive_seasonal"
+    assert body["execution"]["config"]["post_validation_enabled"] is True
+    assert body["execution"]["config"]["halt_on_blocker"] is True
+    store = RunStore(client.app.state.runs_dir)
+    records = store.frame("retail", body["run_id"], "metrics")
+    assert records.height == 16
+    assert records["mape"].null_count() == records.height
+    assert records["mase"].null_count() == records.height
+    for metric in metrics:
+        assert records[metric].is_finite().all()
+
+
+@pytest.mark.parametrize("undefined", ["zero_actuals", "supplementary_mase"])
+def test_strict_backtest_preserves_legitimately_undefined_scores(client, undefined):
+    config = _config()
+    config["forecast"]["forecasters"] = ["naive_seasonal"]
+    config["backtest"] = {"n_folds": 2, "val_periods": 8, "gap_periods": 0}
+    config["metrics"] = ["wmape", "normalized_bias", "mae", "rmse", "mase"]
+    config["post_validation"] = {"enabled": True, "halt_on_blocker": True}
+    actuals = _actuals(104)
+    if undefined == "zero_actuals":
+        actuals = actuals.with_row_index().with_columns(
+            pl.when(pl.col("index") % 4 == 0).then(0.0).otherwise(pl.col("quantity")).alias("quantity"),
+        ).drop("index")
+    else:
+        actuals = actuals.with_columns(pl.lit(100.0).alias("quantity"))
+
+    response = _run(client, "backtest", config=config, actuals=actuals)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    store = RunStore(client.app.state.runs_dir)
+    records = store.frame("retail", body["run_id"], "metrics")
+    assert records.height == 16
+    if undefined == "zero_actuals":
+        assert records["wmape"].null_count() == records["normalized_bias"].null_count() == 4
+        volume = records["actual"].abs().sum()
+        absolute_error = (records["forecast"] - records["actual"]).abs().sum()
+        assert body["best_wmape"] == pytest.approx(absolute_error / volume)
+    else:
+        assert records["mase_scale"].null_count() == records["mase"].null_count() == 16
+        assert body["execution"]["config"]["primary_metric"] == "wmape"
+        assert body["best_wmape"] == 0
+        config["backtest"]["primary_metric"] = "mase"
+        rejected = _run(client, "backtest", config=config, actuals=actuals)
+        assert rejected.status_code == 500
+        assert rejected.json()["detail"]["outcome"] == "not_committed"
+        assert [run.run_id for run in store.list("retail", "backtest")] == [body["run_id"]]
 
 
 @pytest.mark.parametrize("horizon_key", ["horizon_periods", "horizon_weeks"])

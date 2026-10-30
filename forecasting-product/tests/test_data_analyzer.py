@@ -1,15 +1,20 @@
 """Tests for DataAnalyzer — schema detection, hierarchy, hypotheses, config recommendation."""
 
 import unittest
-from datetime import date, timedelta
+from dataclasses import asdict
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 
 import numpy as np
 import polars as pl
-
-from src.analytics.analyzer import DataAnalyzer, SchemaDetection, HierarchyDetection
-from src.config.schema import PlatformConfig
-
 import pytest
+import yaml
+from src.analytics.analyzer import DataAnalyzer, HierarchyDetection, SchemaDetection
+from src.backtesting.scoring import require_fold_local_preprocessing
+from src.config.loader import parse_config_yaml
+from src.config.schema import PlatformConfig
+from src.pipeline.forecast import ForecastPipeline
+from src.pipeline.run_store import RunStore
 
 pytestmark = pytest.mark.unit
 
@@ -128,9 +133,65 @@ def _make_short_data(n_series=3, n_weeks=20, seed=42):
     return pl.DataFrame(rows)
 
 
+def _make_nonfixed_hierarchy():
+    return _make_flat_data(n_series=8, n_weeks=104).with_columns(
+        (pl.col("series_id").str.extract(r"(\d+)").cast(pl.Int64) // 2)
+        .cast(pl.String).alias("category"),
+    )
+
+
 # --------------------------------------------------------------------------- #
 #  Tests: Schema Detection
 # --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("nonnumeric_target", [False, True])
+def test_schema_detection_requires_a_numeric_target(nonnumeric_target):
+    actuals = _make_flat_data(n_series=2, n_weeks=52).drop("quantity")
+    if nonnumeric_target:
+        actuals = actuals.with_columns(pl.lit("missing").alias("quantity"))
+    with pytest.raises(ValueError, match="numeric target column"):
+        DataAnalyzer().detect_schema(actuals)
+
+
+@pytest.mark.parametrize("values", [
+    [10, 20], [10.5, 20.25], [Decimal("10.50"), Decimal("20.25")],
+])
+def test_schema_detection_preserves_numeric_target_types(values):
+    actuals = pl.DataFrame({
+        "series_id": ["A", "B"],
+        "week": [date(2024, 1, 1), date(2024, 1, 1)],
+        "quantity": values,
+    })
+    assert DataAnalyzer().detect_schema(actuals).target_column == "quantity"
+
+
+def test_schema_detection_requires_a_time_column():
+    actuals = _make_flat_data(n_series=2, n_weeks=52).drop("week")
+    with pytest.raises(ValueError, match="time/date column"):
+        DataAnalyzer().detect_schema(actuals)
+
+
+@pytest.mark.parametrize(("column", "values"), [
+    ("week", ["2024-01-01", "2024-01-08"]),
+    ("observed_at", ["2024-01-01", "2024-01-08"]),
+    ("observed_at", [date(2024, 1, 1), date(2024, 1, 8)]),
+    ("observed_at", [datetime(2024, 1, 1), datetime(2024, 1, 8)]),
+])
+def test_schema_detection_preserves_date_type_name_and_parse_heuristics(column, values):
+    actuals = pl.DataFrame({"series_id": ["A", "A"], column: values, "quantity": [10.0, 20.0]})
+    assert DataAnalyzer().detect_schema(actuals).time_column == column
+
+
+def test_unexpected_time_candidate_parser_fault_is_not_input_admission(monkeypatch):
+    actuals = pl.DataFrame({"series_id": ["A", "B"], "quantity": [10.0, 20.0]})
+
+    def broken_parser(*args, **kwargs):
+        raise RuntimeError("unexpected time parser failure")
+
+    monkeypatch.setattr(type(actuals["series_id"].str), "to_date", broken_parser)
+    with pytest.raises(RuntimeError, match="unexpected time parser"):
+        DataAnalyzer().detect_schema(actuals)
+
 
 class TestSchemaDetection(unittest.TestCase):
     def setUp(self):
@@ -233,6 +294,60 @@ class TestHierarchyDetection(unittest.TestCase):
 # --------------------------------------------------------------------------- #
 #  Tests: Config Recommendation
 # --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("kind", ["flat", "sparse", "hierarchical", "nonfixed_hierarchical"])
+def test_recommended_plan_and_yaml_roundtrip_are_backtest_compatible(kind):
+    actuals = {
+        "flat": lambda: _make_flat_data(n_series=2, n_weeks=104),
+        "sparse": lambda: _make_sparse_data(n_series=2, n_weeks=104, demand_prob=0.2),
+        "hierarchical": lambda: _make_data_with_known_hierarchy(n_weeks=104),
+        "nonfixed_hierarchical": _make_nonfixed_hierarchy,
+    }[kind]()
+    report = DataAnalyzer(lob_name="retail").analyze(actuals)
+    generated = report.recommended_config
+    roundtrip = parse_config_yaml(yaml.safe_dump(asdict(generated)))
+
+    for config in (generated, roundtrip):
+        require_fold_local_preprocessing(config)
+        assert config.data_quality.cleansing.enabled is False
+        assert config.data_quality.structural_breaks.enabled is False
+        assert config.forecast.external_regressors.screen.enabled is False
+        assert config.reconciliation.method == "bottom_up"
+    assert any("fold-local" in item for item in report.config_reasoning)
+
+    generated.data_quality.cleansing.enabled = True
+    with pytest.raises(ValueError, match="data_quality.cleansing"):
+        require_fold_local_preprocessing(generated)
+    generated.data_quality.cleansing.enabled = False
+    generated.data_quality.structural_breaks.enabled = True
+    with pytest.raises(ValueError, match="data_quality.structural_breaks"):
+        require_fold_local_preprocessing(generated)
+
+
+def test_generated_nonfixed_hierarchy_publishes_supported_leaf_forecast(tmp_path):
+    actuals = _make_nonfixed_hierarchy()
+    config = DataAnalyzer(lob_name="retail").analyze(actuals).recommended_config
+    config.output.runs_path = str(tmp_path / "runs")
+    config.output.forecast_path = str(tmp_path / "forecasts")
+    config.output.metrics_path = str(tmp_path / "metrics")
+    assert len(config.get_reconcilable_hierarchies()) == 1
+    pipeline = ForecastPipeline(config)
+
+    forecast = pipeline.run(actuals, champion_model=config.forecast.forecasters[0])
+
+    assert forecast.height == 8 * 25
+    assert forecast["series_id"].n_unique() == 8
+    assert forecast.select("series_id", "week").is_duplicated().sum() == 0
+    store = RunStore(config.output.runs_path)
+    assert pipeline.last_run is not None
+    original_id = pipeline.last_run.run_id
+    assert store.frame("retail", original_id, "forecast").equals(forecast)
+    config.reconciliation.method = "middle_out"
+    with pytest.raises(ValueError, match="supports bottom_up reconciliation only"):
+        pipeline.run(actuals)
+    assert [run.run_id for run in store.list("retail", "forecast")] == [original_id]
+    assert store.frame("retail", original_id, "forecast").equals(forecast)
+
 
 class TestConfigRecommendation(unittest.TestCase):
     def setUp(self):

@@ -143,7 +143,7 @@ forecasting-product/
 │   │   └── sku/            # SKU mapping, override management panels
 │   ├── src/hooks/          # React Query hooks + useAsyncOperation utility
 │   └── src/lib/            # API client, auth, types, constants
-├── tests/                  # 2939 unit + integration cases
+├── tests/                  # 3047 unit + integration cases
 ├── configs/                # YAML configuration files
 ├── scripts/                # Entry points (run_backtest, run_forecast, serve, spark_*)
 ├── notebooks/              # Jupyter notebooks for exploration
@@ -425,6 +425,8 @@ timestamps fail explicitly. No stored run is changed. See the
 | Class | Description |
 |-------|-------------|
 | `DataAnalyzer` | Orchestrates automated data profiling: schema detection, hierarchy detection, forecastability assessment, data quality profiling, and `PlatformConfig` recommendation |
+| `MissingNumericTargetError` | Rejects analysis without a numeric demand column distinct from time; the analysis API returns HTTP 400 instead of profiling dates or text as demand |
+| `MissingTimeColumnError` | Rejects analysis without a recognized time/date column instead of substituting an arbitrary identifier as time |
 | `ForecastabilityAnalyzer` | Per-series statistical signals: CV, approximate entropy (ApEn), spectral entropy, SNR, trend/seasonal strength; produces a forecastability score per series |
 | `CausalAnalyzer` | Econometric analysis: price elasticity estimation (detrended/deseasonalized), cannibalization detection (cross-correlation), promotional lift (before/after comparison) |
 | `LLMAnalyzer` | Sends analysis reports to Claude for plain-language interpretation: key findings, hypotheses, model selection rationale, risk identification; gracefully degrades when `ANTHROPIC_API_KEY` is unset |
@@ -1024,7 +1026,7 @@ POLARS_MAX_THREADS=2 OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   MKL_NUM_THREADS=1 NUMBA_NUM_THREADS=1 \
   python -m pytest -v --timeout=180 --timeout-method=thread \
     -o faulthandler_timeout=60
-# 2939 cases across 82 test modules; no test module exclusions
+# 3047 cases across 82 test modules; no test module exclusions
 # Use the matching py311/py313 profile with those interpreters; no module exclusions.
 ```
 
@@ -1063,7 +1065,8 @@ only mocked chart component tests.
 | `test_platform.py` | 85 | Config, hierarchy, reconciliation, metrics, transitions, registry, backtest, REST API, deployment, drift |
 | `test_dependency_profiles.py` | 30 | Profile locks/hashes, CPU-only boundaries, audited closure/marker coverage, release policy, stale/tampered exports and native capture/reference wiring |
 | `test_m5_baseline.py` | 67 | Original empirical thresholds, complete observations, profile compatibility and audit-bound initial reference integrity |
-| `test_forecast_intent.py` | 113 | Real ASGI champion/horizon/config handoff, aliases, safe execution settings, invalid-input no-publication guarantees |
+| `test_forecast_intent.py` | 151 | Real ASGI intent, strict derived-score validation, CSV/Parquet admission, safe parse errors, and invalid-input no-publication guarantees |
+| `test_forecast_validation.py` | 100 | Publication guards, raw-key completeness, canonical score definedness, nullable MASE scale, and corruption/exception controls |
 | `test_forecast_explainability.py` | 59 | Comparator, ExceptionEngine, Explainer (moving average + fitted SHAP + narrative), ModelCard, Registry, DriftDetector, Lineage |
 | `test_decomposition_api_contracts.py` | 217 | Authenticated canonical/alias provenance, prepared history, legacy/custom upload columns, exact CSV/Parquet keys, derived window admission, finite full-frame coverage and independent component oracle |
 | `test_intermittent_demand.py` | 55 | SparseDetector, Croston, CrostonSBA, TSB, backtest routing |
@@ -1071,7 +1074,7 @@ only mocked chart component tests.
 | `test_planning_api_contracts.py` | 116 | Real authenticated hierarchy uploads, independent matrix/parent oracles, full-frame checks, timestamp identity and unchanged run artifacts |
 | `test_foundation_models.py` | 41 | Chronos, TimeGPT fit/predict/quantiles, error handling, zero-shot property |
 | `test_nixtla_models.py` | 29 | AutoTheta, MSTL extended statsforecast models |
-| `test_data_analyzer.py` | 29 | Data analysis module |
+| `test_data_analyzer.py` | 45 | Schema-role admission, valid numeric/date detection, generated-plan compatibility, and supported leaf publication |
 | `test_forecastability.py` | 28 | Forecastability signals and scoring |
 | `test_frequency_profiles.py` | 25 | Multi-frequency support: FREQUENCY_PROFILES, helpers, config properties, model frequency wiring |
 | `test_causal_analyzer.py` | 27 | Causal/econometric analysis |
@@ -1080,7 +1083,7 @@ only mocked chart component tests.
 | `test_data_validator.py` | 24 | Schema checks, duplicates, frequency, value range, completeness, builder integration |
 | `test_calibration.py` | 20 | Interval calibration and coverage |
 | `test_llm_analyzer.py` | 20 | LLM-based analysis integration |
-| `test_quality_report.py` | 19 | Data quality reporting |
+| `test_quality_report.py` | 29 | Anchored D/W/M/Q completeness, signed counts, real gaps/duplicates, truthful units, and unchanged pipeline values |
 | `test_hierarchical_forecaster.py` | 17 | Hierarchical forecaster with reconciliation |
 | `test_constrained_demand.py` | 128 | Exact proportional/largest-first allocation, feasible floors/caps, full populations, refits, bounded quantiles |
 | `test_constraint_api_contracts.py` | 104 | Real JWT/API/helper/wrapper and stitched-pipeline parity, full-population diagnostics, precise keys/metadata, errors, immutable publication |

@@ -498,7 +498,11 @@ def create_app(
         import polars as pl
         import yaml
 
-        from ..analytics.analyzer import DataAnalyzer
+        from ..analytics.analyzer import (
+            DataAnalyzer,
+            MissingNumericTargetError,
+            MissingTimeColumnError,
+        )
         from ..analytics.llm_analyzer import LLMAnalyzer
 
         # Read uploaded file with size limit
@@ -511,6 +515,11 @@ def create_app(
             else:
                 # Default to CSV
                 df = pl.read_csv(io.BytesIO(content), try_parse_dates=True)
+        except (pl.exceptions.ComputeError, pl.exceptions.NoDataError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to read uploaded file: invalid CSV or Parquet data. Check the file format and encoding.",
+            ) from exc
         except (ValueError, UnicodeDecodeError, OSError) as exc:
             raise HTTPException(
                 status_code=400,
@@ -522,7 +531,10 @@ def create_app(
 
         # Run analysis
         analyzer = DataAnalyzer(lob_name=lob_name)
-        report = analyzer.analyze(df)
+        try:
+            report = analyzer.analyze(df)
+        except (MissingNumericTargetError, MissingTimeColumnError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         # LLM interpretation (optional)
         llm_narrative = None

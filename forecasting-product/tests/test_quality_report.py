@@ -4,7 +4,6 @@ from datetime import date, timedelta
 
 import polars as pl
 import pytest
-
 from src.config.schema import (
     DataQualityConfig,
     DataQualityReportConfig,
@@ -12,6 +11,8 @@ from src.config.schema import (
     PlatformConfig,
 )
 from src.data.quality_report import DataQualityAnalyzer, DataQualityReport
+from src.pipeline.backtest import BacktestPipeline
+from src.pipeline.forecast import ForecastPipeline
 
 pytestmark = pytest.mark.unit
 
@@ -107,6 +108,143 @@ def _make_zero_series(n_weeks: int = 104) -> pl.DataFrame:
         "week": [start + timedelta(weeks=w) for w in range(n_weeks)],
         "quantity": [0.0] * n_weeks,
     })
+
+
+@pytest.mark.parametrize(("frequency", "labels"), [
+    ("D", ["2024-02-27", "2024-02-28", "2024-02-29", "2024-03-01"]),
+    ("W", ["2024-02-26", "2024-03-04", "2024-03-11", "2024-03-18"]),
+    ("M", ["2024-01-01", "2024-02-01", "2024-03-01", "2024-04-01"]),
+    ("M", ["2024-01-31", "2024-02-29", "2024-03-31", "2024-04-30"]),
+    ("Q", ["2024-02-01", "2024-05-01", "2024-08-01", "2024-11-01"]),
+    ("Q", ["2023-10-31", "2024-01-31", "2024-04-30", "2024-07-31"]),
+])
+def test_completeness_uses_configured_calendar_and_unique_cells(frequency, labels):
+    dates = [date.fromisoformat(label) for label in labels]
+    panel = pl.DataFrame({
+        "series_id": ["A"] * 4 + ["B"] * 4,
+        "week": dates + dates,
+        "quantity": [10.0] * 8,
+    })
+    config = _make_config(min_weeks=1)
+    config.forecast.frequency = frequency
+    analyzer = DataQualityAnalyzer(config)
+    gapped = panel.filter(~((pl.col("series_id") == "B") & (pl.col("week") == dates[1])))
+    for frame, missing in ((panel, 0), (gapped, 1), (pl.concat([gapped, panel.head(1)]), 1)):
+        before = frame.clone()
+        report = analyzer.analyze(frame, "week", "quantity", "series_id")
+        assert report.total_rows == frame.height
+        assert report.total_weeks == 4
+        assert report.missing_week_pct == pytest.approx(missing / 8 * 100)
+        assert report.series_with_gaps == missing
+        assert report.per_series is not None
+        rows = {row["series_id"]: row for row in report.per_series.to_dicts()}
+        assert rows["A"]["n_weeks"] == 4
+        assert rows["A"]["missing_pct"] == 0
+        assert rows["B"]["n_weeks"] == 4 - missing
+        assert rows["B"]["missing_pct"] == pytest.approx(missing / 4 * 100)
+        assert frame.equals(before)
+
+
+def _daily_panel() -> pl.DataFrame:
+    return pl.DataFrame([
+        {
+            "series_id": f"DAILY_{'A' if series == 0 else 'B'}",
+            "date": date(2025, 1, 1) + timedelta(days=index),
+            "quantity": 0.0 if index in (160, 190) else float(
+                100 + 2 * index + 5 * (index % 4) if series == 0
+                else 40 + index + 2 * (index % 4)
+            ),
+        }
+        for series in range(2) for index in range(208)
+    ])
+
+
+def test_daily_complete_grid_and_one_missing_cell_have_exact_gap_rates():
+    config = _make_config(min_weeks=1)
+    config.forecast.frequency = "D"
+    panel = _daily_panel()
+    analyzer = DataQualityAnalyzer(config)
+    complete: DataQualityReport = analyzer.analyze(panel, "date", "quantity", "series_id")
+    assert complete.total_weeks == 208
+    assert complete.total_rows == 416
+    assert complete.missing_week_pct == 0
+    assert complete.series_with_gaps == 0
+    assert complete.per_series is not None
+    assert complete.per_series.schema["n_weeks"] == pl.Int64
+    assert complete.zero_inflation_rate == pytest.approx(4 / 416 * 100)
+    assert not any("gap rate" in warning for warning in complete.warnings)
+    gapped = analyzer.analyze(panel.slice(1), "date", "quantity", "series_id")
+    assert gapped.total_weeks == 208
+    assert gapped.missing_week_pct == pytest.approx(1 / 416 * 100)
+    assert gapped.series_with_gaps == 1
+    assert gapped.per_series is not None
+    detail = gapped.per_series.filter(pl.col("series_id") == "DAILY_A").to_dicts()[0]
+    assert detail["missing_pct"] == pytest.approx(1 / 208 * 100)
+
+
+def test_quality_warning_units_are_periods():
+    config = _make_config(min_weeks=3)
+    config.forecast.frequency = "D"
+    frame = pl.DataFrame({
+        "series_id": ["A"] * 4 + ["B"],
+        "date": [date(2024, 1, day) for day in (1, 2, 3, 4, 1)],
+        "quantity": [10.0] * 5,
+    })
+    report = DataQualityAnalyzer(config).analyze(frame, "date", "quantity", "series_id")
+    assert report.missing_week_pct == 37.5
+    assert report.short_series_count == 1
+    assert any("period cells" in warning for warning in report.warnings)
+    assert any("3 periods" in warning for warning in report.warnings)
+    assert not any("weeks" in warning for warning in report.warnings)
+
+
+def test_off_grid_quality_input_is_not_reported_as_healthy():
+    config = _make_config(min_weeks=1)
+    frame = pl.DataFrame({
+        "series_id": ["A"] * 3,
+        "week": [date(2024, 1, day) for day in (1, 2, 8)],
+        "quantity": [10.0] * 3,
+    })
+    with pytest.raises(ValueError, match="calendar"):
+        DataQualityAnalyzer(config).analyze(frame, "week", "quantity", "series_id")
+
+
+def test_daily_pipeline_report_does_not_change_forecasts_or_backtest_values(tmp_path, caplog):
+    config = _make_config(min_weeks=1)
+    config.forecast.frequency = "D"
+    config.forecast.time_column = "date"
+    config.forecast.horizon_weeks = 51
+    config.backtest.n_folds = 2
+    config.backtest.val_weeks = 51
+    config.backtest.champion_granularity = "series"
+    config.parallelism.n_workers = 1
+    config.output.runs_path = str(tmp_path / "runs")
+    config.output.forecast_path = str(tmp_path / "forecasts")
+    config.output.metrics_path = str(tmp_path / "metrics")
+    panel = _daily_panel()
+    pipeline = ForecastPipeline(config)
+    forecast = pipeline.run(panel)
+    report = pipeline._series_builder._last_quality_report
+    assert report is not None
+    assert report.total_weeks == 208
+    assert report.missing_week_pct == 0
+    assert report.series_with_gaps == 0
+    assert forecast.height == 102
+    assert forecast["forecast"].sum() == 38946
+    assert forecast["date"].min() == date(2025, 7, 28)
+    assert forecast["date"].max() == date(2025, 9, 16)
+    backtest = BacktestPipeline(config).run(panel)
+    assert backtest["data_quality_report"].missing_week_pct == 0
+    records = backtest["backtest_results"]
+    assert records.height == 204
+    assert (records["forecast"] - records["actual"]).abs().sum() == 10024
+    assert records["actual"].abs().sum() == 61910
+    assert not any("High gap rate" in record.message for record in caplog.records)
+    config.data_quality.report.enabled = False
+    assert ForecastPipeline(config).run(panel).equals(forecast)
+    control = BacktestPipeline(config).run(panel)["backtest_results"]
+    columns = ["series_id", "target_week", "model_id", "fold", "forecast_step", "actual", "forecast", "wmape", "normalized_bias", "mase_scale"]
+    assert control.select(columns).equals(records.select(columns))
 
 
 # --------------------------------------------------------------------------- #

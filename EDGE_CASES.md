@@ -322,6 +322,15 @@ against fresh training on the same fold, including non-null interval checks.
 
 **What to watch for:** `halt_on_blocker` defaults to false, and `min_grade` is warning-only. Set `halt_on_blocker: true` for blocking quality checks; `post_validation.enabled: false` is an explicit opt-out. Forecast keys use both the configured series ID and period, not just the series ID. Local filesystem failures have the separate pre/post-commit contract below; managed Spark/Fabric pipelines do not inherit local bundle atomicity.
 
+For backtests, intentionally null unrequested score columns and mathematically
+undefined derived values are not incomplete raw observations. The backtest
+adapter checks score values and their definedness against the canonical metric
+expressions without filling or dropping rows. Nullable training-only MASE scales
+remain explicit; they do not become zero/perfect scores. Missing defined scores,
+fabricated values, nonfinite observations, damaged keys and unrelated null
+columns still fail strict validation. Generic and forecast validation are not
+made permissive by this backtest-specific context.
+
 ---
 
 ## 28. Invalid or Stale Forecast Plans
@@ -337,6 +346,17 @@ integers (HTTP 422). Valid explicit overrides take precedence over YAML, then
 platform defaults. The execution panel clears dependent results on input changes,
 ignores stale completions, and forwards only the current winner and horizon.
 Responses identify the resolved model, horizon, settings, and their sources.
+
+Malformed or empty CSV/Parquet uploads to analysis and core pipeline execution
+return an actionable HTTP 400 before processing or publication. Expected Polars
+parse failures do not escape as misleading browser connection errors, and their
+response does not echo uploaded cell contents. Unexpected reader/engine faults
+remain server failures; no empty-data or completed-run fallback is substituted.
+Valid-format inputs without a numeric demand or recognized time/date column are rejected by analysis
+with a specific HTTP 400 admission error before profiling or configuration
+generation. The detector does not substitute the last date/text column as demand
+or the first identifier column as time. Unrelated analyzer exceptions are not
+relabelled as input errors.
 
 **What to watch for:** An absent config means defaults; an empty/null uploaded
 document is invalid (use `{}` for defaults explicitly). Standalone forecasting

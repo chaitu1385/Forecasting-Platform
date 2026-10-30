@@ -259,6 +259,7 @@ class BacktestPipeline:
                     results_df=results,
                     config=self.config.post_validation,
                     lob=self.config.lob,
+                    requested_metrics=self.config.metrics,
                 )
             self._emitter.gauge("validation_score", float(validation_result.get("score", -1)))
 

@@ -254,6 +254,8 @@ jobs:
         run: >
           python -m pytest tests/test_authentication.py tests/test_auth_startup.py
           tests/test_docker_seed.py tests/test_planning_api_contracts.py
+          tests/test_forecast_validation.py tests/test_forecast_intent.py
+          tests/test_data_analyzer.py tests/test_quality_report.py
           tests/test_override_store.py
           tests/test_override_api_contracts.py tests/test_override_store_process.py
           tests/test_constrained_demand.py
@@ -283,10 +285,21 @@ jobs:
         working-directory: forecasting-product/frontend
         env:
           AUTH_E2E_ROOT: ${{ runner.temp }}/forecast-auth-browser
+          AUTH_E2E_SUITE: contracts
           AUTH_E2E_FRONTEND_MODE: production
           PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
           PLAYWRIGHT_JUNIT_OUTPUT_FILE: ${{ runner.temp }}/forecast-auth-browser-results.xml
         run: npm run test:auth-browser -- --reporter=line,junit --output="${{ runner.temp }}/forecast-auth-browser-output"
+      - name: Verify core journeys with a separate quota-respecting private fixture
+        if: runner.os == 'Linux' && matrix.runtime.profile == 'py312'
+        working-directory: forecasting-product/frontend
+        env:
+          AUTH_E2E_ROOT: ${{ runner.temp }}/forecast-core-browser
+          AUTH_E2E_SUITE: core
+          AUTH_E2E_FRONTEND_MODE: production
+          PLAYWRIGHT_CHROMIUM_EXECUTABLE: /usr/bin/google-chrome
+          PLAYWRIGHT_JUNIT_OUTPUT_FILE: ${{ runner.temp }}/forecast-core-browser-results.xml
+        run: npm run test:auth-browser -- --reporter=line,junit --output="${{ runner.temp }}/forecast-core-browser-output"
       - name: Verify explicit-demo browser login
         if: runner.os == 'Linux' && matrix.runtime.profile == 'py312'
         working-directory: forecasting-product/frontend
@@ -309,19 +322,25 @@ jobs:
             ${{ runner.temp }}/forecast-auth-browser-output/**/decomposition-evidence.json
             ${{ runner.temp }}/forecast-auth-browser-output/**/f8-integration-evidence.json
             ${{ runner.temp }}/forecast-auth-browser/override-contract-evidence.json
+            ${{ runner.temp }}/forecast-auth-browser/data/authentication-http-evidence.jsonl
+            ${{ runner.temp }}/forecast-core-browser-results.xml
+            ${{ runner.temp }}/forecast-core-browser-output/**/core-product-evidence.json
+            ${{ runner.temp }}/forecast-core-browser/data/authentication-http-evidence.jsonl
       - name: Remove only owned private browser credentials
         if: always() && runner.os == 'Linux' && matrix.runtime.profile == 'py312'
         env:
           AUTH_E2E_ROOT: ${{ runner.temp }}/forecast-auth-browser
+          CORE_E2E_ROOT: ${{ runner.temp }}/forecast-core-browser
         run: |
           python - <<'PY'
           import os
           from pathlib import Path
-          credentials = Path(os.environ["AUTH_E2E_ROOT"]) / "credentials"
-          for name in ("admin.jwt", "viewer.jwt", "signing-key"):
-              (credentials / name).unlink(missing_ok=True)
-          if credentials.exists():
-              credentials.rmdir()
+          for variable in ("AUTH_E2E_ROOT", "CORE_E2E_ROOT"):
+              credentials = Path(os.environ[variable]) / "credentials"
+              for name in ("admin.jwt", "viewer.jwt", "signing-key"):
+                  (credentials / name).unlink(missing_ok=True)
+              if credentials.exists():
+                  credentials.rmdir()
           PY
       - name: Upload native Windows profile evidence
         if: always() && runner.os == 'Windows'

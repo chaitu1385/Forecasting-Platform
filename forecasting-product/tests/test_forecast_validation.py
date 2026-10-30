@@ -19,6 +19,7 @@ from src.config.schema import (
     PostValidationConfig,
 )
 from src.forecasting.naive import SeasonalNaiveForecaster
+from src.metrics.aggregation import aggregate_metrics
 from src.pipeline.backtest import BacktestPipeline
 from src.pipeline.forecast import ForecastPipeline
 from src.pipeline.run_store import MANIFEST_NAME, RunStore, resolve_run_root
@@ -436,8 +437,6 @@ def test_standalone_validation_detects_forecast_period(time_col):
 def test_backtest_keeps_canonical_keys_for_custom_input_columns(tmp_path):
     config = _config(tmp_path, id_col="sku", time_col="period_end")
     config.backtest = BacktestConfig(n_folds=2, val_weeks=2)
-    # Unrequested metrics have null placeholders in the canonical metric schema.
-    config.post_validation.halt_on_blocker = False
     result = BacktestPipeline(config).run(_actuals(config))
 
     assert {"series_id", "target_week", "model_id", "fold"}.issubset(
@@ -446,6 +445,184 @@ def test_backtest_keeps_canonical_keys_for_custom_input_columns(tmp_path):
     validation = result["validation"]
     assert validation is not None
     assert validation["layers"]["structural"]["details"]["primary_key"]["ok"] is True
+    assert validation["confidence"]["caps_applied"].get("blocker_cap") is not True
+
+
+def _backtest_metric_records() -> pl.DataFrame:
+    return pl.DataFrame({
+        "run_id": ["a" * 32, "a" * 32],
+        "lob": ["validation", "validation"],
+        "series_id": ["A", "B"],
+        "target_week": [ORIGIN, ORIGIN],
+        "forecast_step": [1, 1],
+        "model_id": ["naive_seasonal", "naive_seasonal"],
+        "fold": [0, 0],
+        "actual": [100.0, 80.0],
+        "forecast": [95.0, 76.0],
+        "wmape": [0.05, 0.05],
+        "mape": [None, None],
+        "mase": [None, None],
+        "mase_scale": [None, None],
+    })
+
+
+def _metric_validation_config() -> PostValidationConfig:
+    return PostValidationConfig(
+        halt_on_blocker=True,
+        logical_checks=False,
+        business_rules_checks=False,
+        simpsons_paradox_checks=False,
+    )
+
+
+@pytest.mark.parametrize("bad_column", [
+    "run_id", "lob", "series_id", "target_week", "forecast_step", "model_id", "fold",
+    "actual", "forecast", "wmape",
+    "unexpected",
+])
+def test_backtest_completeness_still_blocks_required_or_unknown_nulls(bad_column):
+    records = _backtest_metric_records()
+    before = records.clone()
+    config = _metric_validation_config()
+    result = run_post_validation(
+        records, config, "validation", requested_metrics=["wmape"],
+    )
+    completeness = result["layers"]["structural"]["details"]["completeness"]
+    assert completeness["ok"] is True
+    assert "mape" not in {column["name"] for column in completeness["column_stats"]}
+    assert_frame_equal(records, before)
+
+    corrupted = records.with_columns(
+        pl.lit(None, dtype=records.schema.get(bad_column, pl.Float64)).alias(bad_column)
+    )
+    with pytest.raises(ValidationError, match="BLOCKER"):
+        run_post_validation(
+            corrupted, config, "validation", requested_metrics=["wmape"],
+        )
+
+
+@pytest.mark.parametrize("requested_metrics", [None, ["wmape", "mape"]])
+def test_selected_or_unspecified_metric_nulls_are_not_exempt(requested_metrics):
+    records = _backtest_metric_records()
+    with pytest.raises(ValidationError, match="BLOCKER"):
+        run_post_validation(
+            records, _metric_validation_config(), "validation",
+            requested_metrics=requested_metrics,
+        )
+
+
+def test_partially_populated_unrequested_score_remains_checked():
+    records = _backtest_metric_records().with_columns(pl.Series("mape", [0.05, None]))
+    with pytest.raises(ValidationError, match="BLOCKER"):
+        run_post_validation(
+            records, _metric_validation_config(), "validation",
+            requested_metrics=["wmape"],
+        )
+
+
+def test_requested_zero_actual_ratios_keep_undefined_rows_and_population_scores():
+    records = _backtest_metric_records().with_columns(
+        pl.Series("actual", [0.0, 10.0]),
+        pl.Series("forecast", [2.0, 8.0]),
+        pl.Series("wmape", [None, 0.2]),
+        pl.Series("normalized_bias", [None, -0.2]),
+        pl.Series("mape", [None, 0.2]),
+        pl.Series("mae", [2.0, 2.0]),
+        pl.Series("rmse", [2.0, 2.0]),
+    )
+    before = records.clone()
+    result = run_post_validation(
+        records, _metric_validation_config(), "validation",
+        requested_metrics=["wmape", "normalized_bias", "mape", "mae", "rmse", "mase"],
+    )
+    metric_checks = result["layers"]["structural"]["details"]["metric_values"]
+    assert metric_checks["ok"] is True
+    for metric in ("wmape", "normalized_bias", "mape"):
+        assert metric_checks["metrics"][metric] == {
+            "defined_rows": 1, "undefined_rows": 1, "ok": True,
+        }
+    assert metric_checks["metrics"]["mase"] == {
+        "defined_rows": 0, "undefined_rows": 2, "ok": True,
+    }
+    assert metric_checks["nullable_mase_scale_rows"] == 2
+    assert_frame_equal(records, before)
+    population = aggregate_metrics(records, ["wmape", "normalized_bias"])
+    assert population["wmape"].item() == pytest.approx(0.4)
+    assert population["normalized_bias"].item() == 0
+
+
+@pytest.mark.parametrize(("column", "value"), [
+    ("actual", float("nan")), ("forecast", float("inf")),
+    ("wmape", float("nan")), ("wmape", float("inf")), ("wmape", -0.05),
+    ("wmape", None), ("mase_scale", 0.0), ("mase_scale", -1.0),
+    ("mase_scale", float("nan")), ("mase_scale", float("inf")),
+])
+def test_backtest_metric_context_rejects_corrupt_values(column, value):
+    records = _backtest_metric_records()
+    values = records[column].to_list()
+    values[0] = value
+    records = records.with_columns(pl.Series(column, values, dtype=pl.Float64))
+    with pytest.raises(ValidationError, match="BLOCKER"):
+        run_post_validation(
+            records, _metric_validation_config(), "validation", requested_metrics=["wmape"],
+        )
+
+
+def test_backtest_metric_context_rejects_fabricated_definedness():
+    records = _backtest_metric_records().with_columns(
+        pl.Series("actual", [0.0, 80.0]), pl.Series("wmape", [0.0, 0.05]),
+    )
+    with pytest.raises(ValidationError, match="BLOCKER"):
+        run_post_validation(
+            records, _metric_validation_config(), "validation", requested_metrics=["wmape"],
+        )
+
+
+@pytest.mark.parametrize("missing", [
+    "run_id", "lob", "series_id", "target_week", "forecast_step", "model_id", "fold",
+    "actual", "forecast", "wmape",
+])
+def test_backtest_metric_context_rejects_missing_required_columns(missing):
+    with pytest.raises(ValidationError, match="BLOCKER"):
+        run_post_validation(
+            _backtest_metric_records().drop(missing), _metric_validation_config(), "validation",
+            requested_metrics=["wmape"],
+        )
+
+
+def test_requested_mase_requires_recorded_scale_column():
+    with pytest.raises(ValidationError, match="BLOCKER"):
+        run_post_validation(
+            _backtest_metric_records().drop("mase_scale"), _metric_validation_config(), "validation",
+            requested_metrics=["wmape", "mase"],
+        )
+
+
+def test_backtest_metric_context_rejects_all_missing_keys():
+    records = _backtest_metric_records().select("actual", "forecast", "wmape")
+    with pytest.raises(ValidationError, match="BLOCKER"):
+        run_post_validation(
+            records, _metric_validation_config(), "validation", requested_metrics=["wmape"],
+        )
+
+
+@pytest.mark.parametrize("column", ["actual", "forecast", "wmape", "mase_scale"])
+def test_backtest_metric_context_rejects_nonnumeric_values(column):
+    records = _backtest_metric_records().with_columns(pl.lit("invalid").alias(column))
+    with pytest.raises(ValidationError, match="BLOCKER"):
+        run_post_validation(
+            records, _metric_validation_config(), "validation", requested_metrics=["wmape"],
+        )
+
+
+@pytest.mark.parametrize("invalid", ["empty", "duplicate"])
+def test_backtest_metric_context_rejects_invalid_population(invalid):
+    records = _backtest_metric_records()
+    records = records.head(0) if invalid == "empty" else pl.concat([records, records.head(1)])
+    with pytest.raises(ValidationError, match="BLOCKER"):
+        run_post_validation(
+            records, _metric_validation_config(), "validation", requested_metrics=["wmape"],
+        )
 
 
 @pytest.mark.parametrize("key_columns", [["series_id"], ["series_id", "week"]])

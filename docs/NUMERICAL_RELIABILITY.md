@@ -240,8 +240,47 @@ Cleansing, structural-break fitting/truncation and enabled regressor screening
 are not yet fold-local. Backtesting rejects these enabled combinations before
 the whole-history series builder runs. Production forecasting retains these
 options. Defaults remain disabled and are not characterized as leaky.
+Onboarding recommendations also leave demand cleansing and structural-break
+fitting disabled, including for noisy data, so the generated YAML can enter the
+same backtest-to-forecast workflow. The UI explains that these optional settings
+need separate review for production-only forecasting. Explicit uploads enabling
+unsupported learned preprocessing still fail the existing backtest guard.
+Recommended reconciliation also stays `bottom_up`, matching the standard
+pipeline's leaf-only output while retaining detected hierarchy metadata.
+Generating a recommendation does not enable middle-out inference or relax the
+guard on explicitly requested unsupported reconciliation.
 Validation scores refer to the input target after the explicitly configured
 non-learned series preparation, not retrospectively cleansed demand.
+
+Pre-training quality completeness uses the configured anchored `PeriodCalendar`
+and an inclusive global panel span. Observed cells are unique series/period keys,
+so duplicate rows do not inflate period coverage and zero demand is not a gap.
+Counts are signed before subtraction and aggregation; daily data cannot wrap an
+unsigned subtraction into billions of missing cells. The legacy `total_weeks`,
+`missing_week_pct` and per-series `n_weeks` names remain compatible but describe
+the configured periods, including month/quarter anchors. Warnings use period
+units. This diagnostic does not change rows, gap filling, drop policies,
+forecasts, or backtest scores.
+
+### Backtest completeness and derived scores
+
+Backtest post-validation checks canonical observation keys and raw values
+separately from cached derived scores. Unrequested all-null score placeholders
+remain in the stored metric schema; they are not missing observations. Requested
+scores, and any populated supplementary score columns, must match the canonical
+per-observation expression, including its defined/undefined mask. Zero-actual
+ratios may therefore remain null while their complete population score is
+defined. A training-only MASE scale may be null; a non-null scale must be finite
+and positive.
+
+This adapter does not fill scores, remove observations, or change scoring
+formulas. Missing defined scores, fabricated values at undefined positions,
+nonfinite/corrupt values, missing or duplicate keys, and unrelated incomplete
+columns remain blockers. An undefined supplementary MASE is not a perfect score;
+an undefined primary criterion still prevents champion selection. Forecast and
+standalone validation without backtest metric context retain their previous
+all-column completeness behavior. `halt_on_blocker` and all thresholds are
+unchanged.
 
 ### Post-validation comparison applicability
 

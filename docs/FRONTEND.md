@@ -49,6 +49,13 @@ QueryProvider          -- TanStack React Query (staleTime: 5min, retry: 1)
 | `/sop` | S&OP Meeting | AI commentary, model cards, lineage, BI export |
 | `/health` | Platform Health | Drift monitoring, alert triage, audit log, cost tracking |
 
+The S&OP summary cards are labelled **Illustrative demo metrics** and appear only
+in the server-verified explicit demo mode. Their sample values and trends are not
+run measurements. Production and unresolved authentication modes instead explain
+that these summary metrics are not connected and link to **Backtest Results** for
+stored scores and their competition scope. Governance and BI export actions
+remain available under their existing permissions.
+
 ### Hierarchy reconciliation
 
 `/hierarchy` accepts CSV/Parquet and uses the last declared hierarchy level as
@@ -209,6 +216,22 @@ Focused editor, late-response, session and typed-client cases live in
 
 ### Pipeline Intent
 
+Analysis requires a recognized time/date column and a distinct numeric demand
+candidate. Missing roles return specific HTTP 400 admission errors before a
+profile or ready YAML is produced, rather than substituting the first/last column.
+Malformed or empty CSV/Parquet input is also a readable 400; unexpected
+reader/analyzer faults are not disguised as invalid uploads.
+
+The onboarding recommendation leaves demand cleansing and structural-break
+fitting disabled because those learned transforms are not yet fold-local.
+Its reasoning explains this choice even when noisy data is detected. Downloading
+and re-uploading that YAML preserves the same executable plan; an explicit
+user-supplied unsupported preprocessing setting is still rejected, not silently
+disabled by the UI or API. Recommended reconciliation is `bottom_up`, including
+for detected multi-level hierarchies: the standard forecast pipeline publishes
+leaf forecasts, not independent upper-level forecasts. Detection metadata is
+retained, and explicit unsupported reconciliation settings still fail.
+
 `PipelineExecutionPanel` sends the current backtest's `champion_model` and
 `execution.horizon_periods` with the same YAML to `api.runForecast`. Without a
 backtest it omits these overrides, allowing the API to resolve the first configured
@@ -333,7 +356,13 @@ production ignores; demo refuses bearer credentials.
 separate `npm run test:auth-browser` check requires `AUTH_E2E_ROOT` to be a fresh
 absolute temporary directory outside the repository. It starts only isolated
 loopback servers, creates private synthetic credentials, and verifies real
-production API/browser behavior. Use `AUTH_E2E_PYTHON` and
+production API/browser behavior. `AUTH_E2E_SUITE=contracts` (the default) selects
+the eight existing contracts; `AUTH_E2E_SUITE=core` selects the four core journeys.
+Run both with separate fresh roots. They must not share a single rapid-run API
+rate bucket: the unchanged production guard counts 100 requests per client IP
+per 60 seconds, including preflights. Isolation is between independent suites,
+never a bucket reset during a journey or a raised rate/token/timeout limit.
+Use `AUTH_E2E_PYTHON` and
 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` for explicit local executables if needed. Its
 dedicated configuration disables traces, screenshots, video, debug logging and
 retries; never include its credential directory in artifacts. Normal Playwright
@@ -344,6 +373,27 @@ DuckDB constraint failure, explicit retry, and denied viewer/anonymous writes.
 It also hashes the complete synthetic run artifacts before/after. The fixture's
 SQL failure trigger is test-only; it is not a production validation rule.
 Its evidence JSON contains IDs, counts, status codes and hashes, never credentials.
+
+`playwright/auth/core-product.spec.ts` adds four complete core-user journeys to
+that same private production configuration, in its separate `core` invocation.
+Each uses a dedicated LOB so it
+cannot replace the authentication fixture's older/latest examples. Actual UI
+uploads and pipeline buttons run the real engines; read-only stored-file checks
+verify full populations, not just the preview. Weekly Naive values and its
+`156/437` volume WMAPE, plus daily date-column output and zero-demand observations,
+are checked with independent arithmetic. The daily recommendation remains the
+existing 51-period/two-fold plan for the 208-observation fixture, not a manually
+changed 28-period plan. Daily cohort scores are not misrepresented as a global
+winner. These are execution/correctness oracles, not business-accuracy promises.
+
+The cases also exercise AutoETS and generated statistical-model handoff, actual
+line/fan charts and table dates, YAML downloads, server-side BI exports, and
+reload/re-login before exact older-run/config reads. Forecast-vs-actual export
+can legitimately be empty without overlapping later actuals; no browser forecast
+download is implied. Real requests are temporarily delayed then continued for
+Analyze/backtest/forecast ownership checks, including late older analysis errors;
+no success or failure response is fabricated. Only allowlisted outcome JSON is
+uploaded by CI, with stage outcomes separate from HTTP status codes.
 
 ### Constraint Results and Request Ownership
 
@@ -374,16 +424,27 @@ with synthetic success data.
 
 For the private production suite, set `AUTH_E2E_FRONTEND_MODE=production`, build
 with `NEXT_PUBLIC_API_URL` matching the chosen loopback `AUTH_E2E_API_PORT`, then
-run `npm run test:auth-browser`. `AUTH_E2E_FRONTEND_PORT` selects a separate owned
+run `npm run test:auth-browser` for each suite. `AUTH_E2E_FRONTEND_PORT` selects a separate owned
 port, and `AUTH_E2E_ROOT` must be fresh for each invocation. The fixture pins its
 run authority beneath that private root, regardless of inherited API settings.
 CI includes all four F8 API/store contracts in all six existing native
 authentication matrix runs and retains the full backend/M5 gates. The production
 job records credential-free browser JUnit with `--reporter=line,junit` and uses a
 separate private output directory so the later demo test run cannot clear its
-evidence. Only JUnit and explicitly named decomposition, override and F8 evidence
-JSON files are uploaded. Captures stay off; credential directories are never
-uploaded, and the owned synthetic credential files are removed after the run.
+evidence. Only JUnit and explicitly named decomposition, override, F8 and core
+evidence JSON files are uploaded. A fixture-only pass-through observer
+also records allowlisted authentication method/path/status, request ordinal,
+elapsed time and CORS-presence booleans. It never records headers, bodies, query
+strings or credentials and never changes request handling. Both required browser
+invocations retain their own JUnit/outcomes and these safe HTTP observations.
+Captures stay off; credential directories are never uploaded, and both sets of
+owned synthetic credential files are removed after the run.
+
+The production rate limiter's cross-origin error visibility remains a known
+limitation: a real 429 currently lacks CORS allow-origin headers, so a browser
+can report a failed fetch instead of exposing that status; saturated preflights
+are also rejected. Fixture isolation does not fix that error UX or alter
+middleware ordering, preflight accounting or automatic write-retry policy.
 
 ## Type System
 

@@ -4,6 +4,9 @@ import path from "node:path";
 const root = process.env.AUTH_E2E_ROOT;
 if (!root || !path.isAbsolute(root)) throw new Error("AUTH_E2E_ROOT must be a fresh absolute temporary directory outside the repository");
 if (process.env.DEBUG || process.env.PWDEBUG) throw new Error("Credential checks cannot run with protocol/debug logging enabled");
+const suite = process.env.AUTH_E2E_SUITE || "contracts";
+if (!["contracts", "core"].includes(suite)) throw new Error("AUTH_E2E_SUITE must be contracts or core");
+const coreSpec = /(?:^|[/\\])core-product\.spec\.ts$/;
 const apiPort = Number(process.env.AUTH_E2E_API_PORT || 8197);
 const frontendPort = Number(process.env.AUTH_E2E_FRONTEND_PORT || 3197);
 if (![apiPort, frontendPort].every(port => Number.isInteger(port) && port > 1024 && port < 65536)) {
@@ -25,6 +28,8 @@ function quote(value: string) {
 
 export default defineConfig({
   testDir: "./playwright/auth",
+  testMatch: suite === "core" ? coreSpec : undefined,
+  testIgnore: suite === "contracts" ? coreSpec : undefined,
   fullyParallel: false,
   forbidOnly: true,
   retries: 0,

@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Tuple
 import polars as pl
 
 from ..config.schema import PlatformConfig
+from ..utils.calendar import PeriodCalendar
 
 # --------------------------------------------------------------------------- #
 #  Report dataclass
@@ -20,7 +21,7 @@ from ..config.schema import PlatformConfig
 
 @dataclass
 class DataQualityReport:
-    """Structured summary of data quality checks."""
+    """Data quality summary; legacy week-named fields count configured periods."""
 
     # Overall
     total_rows: int = 0
@@ -108,14 +109,16 @@ class DataQualityAnalyzer:
         report.date_range_start = df[time_col].min()
         report.date_range_end = df[time_col].max()
 
-        if report.date_range_start and report.date_range_end:
-            delta = report.date_range_end - report.date_range_start
-            report.total_weeks = max(delta.days // 7 + 1, 1)
+        if report.date_range_start is not None and report.date_range_end is not None:
+            calendar = PeriodCalendar.from_dates(
+                df[time_col].unique().to_list(), self.config.forecast.frequency,
+            )
+            report.total_weeks = calendar.index(report.date_range_end) + 1
 
         # ---- Step 2: Completeness ---------------------------------------- #
         per_series_weeks = (
             df.group_by(sid_col)
-            .agg(pl.col(time_col).n_unique().alias("n_weeks"))
+            .agg(pl.col(time_col).n_unique().cast(pl.Int64).alias("n_weeks"))
         )
 
         expected_weeks = report.total_weeks
@@ -243,7 +246,7 @@ class DataQualityAnalyzer:
         agg = (
             df.group_by(sid_col)
             .agg([
-                pl.col(time_col).n_unique().alias("n_weeks"),
+                pl.col(time_col).n_unique().cast(pl.Int64).alias("n_weeks"),
                 pl.col(value_col).mean().alias("mean"),
                 pl.col(value_col).std().alias("std"),
                 (pl.col(value_col) == 0).mean().alias("zero_pct"),
@@ -282,7 +285,7 @@ class DataQualityAnalyzer:
 
         if report.missing_week_pct > 20:
             warnings.append(
-                f"High gap rate: {report.missing_week_pct:.1f}% of series\u00d7week cells were missing"
+                f"High gap rate: {report.missing_week_pct:.1f}% of series\u00d7period cells were missing"
             )
         if report.zero_inflation_rate > 30:
             warnings.append(
@@ -290,7 +293,7 @@ class DataQualityAnalyzer:
             )
         if report.short_series_count > 0:
             warnings.append(
-                f"{report.short_series_count} series shorter than {min_len} weeks will be dropped"
+                f"{report.short_series_count} series shorter than {min_len} periods will be dropped"
             )
         if report.zero_series_count > 0:
             warnings.append(
